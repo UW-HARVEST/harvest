@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, ffi::OsString, fs::ReadDir};
+use std::{any::Any, collections::BTreeMap, ffi::OsString, fmt::Display, fs::ReadDir};
+
+use crate::Representation;
 
 /// A representation of a file-system directory entry.
 pub enum RawEntry {
@@ -24,6 +26,18 @@ impl RawEntry {
 
 /// A representation of a file-system directory tree.
 pub struct RawDir(pub BTreeMap<OsString, RawEntry>);
+
+impl Display for RawDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.display(0, f)
+    }
+}
+
+impl Representation for RawDir {
+    fn as_any(&self) -> &dyn Any {
+	self
+    }
+}
 
 impl RawDir {
     /// Create a [RawDir] from a local file system directory

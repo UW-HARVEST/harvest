@@ -2,7 +2,7 @@ pub mod c2rust_c_ast;
 pub mod hc_ast;
 pub mod raw_source;
 
-use std::{collections::BTreeMap, fmt::Display, path::Path};
+use std::{any::Any, collections::BTreeMap, fmt::Display, path::Path};
 
 /// Harvest Intermediate Representation
 ///
@@ -16,17 +16,15 @@ pub struct HarvestIR {
     // useful ordering for [Id]s, but for now using an ordered map at
     // least gives us a stable ordering when iterating, e.g. to print
     // the IR.
-    representations: BTreeMap<Id, Representation>,
+    representations: BTreeMap<Id, Box<dyn Representation>>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub struct Id(pub usize);
+pub struct Id(usize);
 
 /// An abstract representation of a program
-pub enum Representation {
-    /// An verbatim copy of the original source code project's
-    /// directories and files.
-    RawSource(raw_source::RawDir),
+pub trait Representation: Display {
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl HarvestIR {
@@ -50,12 +48,13 @@ impl HarvestIR {
     pub fn from_raw_source<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let dir = std::fs::read_dir(path)?;
         let root_dir = raw_source::RawDir::populate_from(dir)?;
-        Ok(HarvestIR {
-            representations: [(Id(0), Representation::RawSource(root_dir))].into(),
-        })
+
+	let mut result = HarvestIR { representations: Default::default() };
+	result.representations.insert(Id(0), Box::new(root_dir));
+        Ok(result)
     }
 
-    pub fn get(&self, id: &Id) -> Option<&Representation> {
+    pub fn get(&self, id: &Id) -> Option<&Box<dyn Representation>> {
         self.representations.get(id)
     }
 }
@@ -63,9 +62,7 @@ impl HarvestIR {
 impl Display for HarvestIR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for r in self.representations.values() {
-            match r {
-                Representation::RawSource(r) => r.display(0, f)?,
-            }
+	    write!(f, "{r}")?;
         }
         Ok(())
     }

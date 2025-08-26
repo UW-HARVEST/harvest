@@ -1,2 +1,5 @@
 /Cargo.lock
 /target/
+
+local_notes.txt
+c_ast_notes.txt

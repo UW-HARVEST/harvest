@@ -49,8 +49,10 @@ impl HarvestIR {
         let dir = std::fs::read_dir(path)?;
         let root_dir = raw_source::RawDir::populate_from(dir)?;
 
-	let mut result = HarvestIR { representations: Default::default() };
-	result.representations.insert(Id(0), Box::new(root_dir));
+        let mut result = HarvestIR {
+            representations: Default::default(),
+        };
+        result.representations.insert(Id(0), Box::new(root_dir));
         Ok(result)
     }
 
@@ -62,7 +64,7 @@ impl HarvestIR {
 impl Display for HarvestIR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for r in self.representations.values() {
-	    write!(f, "{r}")?;
+            write!(f, "{r}")?;
         }
         Ok(())
     }

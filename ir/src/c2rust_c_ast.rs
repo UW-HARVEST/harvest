@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    any::Any, fmt::Display, fs::File, path::{Path, PathBuf}, process::Command
+    any::Any,
+    fmt::Display,
+    fs::File,
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use c2rust_transpile::c_ast::{ConversionContext, TypedAstContext};
@@ -28,10 +32,24 @@ struct CompileCmd {
 }
 
 fn populate_from(base: &Path) -> Vec<TypedAstContext> {
-    let v: Vec<CompileCmd> = serde_json::from_reader(std::io::BufReader::new(File::open(base.join("compile_commands.json")).unwrap())).unwrap();
-    v.iter().map(|cc| {
-	ConversionContext::new(&c2rust_ast_exporter::get_untyped_ast(&cc.file, base, &[], false).unwrap()).typed_context
-    }).collect()
+    let v: Vec<CompileCmd> = serde_json::from_reader(std::io::BufReader::new(
+        File::open(base.join("compile_commands.json")).unwrap(),
+    ))
+    .unwrap();
+    v.iter()
+        .map(|cc| {
+            ConversionContext::new(
+                &c2rust_ast_exporter::get_untyped_ast(
+                    &cc.file,
+                    base,
+                    &[],
+                    false,
+                )
+                .unwrap(),
+            )
+            .typed_context
+        })
+        .collect()
 }
 
 impl Display for CAst {
@@ -72,12 +90,12 @@ impl CAst {
             Ok(())
         }
 
-	// Copy source directory to the file system somewhere temporary
+        // Copy source directory to the file system somewhere temporary
         let td = tempdir::TempDir::new("harvest").unwrap();
         reify(src, td.path()).ok()?;
 
-	// Use cmake to generate a `compile_commands.json` file in a
-	// separate build directory
+        // Use cmake to generate a `compile_commands.json` file in a
+        // separate build directory
         let cc_dir = tempdir::TempDir::new("harvest").unwrap();
         Command::new("cmake")
             .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=1")
@@ -87,8 +105,8 @@ impl CAst {
             .arg(cc_dir.path())
             .output()
             .ok()?;
-	Some(Self {
-	    _ast: populate_from(cc_dir.path())
+        Some(Self {
+            _ast: populate_from(cc_dir.path()),
         })
     }
 
@@ -114,7 +132,8 @@ mod tree_crawl {
         for decl_id in ctxt.c_decls_top.iter() {
             let decl = ctxt.get_decl(decl_id).unwrap();
 
-            if let CDeclKind::NonCanonicalDecl { canonical_decl } = &decl.kind {
+            if let CDeclKind::NonCanonicalDecl { canonical_decl } = &decl.kind
+            {
                 non_canon_to_check.push(*canonical_decl);
             } else {
                 top_canons.insert(*decl_id);
@@ -185,7 +204,10 @@ mod tree_crawl {
                 CDeclKind::Variable { .. } => top_vars.push(*decl_id),
                 CDeclKind::Function { .. } => top_funcs.push(*decl_id),
                 _ => {
-                    panic!("TODO, Un-handled Top-Level Declartion: {:?}", &decl.kind);
+                    panic!(
+                        "TODO, Un-handled Top-Level Declartion: {:?}",
+                        &decl.kind
+                    );
                 }
             }
         }

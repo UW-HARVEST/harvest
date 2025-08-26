@@ -1,4 +1,6 @@
-use std::{any::Any, collections::BTreeMap, ffi::OsString, fmt::Display, fs::ReadDir};
+use std::{
+    any::Any, collections::BTreeMap, ffi::OsString, fmt::Display, fs::ReadDir,
+};
 
 use crate::Representation;
 
@@ -35,7 +37,7 @@ impl Display for RawDir {
 
 impl Representation for RawDir {
     fn as_any(&self) -> &dyn Any {
-	self
+        self
     }
 }
 
@@ -64,13 +66,16 @@ impl RawDir {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                let subdir = RawDir::populate_from(std::fs::read_dir(entry.path())?)?;
+                let subdir =
+                    RawDir::populate_from(std::fs::read_dir(entry.path())?)?;
                 result.insert(entry.file_name(), RawEntry::Dir(subdir));
             } else if metadata.is_file() {
                 let contents = std::fs::read(entry.path())?;
                 result.insert(entry.file_name(), RawEntry::File(contents));
             } else {
-                unimplemented!("No support yet for symlinks in source project.");
+                unimplemented!(
+                    "No support yet for symlinks in source project."
+                );
             }
         }
         Ok(RawDir(result))
@@ -82,7 +87,11 @@ impl RawDir {
     ///
     /// * `level` - The level of this directory relative to the
     ///   root. Used to add padding to before entry names.
-    pub fn display(&self, level: usize, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn display(
+        &self,
+        level: usize,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         let pad = "  ".repeat(level);
         for (name, entry) in self
             .0

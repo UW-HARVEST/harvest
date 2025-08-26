@@ -9,11 +9,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = args.in_performer.to_string_lossy();
     let harvest_ir = HarvestIR::from_raw_source(&args.in_performer)?;
     if let Some(ast) = harvest_ir::c2rust_c_ast::CAst::run_stage(harvest_ir) {
-
         println!("{name} Done");
         ast.tree_crawl();
     } else {
-        panic!("{name} Only reachable if the setup was wrong or casting code is incorrect");
+        panic!(
+            "{name} Only reachable if the setup was wrong or casting code is incorrect"
+        );
     }
     Ok(())
 }

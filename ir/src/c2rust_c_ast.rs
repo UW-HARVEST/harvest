@@ -93,7 +93,7 @@ impl CAst {
     }
 
     pub fn tree_crawl(&self) {
-        tree_crawl::read_root(&self._ast);
+        tree_crawl::read_root(&self._ast[0]);
     }
 }
 

@@ -1,32 +1,30 @@
-#![allow(unused_variables)]  // TODO: Remove when implementations finished
+/// Filesystem abstractions. Used to represent directory trees, such as the input project or
+/// lowered Rust source.
+///
+/// These types are read-only. To create them:
+/// 1. Create the file/directory/symlink in the diagnostic directory and populate it as intended.
+/// 2. "freeze" the file using `Reporter::freeze_path` or (TODO: what ToolReporter function or
+///    related thing do tools use?).
+///
+/// Freezing the contents will:
+/// 1. Make the on-disk structures read-only. This applies recursively, but does not follow
+///    symlinks.
+/// 2. Construct a `DirEntry` representing the on-disk structure.
+///
+/// After you have frozen a filesystem object, it (and everything else frozen with it, if it is a
+/// directory) must be left unchanged in the diagnostic directory. This is to avoid the need to
+/// store the contents of files in memory.
 
-use std::path::Path;
-
-/// Mutable view of a diagnostics directory path. New elements may be added to a RwDir, and then
-/// those elements (or the entire RwDir) frozen.
-pub struct RwDir {
-    // Note: The diagnostics system would track which entities within the diagnostic system have
-    // been frozen and which are still mutable. I don't yet know if RwDirs themselves would form
-    // the nodes of that tree, or merely reference it.
-}
-
-impl RwDir {
-    /// Recursively makes this directory read-only. Does not follow symlinks. Returns a new Dir
-    /// containing the contents of this directory.
-    ///
-    /// Postcondition: This directory and its recursive contents are not modified or deleted after
-    /// freeze() is called until the DiagnosticDir is deleted.
-    pub fn freeze(self) -> Result<Dir, Error> { todo!() }
-
-    /// Freezes a sub-path of this directory.
-    pub fn freeze_path(&self, path: &Path) -> Result<DirEntry, Error> { todo!() }
-
-    /// Writes a subdirectory into this directory at the given path, read-only. Note that this may
-    /// hardlink the subdirectory into the new location rather than performing a full copy.
-    pub fn write_subdir_ro(&self, path: &Path, dir: Dir) -> Result<(), Error> { todo!() }
-}
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::io;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use thiserror::Error;
 
 /// View of a read-only directory element.
+#[derive(Clone)]
 pub enum DirEntry {
     Dir(Dir),
     File(File),
@@ -35,16 +33,61 @@ pub enum DirEntry {
 
 // Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
 // of the file can be shared between the copies, because it is computed lazily.
-
-/// A read-only directory.
-pub struct Dir {}
 /// A read-only file.
+#[derive(Clone)]
 pub struct File {}
-/// A read-only symlink. Note that all that is frozen is the path; the thing it points to may not
-/// exist and may still change (also, this may be relative or absolute and may point anywhere).
-pub struct Symlink {}
 /// A read-only UTF-8 file.
+#[derive(Clone)]
 pub struct TextFile {}
 
-// Stand-in error type so I don't have to implement the real error types while I design the API.
-pub struct Error;
+/// A frozen directory.
+#[derive(Clone)]
+pub struct Dir {
+    contents: Arc<HashMap<OsString, DirEntry>>,
+}
+
+impl Dir {
+    /// Retrieves the entry at the specified location. If you want a recursive lookup (traversing
+    /// into subdirectories), use [get_recursive] instead.
+    /// Returns `None` if there is no entry at `name`.
+    pub fn get<N: AsRef<OsStr>>(&self, name: N) -> Option<DirEntry> {
+        self.contents.get(name.as_ref()).cloned()
+    }
+
+    /// Retrieves the entry at the specified location under this directory. This will resolve
+    /// symlinks, but only if they are relative and point to paths that lie within this directory
+    /// (as otherwise this `Dir` does not have enough context to follow them).
+    // TODO: Unit test
+    pub fn get_recursive<P: AsRef<Path>>(&self, path: P) -> Result<DirEntry, GetRecursiveError> {
+        let _ = path;
+        todo!()
+    }
+
+    /// Iterates through the contents of this directory.
+    pub fn entries(&self) -> impl Iterator<Item = (OsString, DirEntry)> {
+        self.contents.iter().map(|(p, e)| (p.clone(), e.clone()))
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum GetRecursiveError {
+}
+
+/// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
+/// not exist or may be entirely outside the diagnostics directory.
+#[derive(Clone)]
+pub struct Symlink {
+    // The path contained by this symlink.
+    contents: PathBuf,
+}
+
+impl Symlink {
+    pub fn contents(&self) -> &Path {
+        &self.contents
+    }
+
+    /// Writes this symlink into the filesystem at the given path.
+    pub fn write_rw<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        symlink(&self.contents, path)
+    }
+}

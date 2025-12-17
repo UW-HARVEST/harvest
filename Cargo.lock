@@ -479,6 +479,9 @@ dependencies = [
 [[package]]
 name = "harvest_fs"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "harvest_ir"

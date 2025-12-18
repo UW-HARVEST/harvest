@@ -5,11 +5,14 @@ pub mod load_raw_source;
 pub mod raw_source_to_cargo_llm;
 pub mod try_cargo_build;
 
+use harvest_ir::Representation;
+
 use crate::{cli::unknown_field_warning, diagnostics::ToolReporter};
-use harvest_ir::{Edit, HarvestIR, Id};
+use harvest_ir::HarvestIR;
+use harvest_ir::Id;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Combined configuration for all Tools in this crate.
@@ -52,42 +55,15 @@ pub trait Tool: Send + 'static {
     /// file names.
     fn name(&self) -> &'static str;
 
-    /// Returns an indication of whether the tool can be run now, and if it can be run, which IDs
-    /// it might write. The IDs returned may depend on the tool constructor's arguments as well as
-    /// the contents of `context.ir`.
-    ///
-    /// might_write may be called multiple times before the tool is run. Returning
-    /// `MightWriteOutcome::Runnable` does not guarantee that this tool will be executed.
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome;
-
     /// Runs the tool logic. IR access and edits are made using `context`.
     ///
     /// If `Ok` is returned the changes will be applied to the IR, and if `Err`
     /// is returned the changes will not be applied.
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>>;
-}
-
-/// Context passed to `Tool::might_write`. This is a struct so that new values may be added without
-/// having to edit every Tool impl.
-#[non_exhaustive]
-pub struct MightWriteContext<'a> {
-    /// Snapshot of the HarvestIR.
-    pub ir: &'a HarvestIR,
-}
-
-/// Result of a `Tool::might_write` execution.
-pub enum MightWriteOutcome {
-    /// This tool is not and will not be runnable. Tells the scheduler to discard the tool.
-    #[allow(unused)] // TODO: Remove when we have a tool that returns this.
-    NotRunnable,
-
-    /// This tool is runnable. The set of IDs returned are the IDs for representations in the
-    /// HarvestIR that the tool might write if it is run.
-    Runnable(HashSet<Id>),
-
-    /// The tool cannot be run now (e.g. it might need input data that it did not find in the IR),
-    /// but it might become runnable in the future so the scheduler should try again later.
-    TryAgain,
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>>;
 }
 
 /// Context a tool is provided when it is running. The tool uses this context to
@@ -95,13 +71,8 @@ pub enum MightWriteOutcome {
 /// diagnostics), and anything else that requires hooking into the rest of
 /// harvest_translate.
 #[non_exhaustive]
-pub struct RunContext<'a> {
-    /// A set of changes to be applied to the IR when this tool completes
-    /// successfully.
-    pub ir_edit: &'a mut Edit,
-
-    /// Read access to the IR. This will be the same IR as `might_write` was
-    /// most recently called with.
+pub struct RunContext {
+    /// Read access to the IR.
     pub ir_snapshot: Arc<HarvestIR>,
 
     /// Configuration for the current harvest_translate run.

@@ -3,37 +3,85 @@
 //! The scheduler is responsible for determining which tools to invoke and also
 //! for invoking them.
 
+use crate::runner::ToolRunner;
 use crate::tools::Tool;
-use log::debug;
+use harvest_ir::{HarvestIR, Id};
+use log::{error, info};
 use std::mem::replace;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct Scheduler {
-    queued_invocations: Vec<Box<dyn Tool>>,
+    queued_invocations: Vec<(Id, Vec<Id>, Box<dyn Tool>)>,
 }
 
 impl Scheduler {
-    /// Invokes `f` with the next suggested tool invocations. `f` is expected to try to run each
-    /// tool. If the tool cannot be executed and should be tried again later, then `f` should
-    /// return it.
-    pub fn next_invocations<F: FnMut(Box<dyn Tool>) -> Option<Box<dyn Tool>>>(&mut self, mut f: F) {
-        let new_queue = Vec::with_capacity(self.queued_invocations.len());
-        for tool in replace(&mut self.queued_invocations, new_queue) {
-            debug!("Trying to invoke tool {}", tool.name());
-            if let Some(tool) = f(tool) {
-                debug!("Returning {} to queue", tool.name());
-                self.queued_invocations.push(tool);
-            } else {
-                debug!("Tool removed from queue");
+    /// Runs all queued tool invocations in a loop, spawning tools and processing their results
+    /// until no tools are running and no tools are schedulable.
+    /// Interesting note: Because a tool run can only declare its inputs
+    /// during initialization, the order of declaration of tools using `queue_after` enforces a natural
+    /// topological order, preventing cycles.
+    pub fn run_all(
+        &mut self,
+        runner: &mut ToolRunner,
+        ir: &mut HarvestIR,
+        config: Arc<crate::cli::Config>,
+    ) {
+        loop {
+            // Attempt to spawn all queued tool invocations once.
+            // Tools that cannot be executed (e.g., because an ID they need is not ready) are
+            // returned to the queue to be tried again later.
+            let new_queue = Vec::with_capacity(self.queued_invocations.len());
+            for (id, inputs, tool) in replace(&mut self.queued_invocations, new_queue) {
+                // Inputs are ready when they are all in the IR.
+                // If this is not true, return it to queue and try later.
+                let inputs_ready = inputs.iter().all(|&input_id| ir.contains_id(input_id));
+                if !inputs_ready {
+                    log::debug!(
+                        "Deferring tool {} because inputs {:?} are not ready",
+                        tool.name(),
+                        inputs
+                    );
+                    self.queued_invocations.push((id, inputs, tool));
+                    continue;
+                }
+                let name = tool.name();
+                // We manage dependencies here in the scheduler, so `spawn_tool` is infallible
+                runner.spawn_tool(
+                    tool,
+                    Arc::new(ir.clone()),
+                    config.clone(),
+                    inputs.to_vec(),
+                    id,
+                );
+                info!("Launched tool {name}");
+            }
+            // Wait until at least 1 tool has finished, and update the IR.
+            if !runner.process_tool_results(ir) {
+                // No tools are running now, which also indicates that no tools are schedulable.
+                if !self.queued_invocations.is_empty() {
+                    error!(
+                        "No tools are running, yet tools are still scheduled to run. 
+                    Something has gone terrible wrong."
+                    )
+                }
+                break;
             }
         }
     }
 
-    /// Add a tool invocation to the scheduler's queue. Note that scheduling a
-    /// tool invocation does not guarantee the tool will run, as a tool may
-    /// indicate that it is not runnable.
-    pub fn queue_invocation<T: Tool>(&mut self, invocation: T) {
-        self.queued_invocations.push(Box::new(invocation));
+    /// Add a tool invocation (with no dependencies) to the scheduler's queue.
+    pub fn queue<T: Tool>(&mut self, invocation: T) -> Id {
+        self.queue_after(invocation, &[])
+    }
+
+    /// Add a tool invocation to the scheduler's queue.
+    /// Only run this tool after the given inputs are available in the IR.
+    pub fn queue_after<T: Tool>(&mut self, invocation: T, inputs: &[Id]) -> Id {
+        let id = Id::new(); // Reserve an ID for this tool's result
+        self.queued_invocations
+            .push((id, inputs.to_vec(), Box::new(invocation)));
+        id
     }
 }
 

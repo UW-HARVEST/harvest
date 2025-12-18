@@ -1,11 +1,9 @@
 //! The Harvest Intermediate Representation ([HarvestIR]), types it depends on (e.g.
 //! [Representation]), and utilities for working with them.
 
-pub mod edit;
 pub mod fs;
 mod id;
 
-pub use edit::Edit;
 pub use id::Id;
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -53,9 +51,8 @@ pub trait Representation: Any + Display + Send + Sync {
 }
 
 impl HarvestIR {
-    /// Adds a representation with a new ID and returns the new ID.
-    pub fn add_representation(&mut self, representation: Box<dyn Representation>) -> Id {
-        let id = Id::new();
+    /// Insert `representation` with `id` to IR.
+    pub fn insert_representation(&mut self, id: Id, representation: Box<dyn Representation>) -> Id {
         self.representations.insert(id, representation.into());
         id
     }
@@ -67,12 +64,19 @@ impl HarvestIR {
     }
 
     /// Returns all contained Representations of the given type.
-    pub fn get_by_representation<R: Representation>(&self) -> impl Iterator<Item = (Id, &R)> {
+    pub fn get_all_by_representation<R: Representation>(&self) -> impl Iterator<Item = (Id, &R)> {
         // TODO: Add a `TypeId -> Id` map to HarvestIR that allows us to look these up without
         // scanning through all the other representations.
         self.representations
             .iter()
             .filter_map(|(&i, r)| <dyn Any>::downcast_ref(&**r).map(|r| (i, r)))
+    }
+
+    /// Returns the representation with the given ID, if it is of the expected type.
+    pub fn get<R: Representation>(&self, id: Id) -> Option<&R> {
+        self.representations
+            .get(&id)
+            .and_then(|r| <dyn Any>::downcast_ref(&**r))
     }
 
     /// Returns an iterator over the IDs and representations in this IR.

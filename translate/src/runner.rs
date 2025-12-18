@@ -1,9 +1,8 @@
 use crate::diagnostics::Reporter;
 use crate::tools::{RunContext, Tool};
-use harvest_ir::edit::{self, NewEditError};
-use harvest_ir::{Edit, HarvestIR, Id};
-use std::collections::{HashMap, HashSet};
-use std::fmt::{self, Debug, Formatter};
+use harvest_ir::Representation;
+use harvest_ir::{HarvestIR, Id};
+use std::collections::HashMap;
 use std::iter::once;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -39,9 +38,13 @@ impl ToolRunner {
     }
 
     /// Waits until at least one tool has completed running, then process the results of all
-    /// completed tool invocations. This will update the IR value in edit_organizer. Returns `true`
+    /// completed tool invocations. This will update the IR. Returns `true`
     /// if at least one tool completed, and `false` if no tools are currently running.
-    pub fn process_tool_results(&mut self, edit_organizer: &mut edit::Organizer) -> bool {
+    pub fn process_tool_results(&mut self, ir: &mut HarvestIR) -> bool {
+        log::trace!(
+            "Processing tool results. Current invocations: {:?}",
+            self.invocations.keys()
+        );
         if self.invocations.is_empty() {
             return false;
         }
@@ -56,33 +59,30 @@ impl ToolRunner {
                 .join_handle
                 .join()
                 .expect("tool invocation thread panicked");
-            let Ok(edit) = completed_invocation else {
+            let Ok(representation) = completed_invocation else {
                 continue;
             };
-            if let Err(error) = edit_organizer.apply_edit(edit) {
-                log::error!("Edit application error: {error:?}");
-                continue;
-            }
             self.ir_version += 1;
-            self.reporter
-                .report_ir_version(self.ir_version, &edit_organizer.snapshot());
+            self.reporter.report_ir_version(self.ir_version, ir);
+            ir.insert_representation(invocation.id, representation);
         }
+        log::trace!(
+            "Finished processing tool results. Current invocations: {:?}, IR keys: {:?}",
+            self.invocations.keys(),
+            ir.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        );
         true
     }
 
-    /// Runs a tool. The tool is run in a new thread.
+    /// Runs a tool in a new thread.
     pub fn spawn_tool(
         &mut self,
-        edit_organizer: &mut edit::Organizer,
         tool: Box<dyn Tool>,
         ir_snapshot: Arc<HarvestIR>,
-        might_write: HashSet<Id>,
         config: Arc<crate::cli::Config>,
-    ) -> Result<(), SpawnToolError> {
-        let mut edit = match edit_organizer.new_edit(&might_write) {
-            Err(error) => return Err(SpawnToolError { cause: error, tool }),
-            Ok(edit) => edit,
-        };
+        tool_inputs: Vec<Id>,
+        id: Id,
+    ) {
         let sender = self.sender.clone();
         let (tool_joiner, tool_reporter) = self.reporter.start_tool_run(&*tool);
         let join_handle = spawn(move || {
@@ -95,16 +95,17 @@ impl ToolRunner {
             // same thread* that `tool` might touch are appropriately dropped/forgotten if `run`
             // panics.
             let result = catch_unwind(AssertUnwindSafe(|| {
-                tool.run(RunContext {
-                    ir_edit: &mut edit,
-                    ir_snapshot,
-                    config,
-                    reporter: tool_reporter,
-                })
-                .map(|_| edit)
+                tool.run(
+                    RunContext {
+                        ir_snapshot,
+                        config,
+                        reporter: tool_reporter,
+                    },
+                    tool_inputs,
+                )
             }));
             // TODO: Diagnostics module.
-            let out = match result {
+            let result = match result {
                 Err(panic_error) => {
                     log::error!("Tool panicked: {panic_error:?}");
                     Err(())
@@ -113,34 +114,28 @@ impl ToolRunner {
                     log::error!("Tool invocation failed: {tool_error}");
                     Err(())
                 }
-                Ok(Ok(edit)) => Ok(edit),
+                Ok(Ok(result)) => Ok(result),
             };
             tool_joiner.join(logger);
             let _ = sender.send(thread::current().id());
-            out
+            result
         });
-        self.invocations
-            .insert(join_handle.thread().id(), RunningInvocation { join_handle });
-        Ok(())
-    }
-}
-
-/// An error returned from spawn_tool.
-pub struct SpawnToolError {
-    pub cause: NewEditError,
-    pub tool: Box<dyn Tool>,
-}
-
-impl Debug for SpawnToolError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.cause)
+        self.invocations.insert(
+            join_handle.thread().id(),
+            RunningInvocation { id, join_handle },
+        );
+        log::trace!(
+            "Adding invocation for tool. Current invocations: {:?}",
+            self.invocations.keys()
+        );
     }
 }
 
 /// Data the ToolRunner tracks for each currently-running thread. These are accessed from the main
 /// thread.
 struct RunningInvocation {
-    join_handle: JoinHandle<Result<Edit, ()>>,
+    id: Id,
+    join_handle: JoinHandle<Result<Box<dyn Representation>, ()>>,
 }
 
 #[cfg(all(test, not(miri)))]

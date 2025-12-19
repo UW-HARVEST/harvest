@@ -36,7 +36,7 @@
 /// total 4
 /// -rw-rw-r-- 1 ryan ryan    0 Dec 17 16:05 b
 /// drwxrwxr-x 2 ryan ryan 4096 Dec 17 16:05 c
-/// 
+///
 /// c/:
 /// total 0
 /// lrwxrwxrwx 1 ryan ryan 4 Dec 17 16:05 d -> ../b
@@ -50,7 +50,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::fs::symlink;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -92,17 +92,37 @@ impl Dir {
         self.contents.get(name.as_ref()).cloned()
     }
 
+    // Assumes `path` is canonical and exists.
+    // TODO: Remove for an O(depth) speedup.
+    pub fn get_canonical(&self, path: &Path) -> DirEntry {
+        let mut cur = self;
+        for name in path.iter() {
+            cur = match cur.contents[name] {
+                DirEntry::Dir(ref new) => new,
+                ref other => return other.clone(),
+            };
+        }
+        DirEntry::Dir(cur.clone())
+    }
+
     /// Retrieves the entry at the specified location under this directory. This will resolve
     /// symlinks, but only if they are relative and do not traverse outside this `Dir`.
-    // TODO: Unit test
+    // TODO: Unit test. Edge cases:
+    // 1. Symlink that points back to the original Dir (i.e. './a -> ..').
+    // 2. Exponential symlinks, i.e.:
+    //    a
+    //    b -> .
+    //    c -> b/b/b/b/b/b/b/b/b/b
+    //    d -> c/c/c/c/c/c/c/c/c/c
+    //    ...
+    // 3. Circular symlinks, including circular variants of the previous one.
+    // 4. Absolute symlinks
+    // 5. Symlinks that traverse outside the Dir.
+    // 6. Embed one Dir into two different Dirs, evaluate a symlink that uses .. to point to
+    //    different locations in each parent dir.
+    // 7. Paths that try to traverse through a file.
     pub fn get_recursive<P: AsRef<Path>>(&self, path: P) -> Result<ResolvedEntry, GetRecursiveError> {
         use GetRecursiveError::*;
-
-        /// By-reference variant of ResolvedEntry
-        enum ResolvedRef<'s> {
-            Dir(&'s Dir),
-            File(&'s File),
-        }
 
         //// Symlink-resolution cache. Used to discover symlink cycles and avoid exponential lookup
         //// behavior.
@@ -136,7 +156,7 @@ impl Dir {
             let resolved = match dir_entry {
                 DirEntry::Dir(dir) => ResolvedRef::Dir(dir),
                 DirEntry::File(file) => ResolvedRef::File(file),
-                DirEntry::Symlink(symlink) => todo!(),
+                DirEntry::Symlink(_symlink) => todo!(),
             };
             // If a file was found, verify this was the end of the path.
             match resolved {
@@ -154,6 +174,24 @@ impl Dir {
     }
 }
 
+/// By-reference variant of ResolvedEntry
+enum ResolvedRef<'s> {
+    Dir(&'s Dir),
+    File(&'s File),
+}
+
+struct Resolver {
+    root: Dir,
+    cache: HashMap<PathBuf, Option<PathBuf>>,
+    cur_path: PathBuf,
+}
+
+impl Resolver {
+    pub fn resolve(&mut self, remaining: &Path) -> Result<(), GetRecursiveError> {
+        
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum GetRecursiveError {
     #[error("path leaves the Dir")]
@@ -163,6 +201,43 @@ pub enum GetRecursiveError {
     #[error("file or directory not found")]
     NotFound,
 }
+
+//struct Resolver<'d> {
+//    root: &'d Dir,
+//    // Does not include root, includes current dir. If current dir is root, this is empty.
+//    parents: Vec<&'d Dir>,
+//    // Maps the path to a symlink to that symlink's fully-resolved target. An entry of None
+//    // indicates this symlink is currently being resolved.
+//    // These are canonical paths: they are absolute, and do not contain '.' or '..' entries.
+//    // TODO: Cache more than just the path to avoid redundant lookups?
+//    symlink_cache: HashMap<PathBuf, Option<PathBuf>>,
+//}
+
+//impl<'d> Resolver<'d> {
+//    // Resolves Path relative to the directory specified by `parents`.
+//    //fn resolve(&mut self, path: &Path) -> Result<&'d DirEntry, GetRecursiveError> {
+//    //    use GetRecursiveError::*;
+//    //    for component in path.components() {
+//    //        let name = match component {
+//    //            Component::Prefix(_) | Component::RootDir => return Err(LeavesDir),
+//    //            Component::CurDir => continue,
+//    //            Component::ParentDir => match self.parents.pop() {
+//    //                None => return Err(LeavesDir),
+//    //                Some(_) => continue,
+//    //            },
+//    //            Component::Normal(name) => name,
+//    //        };
+//    //        // TODO: Maybe deref rather than taking a second reference? Depends on rustfmt.
+//    //        let dir_entry = self.parents.last().unwrap_or(&self.root).get(name).ok_or(NotFound)?;
+//    //        // Resolve symlinks.
+//    //        let resolved = match dir_entry {
+//    //            DirEntry::Dir(dir) => ResolvedRef::Dir(dir),
+//    //            DirEntry::File(file) => ResolvedRef::File(file),
+//    //        };
+//    //    }
+//    //    todo!()
+//    //}
+//}
 
 /// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
 /// not exist or may be entirely outside the diagnostics directory.

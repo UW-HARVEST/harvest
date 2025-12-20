@@ -64,7 +64,7 @@ fn get_basic() {
     ]);
     assert!(is_same_dir(dir.get(""), dir.clone()));
     assert!(is_same_dir(dir.get("subdir1"), subdir1.clone()));
-    assert!(is_same_file(dir.get("subdir1/a.txt"), file_a));
+    assert!(is_same_file(dir.get("subdir1/a.txt"), file_a.clone()));
     assert!(is_same_dir(dir.get("subdir1/.."), dir.clone()));
     assert!(is_same_dir(dir.get("subdir2/original_dir"), dir.clone()));
     assert!(is_same_dir(
@@ -76,6 +76,7 @@ fn get_basic() {
         dir.get("subdir2/original_dir/subdir1/../b.txt"),
         file_b
     ));
+    assert!(is_same_file(dir.get("./subdir1/./a.txt"), file_a));
     assert_eq!(dir.get("nonexistent").err(), Some(NotFound));
     assert_eq!(dir.get("subdir1/../../b.txt").err(), Some(LeavesDir));
     assert_eq!(dir.get("b.txt/subdir1").err(), Some(NotADirectory));
@@ -87,15 +88,90 @@ fn get_basic() {
 /// Test [Dir::get] with a diamond-shaped Dir path (that is, one where the same subdirectory
 /// appears under multiple intermediate directories).
 #[test]
-fn get_diamond() {}
+fn get_diamond() {
+    let file_a = new_file();
+    let dir_a = new_dir([
+        ("file.txt", file_a.clone().into()),
+        ("symlink", symlink_entry("../subdir/..")),
+    ]);
+    let file_b = new_file();
+    let dir_b = new_dir([
+        ("file.txt", file_b.clone().into()),
+        ("subdir", dir_a.clone().into()),
+    ]);
+    let file_c = new_file();
+    let dir_c = new_dir([
+        ("file.txt", file_c.clone().into()),
+        ("subdir", dir_a.clone().into()),
+    ]);
+    let file_d = new_file();
+    let dir = new_dir([
+        ("file.txt", file_d.clone().into()),
+        ("dir1", dir_b.clone().into()),
+        ("dir2", dir_c.clone().into()),
+    ]);
+    assert!(is_same_file(
+        dir.get("dir1/subdir/symlink/subdir/file.txt"),
+        file_a
+    ));
+    assert!(is_same_file(
+        dir.get("dir1/subdir/symlink/file.txt"),
+        file_b
+    ));
+    assert!(is_same_file(
+        dir.get("dir2/subdir/symlink/file.txt"),
+        file_c.clone()
+    ));
+    assert!(is_same_file(
+        dir.get("dir1/subdir/symlink/../file.txt"),
+        file_d
+    ));
+    // This one puts one path for accessing the symlink into the cache, then accesses it through
+    // the other path.
+    assert!(is_same_file(
+        dir.get("dir1/subdir/symlink/../dir2/subdir/symlink/file.txt"),
+        file_c
+    ));
+}
 
-// TODO: Test cases:
-// 2. Exponential symlinks, i.e.:
-//    a
-//    b -> .
-//    c -> b/b/b/b/b/b/b/b/b/b
-//    d -> c/c/c/c/c/c/c/c/c/c
-//    ...
-// 3. Circular symlinks, including circular variants of the previous one.
-// 6. Embed one Dir into two different Dirs, evaluate a symlink that uses .. to point to
-//    different locations in each parent dir.
+/// Tests [Dir::get] with a symlink pattern for which the naive lookup algorithm exhibits
+/// exponential growth.
+#[cfg(not(miri))]
+#[test]
+fn get_exponential() {
+    let file = new_file();
+    let dir = new_dir([
+        ("file.txt", file.clone().into()),
+        ("a", symlink_entry(".")),
+        ("b", symlink_entry("a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")),
+        ("c", symlink_entry("b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")),
+        ("d", symlink_entry("c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")),
+        ("e", symlink_entry("d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")),
+        ("f", symlink_entry("e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")),
+        ("g", symlink_entry("f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")),
+        ("h", symlink_entry("g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")),
+        ("i", symlink_entry("h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")),
+        ("j", symlink_entry("i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")),
+        ("k", symlink_entry("j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j")),
+    ]);
+    assert!(is_same_dir(dir.get("k"), dir.clone()));
+    assert!(is_same_file(dir.get("k/file.txt"), file));
+
+    // And a variant that is a loop
+    let file = new_file();
+    let dir = new_dir([
+        ("file.txt", file.clone().into()),
+        ("a", symlink_entry(".")),
+        ("b", symlink_entry("a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")),
+        ("c", symlink_entry("b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")),
+        ("d", symlink_entry("c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")),
+        ("e", symlink_entry("d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")),
+        ("f", symlink_entry("e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")),
+        ("g", symlink_entry("f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")),
+        ("h", symlink_entry("g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")),
+        ("i", symlink_entry("h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")),
+        ("j", symlink_entry("i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")),
+        ("k", symlink_entry("j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/k")),
+    ]);
+    assert_eq!(dir.get("k").err(), Some(FilesystemLoop));
+}

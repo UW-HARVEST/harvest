@@ -48,44 +48,85 @@
 
 mod dir;
 
-use std::collections::{HashMap, hash_map::Entry};
-use std::ffi::{OsStr, OsString};
 use std::io;
-use std::iter::once;
 use std::os::unix::fs::symlink;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use thiserror::Error;
 
 pub use dir::{Dir, GetError};
 
 /// View of a read-only directory element.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum DirEntry {
     Dir(Dir),
     File(File),
     Symlink(Symlink),
 }
 
+impl From<Dir> for DirEntry {
+    fn from(dir: Dir) -> DirEntry {
+        DirEntry::Dir(dir)
+    }
+}
+
+impl From<File> for DirEntry {
+    fn from(file: File) -> DirEntry {
+        DirEntry::File(file)
+    }
+}
+
+impl From<ResolvedEntry> for DirEntry {
+    fn from(resolved: ResolvedEntry) -> DirEntry {
+        match resolved {
+            ResolvedEntry::Dir(dir) => DirEntry::Dir(dir),
+            ResolvedEntry::File(file) => DirEntry::File(file),
+        }
+    }
+}
+
+impl From<Symlink> for DirEntry {
+    fn from(symlink: Symlink) -> DirEntry {
+        DirEntry::Symlink(symlink)
+    }
+}
+
 /// A DirEntry after symlinks have been fully resolved.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ResolvedEntry {
     Dir(Dir),
     File(File),
 }
 
+impl From<Dir> for ResolvedEntry {
+    fn from(dir: Dir) -> ResolvedEntry {
+        ResolvedEntry::Dir(dir)
+    }
+}
+
+impl From<File> for ResolvedEntry {
+    fn from(file: File) -> ResolvedEntry {
+        ResolvedEntry::File(file)
+    }
+}
+
 // Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
 // of the file can be shared between the copies, because it is computed lazily.
 /// A read-only file.
-#[derive(Clone)]
-pub struct File {}
+#[derive(Clone, Debug)]
+pub struct File {
+    // TODO: Should FileShared be in a mutex? Maybe move File into its own module and rename
+    // FileShared to just Shared in that module?
+    // TODO: Remove allow(dead_code) once production code uses this (currently it is test-only)
+    #[allow(dead_code)]
+    shared: Arc<FileShared>,
+}
 /// A read-only UTF-8 file.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TextFile {}
 
 /// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
 /// not exist or may be entirely outside the diagnostics directory.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Symlink {
     // The path contained by this symlink.
     contents: Arc<Path>,
@@ -101,3 +142,7 @@ impl Symlink {
         symlink(&self.contents, path)
     }
 }
+
+/// Data for [File]s and [TextFile]s.
+#[derive(Clone, Debug)]
+struct FileShared {}

@@ -1,15 +1,16 @@
 use super::{DirEntry, ResolvedEntry};
 use std::collections::{HashMap, hash_map::Entry};
 use std::ffi::{OsStr, OsString};
-use std::io;
 use std::iter::once;
-use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
+#[cfg(test)]
+mod tests;
+
 /// A frozen directory.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Dir {
     contents: Arc<HashMap<OsString, DirEntry>>,
 }
@@ -22,20 +23,6 @@ impl Dir {
 
     /// Retrieves the entry at the specified location under this directory. This will resolve
     /// symlinks, but only if they are relative and do not traverse outside this `Dir`.
-    // TODO: Unit test. Edge cases:
-    // 1. Symlink that points back to the original Dir (i.e. './a -> .').
-    // 2. Exponential symlinks, i.e.:
-    //    a
-    //    b -> .
-    //    c -> b/b/b/b/b/b/b/b/b/b
-    //    d -> c/c/c/c/c/c/c/c/c/c
-    //    ...
-    // 3. Circular symlinks, including circular variants of the previous one.
-    // 4. Absolute symlinks
-    // 5. Symlinks that traverse outside the Dir.
-    // 6. Embed one Dir into two different Dirs, evaluate a symlink that uses .. to point to
-    //    different locations in each parent dir.
-    // 7. Paths that try to traverse through a file.
     pub fn get<P: AsRef<Path>>(&self, path: P) -> Result<ResolvedEntry, GetError> {
         self.get_inner(path.as_ref())
     }
@@ -204,7 +191,7 @@ impl Dir {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Hash, Eq, PartialEq)]
 pub enum GetError {
     #[error("symlink loop")]
     FilesystemLoop,

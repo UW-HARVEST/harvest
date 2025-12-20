@@ -45,7 +45,7 @@
 /// If you resolve `b/d` from the context of `a/`, then it will resolve to `c`. But if you instead
 /// retrieve the `b/` `Dir` and try to resolve `d` from them, resolution will fail (because the
 /// resolution traverses outside `b/`).
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::iter::once;
@@ -238,8 +238,8 @@ impl Dir {
                     current.push(ParentDir { dir, name });
                     continue;
                 }
-                // If we encounter a file, there are only two possibilities: remaining is empty and
-                // we are done, or this is a NotADirectory error.
+                // If we encounter a file, there are only two possibilities: `remaining` is an
+                // empty path and we are done, or this is a NotADirectory error.
                 DirEntry::File(file) => {
                     return match remaining.iter().any(|s| matches!(s, Step::Component(_))) {
                         false => Ok(ResolvedEntry::File(file.clone())),
@@ -249,14 +249,35 @@ impl Dir {
                 DirEntry::Symlink(symlink) => symlink,
             };
             let link_path: PathBuf = current.iter().map(|p| p.name).chain(once(name)).collect();
+            match cache.entry(link_path.clone()) {
+                // We've encountered this symlink before.
+                Entry::Occupied(entry) => match entry.get() {
+                    None => return Err(GetError::FilesystemLoop),
+                    // Restore `current` from the cache then continue.
+                    Some(target) => {
+                        current = target.clone();
+                        continue;
+                    }
+                },
+                Entry::Vacant(entry) => {
+                    entry.insert(None);
+                }
+            }
+            // This is the first time we've encountered this symlink. Add a step to update the
+            // symlink cache, and copy the symlink's contents into `remaining` (reminder that
+            // `remaining` is reversed).
+            remaining.push(Step::Save(link_path));
+            remaining.extend(symlink.contents.components().rev().map(Step::Component));
         }
-
-        todo!()
+        let cur_dir = current.last().map(|p| p.dir).unwrap_or(self);
+        Ok(ResolvedEntry::Dir(cur_dir.clone()))
     }
 }
 
 #[derive(Debug, Error)]
 pub enum GetError {
+    #[error("symlink loop")]
+    FilesystemLoop,
     #[error("path leaves the Dir")]
     LeavesDir,
     #[error("intermediate path component is a file")]

@@ -47,13 +47,29 @@
 //! resolution traverses outside `b/`).
 
 mod dir;
+mod file;
 
 use std::io;
 use std::os::unix::fs::symlink;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, atomic::AtomicBool};
+use tempfile::TempDir;
 
 pub use dir::{Dir, GetError};
+pub use file::{File, TextFile};
+
+/// Owns the diagnostics directory (if it is a temporary directory) and stores useful information
+/// about it.
+#[allow(dead_code)] // TODO: Remove once this is moved into harvest_ir/harvest_core.
+#[derive(Debug)]
+pub struct DiagnosticsDir {
+    path: PathBuf,
+    // Initialized to false; set to true if a reflink copy fails. Allows files to skip trying
+    // reflink copies if they're never going to succeed.
+    reflink_failed: AtomicBool,
+    // Owns the directory if it is temporary, otherwise is None.
+    _tempdir: Option<TempDir>,
+}
 
 /// View of a read-only directory element.
 #[derive(Clone, Debug)]
@@ -109,21 +125,6 @@ impl From<File> for ResolvedEntry {
     }
 }
 
-// Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
-// of the file can be shared between the copies, because it is computed lazily.
-/// A read-only file.
-#[derive(Clone, Debug)]
-pub struct File {
-    // TODO: Should FileShared be in a mutex? Maybe move File into its own module and rename
-    // FileShared to just Shared in that module?
-    // TODO: Remove allow(dead_code) once production code uses this (currently it is test-only)
-    #[allow(dead_code)]
-    shared: Arc<FileShared>,
-}
-/// A read-only UTF-8 file.
-#[derive(Clone, Debug)]
-pub struct TextFile {}
-
 /// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
 /// not exist or may be entirely outside the diagnostics directory.
 #[derive(Clone, Debug)]
@@ -142,7 +143,3 @@ impl Symlink {
         symlink(&self.contents, path)
     }
 }
-
-/// Data for [File]s and [TextFile]s.
-#[derive(Clone, Debug)]
-struct FileShared {}

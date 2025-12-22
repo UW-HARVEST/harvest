@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+tempfile = { workspace = true }
 thiserror = { workspace = true }
+tracing = { default-features = false, features = ["std"], version = "0.1.43" }
 
 [lints]
 workspace = true

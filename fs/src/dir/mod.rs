@@ -1,7 +1,10 @@
 use super::{DirEntry, ResolvedEntry};
 use std::collections::{HashMap, hash_map::Entry};
 use std::ffi::{OsStr, OsString};
+use std::fs::{Permissions, set_permissions};
+use std::io;
 use std::iter::once;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
@@ -16,6 +19,15 @@ pub struct Dir {
 }
 
 impl Dir {
+    /// Creates a new Dir with the given contents. For internal use by `Reporter::freeze`.
+    pub(super) fn new(absolute: &Path, contents: HashMap<OsString, DirEntry>) -> io::Result<Dir> {
+        // User readable, no other permissions
+        set_permissions(absolute, Permissions::from_mode(0o400))?;
+        Ok(Dir {
+            contents: Arc::new(contents),
+        })
+    }
+
     /// Iterates through the contents of this directory.
     pub fn entries(&self) -> impl Iterator<Item = (OsString, DirEntry)> {
         self.contents.iter().map(|(p, e)| (p.clone(), e.clone()))
@@ -32,6 +44,13 @@ impl Dir {
     /// Returns `None` if there is no entry at `name`.
     pub fn get_entry<N: AsRef<OsStr>>(&self, name: N) -> Option<DirEntry> {
         self.contents.get(name.as_ref()).cloned()
+    }
+
+    /// Retrieves the entry at the specified location under this directory without following
+    /// symlinks or `.`/`..` entries. If an intermediate directory is a symlink (e.g. the path is
+    /// `a/b/c` where `a/b` is a symlink), this will return NotADirectory.
+    pub fn get_nofollow<P: AsRef<Path>>(&self, path: P) -> Result<DirEntry, GetNofollowError> {
+        self.get_nofollow_inner(path.as_ref())
     }
 
     /// The implementation of [get]. The only difference is this is not generic.
@@ -189,12 +208,45 @@ impl Dir {
         let cur_dir = current.last().map(|p| p.dir).unwrap_or(self);
         Ok(ResolvedEntry::Dir(cur_dir.clone()))
     }
+
+    /// The implementation of [get_nofollow]. The only difference is this is not generic.
+    pub fn get_nofollow_inner(&self, path: &Path) -> Result<DirEntry, GetNofollowError> {
+        use Component::*;
+        let mut components = path.components();
+        let mut cur_dir = self;
+        while let Some(component) = components.next() {
+            let name = match component {
+                Prefix(_) | RootDir => return Err(GetNofollowError::LeavesDir),
+                CurDir | ParentDir => return Err(GetNofollowError::NotADirectory),
+                Normal(name) => name,
+            };
+            match cur_dir.contents.get(name) {
+                None => return Err(GetNofollowError::NotFound),
+                Some(DirEntry::Dir(new_dir)) => cur_dir = new_dir,
+                Some(entry) => match components.next() {
+                    None => return Ok(entry.clone()),
+                    Some(_) => return Err(GetNofollowError::NotADirectory),
+                },
+            }
+        }
+        Ok(DirEntry::Dir(cur_dir.clone()))
+    }
 }
 
 #[derive(Debug, Error, Hash, Eq, PartialEq)]
 pub enum GetError {
     #[error("symlink loop")]
     FilesystemLoop,
+    #[error("path leaves the Dir")]
+    LeavesDir,
+    #[error("intermediate path component is a file")]
+    NotADirectory,
+    #[error("file or directory not found")]
+    NotFound,
+}
+
+#[derive(Debug, Error, Hash, Eq, PartialEq)]
+pub enum GetNofollowError {
     #[error("path leaves the Dir")]
     LeavesDir,
     #[error("intermediate path component is a file")]

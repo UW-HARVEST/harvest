@@ -50,25 +50,24 @@ mod dir;
 mod file;
 
 use std::collections::HashMap;
-use std::fs::{Permissions, set_permissions};
+use std::fs::{metadata, read_dir, read_link};
 use std::io::{self, ErrorKind};
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
 use tempfile::TempDir;
 
-pub use dir::{Dir, GetError};
+pub use dir::{Dir, GetError, GetNofollowError};
 pub use file::{File, TextFile};
 
 /// Owns the diagnostics directory (if it is a temporary directory) and stores useful information
 /// about it.
-#[allow(dead_code)] // TODO: Remove once this is moved into harvest_ir/harvest_core.
 #[derive(Debug)]
 pub struct DiagnosticsDir {
     path: PathBuf,
     // Initialized to false; set to true if a reflink copy fails. Allows files to skip trying
     // reflink copies if they're never going to succeed.
+    #[allow(dead_code)] // TODO: Remove
     reflink_failed: AtomicBool,
     // Owns the directory if it is temporary, otherwise is None.
     _tempdir: Option<TempDir>,
@@ -120,43 +119,98 @@ pub struct Freezer {
 
 impl Freezer {
     pub fn new(diagnostics_dir: Arc<DiagnosticsDir>) -> Freezer {
-        Freezer { diagnostics_dir, frozen: HashMap::new() }
+        Freezer {
+            diagnostics_dir,
+            frozen: HashMap::new(),
+        }
     }
 
     /// Freezes the given path, returning an object referencing it. `path` must be relative to the
     /// diagnostics directory, and cannot contain `.` or `..`. This will not follow symlinks (i.e.
     /// `path` cannot have symlinks in its directory path, and if `path` points to a symlink then a
     /// Symlink will be returned).
-    // TODO: Is io::Result the best option?
     pub fn freeze<P: AsRef<Path>>(&mut self, path: P) -> io::Result<DirEntry> {
         self.freeze_inner(path.as_ref())
     }
 
     /// The implementation of [freeze]. The only difference is that this is not generic.
     fn freeze_inner(&mut self, path: &Path) -> io::Result<DirEntry> {
-        let mut cur_path = PathBuf::with_capacity(path.as_os_str().len());
+        use ErrorKind::{InvalidInput, NotADirectory, NotFound};
+        // The current path, both as an absolute path and relative to the diagnostics directory.
+        let mut absolute = self.diagnostics_dir.path.clone();
+        let mut relative = PathBuf::with_capacity(path.as_os_str().len());
         let mut components = path.components();
         while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
                 return Err(ErrorKind::InvalidInput.into());
             };
-            cur_path.push(name);
-            if let Some(entry) = self.frozen.get(&cur_path) {
+            absolute.push(name);
+            relative.push(name);
+            if let Some(entry) = self.frozen.get(&relative) {
                 if let DirEntry::Dir(dir) = entry {
-                    // This directory has already been frozen.
-                    for component in components {
-                        todo!("Descend through dir")
-                    }
+                    return match dir.get_nofollow(components.as_path()) {
+                        Ok(entry) => Ok(entry),
+                        Err(GetNofollowError::LeavesDir) => Err(InvalidInput.into()),
+                        Err(GetNofollowError::NotADirectory) => Err(NotADirectory.into()),
+                        Err(GetNofollowError::NotFound) => Err(NotFound.into()),
+                    };
                 }
-                // We don't descend through 
+                // We don't descend through symlinks (and cannot descend through files). If we
+                // encounter one, we check whether the remaining path is empty to determine whether
+                // to return an error or the entry.
                 match components.next() {
                     None => return Ok(entry.clone()),
                     Some(_) => return Err(ErrorKind::NotADirectory.into()),
                 }
             }
-            todo!("Verify this path segment is not a symlink?")
+            // Verify that we are not traversing through a file or symlink.
+            let entry_type = metadata(&absolute)?.file_type();
+            if entry_type.is_dir() {
+                continue;
+            }
+            if components.next().is_some() {
+                return Err(NotADirectory.into());
+            }
+            // `path` points to a file or symlink that has not already been frozen. Freeze it,
+            // store it, and return it.
+            let entry = match entry_type.is_symlink() {
+                false => DirEntry::File(File::new(self.diagnostics_dir.clone(), absolute)?),
+                true => DirEntry::Symlink(Symlink::new(absolute)?),
+            };
+            self.frozen.insert(relative, entry.clone());
+            return Ok(entry);
         }
-        todo!("Freeze the directory/file/whatever")
+        // `path` points to a directory. Recursively freeze that directory, reusing (and removing)
+        // any cached sub-entries.
+        let entry = DirEntry::Dir(self.build_dir(&mut absolute, &mut relative)?);
+        self.frozen.insert(relative.clone(), entry.clone());
+        Ok(entry)
+    }
+
+    /// Recursive function to freeze and build a Dir. Used by freeze_inner().
+    fn build_dir(&mut self, absolute: &mut PathBuf, relative: &mut PathBuf) -> io::Result<Dir> {
+        let mut contents = HashMap::new();
+        for entry in read_dir(&absolute)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            relative.push(&file_name);
+            let new_entry = if let Some(entry) = self.frozen.remove(&*relative) {
+                entry
+            } else {
+                absolute.push(&file_name);
+                let file_type = entry.file_type()?;
+                let entry = match file_type.is_file() {
+                    true => File::new(self.diagnostics_dir.clone(), relative.clone())?.into(),
+                    _ if file_type.is_dir() => self.build_dir(absolute, relative)?.into(),
+                    _ => Symlink::new(&absolute)?.into(),
+                };
+                absolute.pop();
+                entry
+            };
+            contents.insert(file_name, new_entry);
+            relative.pop();
+        }
+        Dir::new(&absolute, contents)
     }
 }
 
@@ -188,6 +242,16 @@ pub struct Symlink {
 }
 
 impl Symlink {
+    /// Creates a new Symlink representing the file at the given path. This is for internal use by
+    /// the diagnostics system; tool code should use [Reporter::freeze] or /* TODO: what
+    /// ToolReporter function? */ to create a symlink.
+    fn new<P: AsRef<Path>>(path: P) -> io::Result<Symlink> {
+        // Symlink permissions cannot be changed, so just create the Symlink object.
+        Ok(Symlink {
+            contents: read_link(path)?.into(),
+        })
+    }
+
     pub fn contents(&self) -> &Path {
         &self.contents
     }

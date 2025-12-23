@@ -1,6 +1,8 @@
 use super::DiagnosticsDir;
-use std::fs::{read, read_to_string};
-use std::path::{Path, PathBuf};
+use std::fs::{Permissions, read, read_to_string, set_permissions};
+use std::io;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
 use std::str::{Utf8Error, from_utf8};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tracing::error;
@@ -14,6 +16,21 @@ pub struct File {
 }
 
 impl File {
+    /// Freezes the given file and returns a new File object referring to it. Note that this is for
+    /// internal use by the diagnostics system; other code should use `Reporter::freeze` to create
+    /// a File.
+    pub(super) fn new(diagnostics_dir: Arc<DiagnosticsDir>, path: PathBuf) -> io::Result<File> {
+        // User readable, no other permissions
+        set_permissions(&path, Permissions::from_mode(0o400))?;
+        Ok(File {
+            shared: Arc::new(Shared {
+                contents: Mutex::new(CachedContents::Unknown),
+                diagnostics_dir,
+                path,
+            }),
+        })
+    }
+
     pub fn bytes(&self) -> Arc<[u8]> {
         match self.shared.contents() {
             Contents::Utf8(contents) => contents.into(),
@@ -25,8 +42,8 @@ impl File {
         <TextFile as TryFrom<_>>::try_from(self.clone()).is_ok()
     }
 
-    pub fn path(&self) -> &Path {
-        &self.shared.path
+    pub fn path(&self) -> PathBuf {
+        self.shared.path()
     }
 }
 
@@ -50,8 +67,8 @@ impl TextFile {
         self.str().into()
     }
 
-    pub fn path(&self) -> &Path {
-        &self.shared.path
+    pub fn path(&self) -> PathBuf {
+        self.shared.path()
     }
 
     pub fn str(&self) -> Arc<str> {
@@ -88,8 +105,10 @@ impl TryFrom<File> for TextFile {
 #[derive(Debug)]
 struct Shared {
     contents: Mutex<CachedContents>,
-    #[allow(dead_code)] // TODO: Remove
     diagnostics_dir: Arc<DiagnosticsDir>,
+    // Path to a copy of this file in the filesystem. This path is relative to the diagnostic
+    // directory, and does not traverse any symlinks (i.e. if it is appended to
+    // diagnostics_dir.path, it creates a canonical path).
     path: PathBuf,
 }
 
@@ -153,6 +172,10 @@ impl Shared {
             self.contents.clear_poison();
             e.into_inner()
         })
+    }
+
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from_iter([&self.diagnostics_dir.path, &self.path])
     }
 }
 

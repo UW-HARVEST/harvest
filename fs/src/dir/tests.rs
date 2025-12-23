@@ -1,4 +1,4 @@
-use super::super::{File, FileShared, Symlink};
+use super::super::{File, Symlink};
 use super::*;
 use GetError::{FilesystemLoop, LeavesDir, NotADirectory, NotFound};
 

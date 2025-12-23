@@ -1,7 +1,5 @@
 use super::DiagnosticsDir;
-use std::fs::{Permissions, read, read_to_string, set_permissions};
-use std::io;
-use std::os::unix::fs::PermissionsExt as _;
+use std::fs::{read, read_to_string};
 use std::path::{Path, PathBuf};
 use std::str::{Utf8Error, from_utf8};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -16,24 +14,6 @@ pub struct File {
 }
 
 impl File {
-    /// Marks this file read-only and crates a new File referring to it. `path` is relative to the
-    /// diagnostic directory. The file must remain unchanged until all clones of this File are
-    /// dropped.
-    #[allow(dead_code)] // TODO: Remove
-    pub(super) fn freeze(diagnostics_dir: Arc<DiagnosticsDir>, path: &Path) -> io::Result<File> {
-        let path = [&diagnostics_dir.path, path].iter().collect();
-        // Read for user, none for others.
-        set_permissions(&path, Permissions::from_mode(0o400))?;
-        Ok(File {
-            shared: Shared {
-                contents: CachedContents::Unknown.into(),
-                diagnostics_dir,
-                path,
-            }
-            .into(),
-        })
-    }
-
     pub fn bytes(&self) -> Arc<[u8]> {
         match self.shared.contents() {
             Contents::Utf8(contents) => contents.into(),

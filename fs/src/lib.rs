@@ -49,9 +49,12 @@
 mod dir;
 mod file;
 
-use std::io;
+use std::collections::HashMap;
+use std::fs::{Permissions, set_permissions};
+use std::io::{self, ErrorKind};
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
 use tempfile::TempDir;
 
@@ -103,6 +106,57 @@ impl From<ResolvedEntry> for DirEntry {
 impl From<Symlink> for DirEntry {
     fn from(symlink: Symlink) -> DirEntry {
         DirEntry::Symlink(symlink)
+    }
+}
+
+// This should be removed when this is migrated into harvest_core and the functionality put into
+// Reporter instead.
+pub struct Freezer {
+    diagnostics_dir: Arc<DiagnosticsDir>,
+    // Paths are relative to the diagnostic directory, and do not contain symlinks, `.`, or `..`.
+    // Nested frozen paths are removed.
+    frozen: HashMap<PathBuf, DirEntry>,
+}
+
+impl Freezer {
+    pub fn new(diagnostics_dir: Arc<DiagnosticsDir>) -> Freezer {
+        Freezer { diagnostics_dir, frozen: HashMap::new() }
+    }
+
+    /// Freezes the given path, returning an object referencing it. `path` must be relative to the
+    /// diagnostics directory, and cannot contain `.` or `..`. This will not follow symlinks (i.e.
+    /// `path` cannot have symlinks in its directory path, and if `path` points to a symlink then a
+    /// Symlink will be returned).
+    // TODO: Is io::Result the best option?
+    pub fn freeze<P: AsRef<Path>>(&mut self, path: P) -> io::Result<DirEntry> {
+        self.freeze_inner(path.as_ref())
+    }
+
+    /// The implementation of [freeze]. The only difference is that this is not generic.
+    fn freeze_inner(&mut self, path: &Path) -> io::Result<DirEntry> {
+        let mut cur_path = PathBuf::with_capacity(path.as_os_str().len());
+        let mut components = path.components();
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(ErrorKind::InvalidInput.into());
+            };
+            cur_path.push(name);
+            if let Some(entry) = self.frozen.get(&cur_path) {
+                if let DirEntry::Dir(dir) = entry {
+                    // This directory has already been frozen.
+                    for component in components {
+                        todo!("Descend through dir")
+                    }
+                }
+                // We don't descend through 
+                match components.next() {
+                    None => return Ok(entry.clone()),
+                    Some(_) => return Err(ErrorKind::NotADirectory.into()),
+                }
+            }
+            todo!("Verify this path segment is not a symlink?")
+        }
+        todo!("Freeze the directory/file/whatever")
     }
 }
 

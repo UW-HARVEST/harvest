@@ -20,14 +20,15 @@ impl File {
     /// internal use by the diagnostics system; other code should use `Reporter::freeze` to create
     /// a File.
     pub(super) fn new(diagnostics_dir: Arc<DiagnosticsDir>, path: PathBuf) -> io::Result<File> {
+        let shared = Shared {
+            contents: Mutex::new(CachedContents::Unknown),
+            diagnostics_dir,
+            path,
+        };
         // User readable, no other permissions
-        set_permissions(&path, Permissions::from_mode(0o400))?;
+        set_permissions(shared.path(), Permissions::from_mode(0o400))?;
         Ok(File {
-            shared: Arc::new(Shared {
-                contents: Mutex::new(CachedContents::Unknown),
-                diagnostics_dir,
-                path,
-            }),
+            shared: Arc::new(shared),
         })
     }
 
@@ -116,38 +117,40 @@ impl Shared {
     fn contents(&self) -> Contents {
         let mut guard = self.lock_contents();
         match *guard {
-            CachedContents::Unknown => {}
+            CachedContents::Unknown => self.load(guard),
             CachedContents::Utf8(ref contents) => match contents.upgrade() {
                 None => {
-                    let contents = read_to_string(&self.path)
+                    let contents = read_to_string(self.path())
                         .expect("read of frozen text file failed")
                         .into();
                     *guard = CachedContents::Utf8(Arc::downgrade(&contents));
-                    return Contents::Utf8(contents);
+                    Contents::Utf8(contents)
                 }
-                Some(contents) => return Contents::Utf8(contents),
+                Some(contents) => Contents::Utf8(contents),
             },
             CachedContents::NotUtf8 {
                 ref contents,
                 error,
             } => match contents.upgrade() {
                 None => {
-                    let contents = read(&self.path).expect("read of frozen file failed").into();
+                    let contents = read(self.path())
+                        .expect("read of frozen file failed")
+                        .into();
                     *guard = CachedContents::NotUtf8 {
                         contents: Arc::downgrade(&contents),
                         error,
                     };
-                    return Contents::NotUtf8 { contents, error };
+                    Contents::NotUtf8 { contents, error }
                 }
-                Some(contents) => return Contents::NotUtf8 { contents, error },
+                Some(contents) => Contents::NotUtf8 { contents, error },
             },
         }
-        self.load(guard)
     }
 
     /// Reads in the file contents, updating the cache and returning them.
     fn load(&self, mut guard: MutexGuard<CachedContents>) -> Contents {
-        let contents = read(&self.path).expect("read of frozen file failed");
+        println!("{:?}", self.path());
+        let contents = read(self.path()).expect("read of frozen file failed");
         match from_utf8(&contents) {
             Ok(contents) => {
                 let contents = contents.into();

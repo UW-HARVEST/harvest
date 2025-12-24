@@ -50,15 +50,42 @@ mod dir;
 mod file;
 
 use std::collections::HashMap;
-use std::fs::{metadata, read_dir, read_link};
+use std::fs::{Permissions, metadata, read_dir, read_link, remove_file, set_permissions};
 use std::io::{self, ErrorKind};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
 use tempfile::TempDir;
 
 pub use dir::{Dir, GetError, GetNofollowError};
 pub use file::{File, TextFile};
+
+/// Utility to recursively delete a TempDir that contains read-only files and directories. Provided
+/// to make it easier to delete the diagnostics directory (note that [DiagnosticsDir] automatically
+/// deletes the diagnostic directory on drop if it is a TempDir).
+pub fn delete_ro_tempdir(tempdir: TempDir) -> io::Result<()> {
+    fn delete_contents(path: &mut PathBuf) -> io::Result<()> {
+        set_permissions(&path, Permissions::from_mode(0o700))?;
+        for entry in read_dir(&path)? {
+            let entry = entry?;
+            path.push(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                delete_contents(path)?;
+            } else {
+                if !file_type.is_symlink() {
+                    set_permissions(&path, Permissions::from_mode(0o200))?;
+                }
+                remove_file(&path)?;
+            }
+            path.pop();
+        }
+        Ok(())
+    }
+    let mut path = tempdir.path().into();
+    delete_contents(&mut path)?;
+    tempdir.close()
+}
 
 /// Owns the diagnostics directory (if it is a temporary directory) and stores useful information
 /// about it.
@@ -70,7 +97,13 @@ pub struct DiagnosticsDir {
     #[allow(dead_code)] // TODO: Remove
     reflink_failed: AtomicBool,
     // Owns the directory if it is temporary, otherwise is None.
-    _tempdir: Option<TempDir>,
+    tempdir: Option<TempDir>,
+}
+
+impl Drop for DiagnosticsDir {
+    fn drop(&mut self) {
+        self.tempdir.take().map(|d| delete_ro_tempdir(d).unwrap());
+    }
 }
 
 /// View of a read-only directory element.
@@ -219,6 +252,22 @@ impl Freezer {
 pub enum ResolvedEntry {
     Dir(Dir),
     File(File),
+}
+
+impl ResolvedEntry {
+    pub fn dir(&self) -> Option<Dir> {
+        match self {
+            ResolvedEntry::Dir(dir) => Some(dir.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn file(&self) -> Option<File> {
+        match self {
+            ResolvedEntry::File(file) => Some(file.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl From<Dir> for ResolvedEntry {

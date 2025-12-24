@@ -21,8 +21,8 @@ pub struct Dir {
 impl Dir {
     /// Creates a new Dir with the given contents. For internal use by `Reporter::freeze`.
     pub(super) fn new(absolute: &Path, contents: HashMap<OsString, DirEntry>) -> io::Result<Dir> {
-        // User readable, no other permissions
-        set_permissions(absolute, Permissions::from_mode(0o400))?;
+        // Readable and executable (execute on a directory means you can traverse it)
+        set_permissions(absolute, Permissions::from_mode(0o500))?;
         Ok(Dir {
             contents: Arc::new(contents),
         })

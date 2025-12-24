@@ -63,6 +63,30 @@ fn entry_names(dir: Dir) -> HashSet<OsString> {
     dir.entries().map(|(p, _)| p).collect()
 }
 
+/// Panics if `dir` is not a directory with the given entry names.
+#[track_caller]
+fn assert_dir_contains<const N: usize>(dir: Result<ResolvedEntry, GetError>, contents: [&str; N]) {
+    assert_eq!(
+        HashSet::<OsString>::from_iter(
+            dir.expect("not ok")
+                .dir()
+                .expect("not a dir")
+                .entries()
+                .map(|(p, _)| p)
+        ),
+        HashSet::from_iter(contents.map(From::from)),
+    );
+}
+
+/// Panics if `file` is not a file with the given contents.
+#[track_caller]
+fn assert_file_contains(file: Result<ResolvedEntry, GetError>, contents: &str) {
+    assert_eq!(
+        &*file.expect("not ok").file().expect("not a file").bytes(),
+        contents.as_bytes()
+    );
+}
+
 /// Basic tests for [Dir::get].
 #[test]
 fn get_basic() -> io::Result<()> {
@@ -80,47 +104,30 @@ fn get_basic() -> io::Result<()> {
             "subdir2/original_dir/complex_circular/b.txt",
         )?
         .build()?;
-    assert_eq!(
-        entry_names(dir.get("").unwrap().dir().unwrap()),
-        HashSet::from(
-            [
-                "subdir1",
-                "b.txt",
-                "symlink",
-                "absolute_link",
-                "subdir2",
-                "trivial_circular",
-                "complex_circular"
-            ]
-            .map(From::from)
-        )
-    );
-    assert_eq!(
-        entry_names(dir.get("subdir1").unwrap().dir().unwrap()),
-        HashSet::from(["a.txt".into()])
-    );
-    assert_eq!(
-        *dir.get("subdir1/a.txt").unwrap().file().unwrap().bytes(),
-        *b"a"
-    );
-    //assert!(is_same_dir(dir.get("subdir1/.."), dir.clone()));
-    //assert!(is_same_dir(dir.get("subdir2/original_dir"), dir.clone()));
-    //assert!(is_same_dir(
-    //    dir.get("subdir2/original_dir/subdir1"),
-    //    subdir1
-    //));
-    //assert!(is_same_file(dir.get("b.txt"), file_b.clone()));
-    //assert!(is_same_file(
-    //    dir.get("subdir2/original_dir/subdir1/../b.txt"),
-    //    file_b
-    //));
-    //assert!(is_same_file(dir.get("./subdir1/./a.txt"), file_a));
-    //assert_eq!(dir.get("nonexistent").err(), Some(NotFound));
-    //assert_eq!(dir.get("subdir1/../../b.txt").err(), Some(LeavesDir));
-    //assert_eq!(dir.get("b.txt/subdir1").err(), Some(NotADirectory));
-    //assert_eq!(dir.get("absolute_link/Documents").err(), Some(LeavesDir));
-    //assert_eq!(dir.get("trivial_circular").err(), Some(FilesystemLoop));
-    //assert_eq!(dir.get("complex_circular").err(), Some(FilesystemLoop));
+    let root_names = [
+        "subdir1",
+        "b.txt",
+        "symlink",
+        "absolute_link",
+        "subdir2",
+        "trivial_circular",
+        "complex_circular",
+    ];
+    assert_dir_contains(dir.get(""), root_names);
+    assert_dir_contains(dir.get("subdir1"), ["a.txt"]);
+    assert_file_contains(dir.get("subdir1/a.txt"), "a");
+    assert_dir_contains(dir.get("subdir1/.."), root_names);
+    assert_dir_contains(dir.get("subdir2/original_dir"), root_names);
+    assert_dir_contains(dir.get("subdir2/original_dir/subdir1"), ["a.txt"]);
+    assert_file_contains(dir.get("b.txt"), "b");
+    assert_file_contains(dir.get("subdir2/original_dir/subdir1/../b.txt"), "b");
+    assert_file_contains(dir.get("./subdir1/./a.txt"), "a");
+    assert_eq!(dir.get("nonexistent").err(), Some(NotFound));
+    assert_eq!(dir.get("subdir1/../../b.txt").err(), Some(LeavesDir));
+    assert_eq!(dir.get("b.txt/subdir1").err(), Some(NotADirectory));
+    assert_eq!(dir.get("absolute_link/Documents").err(), Some(LeavesDir));
+    assert_eq!(dir.get("trivial_circular").err(), Some(FilesystemLoop));
+    assert_eq!(dir.get("complex_circular").err(), Some(FilesystemLoop));
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use crate::error::HarvestResult;
-use harvest_ir::fs::RawDir;
-use harvest_ir::HarvestIR;
+use harvest_core::fs::RawDir;
+use harvest_core::HarvestIR;
 use std::path::PathBuf;
 
 use harvest_translate::tools::load_raw_source::RawSource;

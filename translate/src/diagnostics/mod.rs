@@ -14,7 +14,7 @@ mod tool_reporter;
 use crate::cli::Config;
 use crate::tools::Tool;
 use crate::util::{EmptyDirError, empty_writable_dir};
-use harvest_ir::HarvestIR;
+use harvest_core::HarvestIR;
 use std::collections::HashMap;
 use std::fmt::{Arguments, Write as _};
 use std::fs::{File, canonicalize, create_dir, write};

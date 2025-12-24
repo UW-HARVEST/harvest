@@ -2,7 +2,7 @@
 //! it to a tempdir and running `cargo build --release`.
 use crate::tools::raw_source_to_cargo_llm::CargoPackage;
 use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_ir::{HarvestIR, Representation, fs::RawDir};
+use harvest_core::{HarvestIR, Representation, fs::RawDir};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;

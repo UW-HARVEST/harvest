@@ -1,7 +1,7 @@
 //! Lifts a source code project into a RawSource representation.
 
 use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_ir::{Representation, fs::RawDir};
+use harvest_core::{Representation, fs::RawDir};
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use tracing::info;

@@ -4,7 +4,7 @@
 use crate::cli::unknown_field_warning;
 use crate::load_raw_source::RawSource;
 use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_ir::{Representation, fs::RawDir};
+use harvest_core::{Representation, fs::RawDir};
 use llm::builder::{LLMBackend, LLMBuilder};
 use llm::chat::{ChatMessage, StructuredOutputFormat};
 use serde::{Deserialize, Serialize};

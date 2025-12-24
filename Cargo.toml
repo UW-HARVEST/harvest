@@ -4,7 +4,7 @@ resolver = "3"
 
 [workspace.dependencies]
 clap = { version = "4.5.45", features = ["derive"] }
-harvest_ir = { path = "ir" }
+harvest_core = { path = "ir" }
 harvest_translate = { path = "translate" }
 log = "0.4.28"
 serde = { version = "1.0.228", features = ["derive"] }

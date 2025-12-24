@@ -49,7 +49,7 @@ impl RawDir {
     /// # Examples
     ///
     /// ```
-    /// # use harvest_ir::fs::RawDir;
+    /// # use harvest_core::fs::RawDir;
     /// # #[cfg(miri)] fn main() {}
     /// # #[cfg(not(miri))]
     /// # fn main() -> std::io::Result<()> {

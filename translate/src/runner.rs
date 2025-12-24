@@ -1,7 +1,7 @@
 use crate::diagnostics::Reporter;
 use crate::tools::{RunContext, Tool};
-use harvest_ir::edit::{self, NewEditError};
-use harvest_ir::{Edit, HarvestIR, Id};
+use harvest_core::edit::{self, NewEditError};
+use harvest_core::{Edit, HarvestIR, Id};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io;
@@ -153,8 +153,8 @@ mod tests {
     use crate::cli::Config;
     use crate::diagnostics::Collector;
     use crate::test_util::MockTool;
-    use harvest_ir::Representation;
-    use harvest_ir::edit::{self, NewEditError};
+    use harvest_core::Representation;
+    use harvest_core::edit::{self, NewEditError};
     use std::fmt::{self, Display, Formatter};
 
     struct TestRepresentation;

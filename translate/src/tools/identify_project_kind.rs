@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use harvest_ir::Representation;
+use harvest_core::Representation;
 
 use super::{MightWriteContext, MightWriteOutcome, RunContext, Tool, load_raw_source::RawSource};
 

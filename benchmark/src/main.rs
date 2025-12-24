@@ -19,7 +19,7 @@ use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
-use harvest_ir::HarvestIR;
+use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
 use std::fs::File;
 use std::path::{Path, PathBuf};

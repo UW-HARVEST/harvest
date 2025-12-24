@@ -25,7 +25,7 @@ impl Id {
     ///
     /// # Example
     /// ```
-    /// # use harvest_ir::Id;
+    /// # use harvest_core::Id;
     /// # fn main() {
     ///     // Allocate two new IDs.
     ///     let [c_ast, rust_ast] = Id::new_array();

@@ -466,7 +466,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
- "harvest_ir",
+ "harvest_core",
  "harvest_translate",
  "log",
  "regex",
@@ -477,7 +477,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "harvest_ir"
+name = "harvest_core"
 version = "0.1.0"
 dependencies = [
  "tempfile",
@@ -492,7 +492,7 @@ dependencies = [
  "clap",
  "config",
  "directories",
- "harvest_ir",
+ "harvest_core",
  "libc",
  "llm",
  "serde",

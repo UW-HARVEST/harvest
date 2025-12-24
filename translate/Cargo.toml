@@ -16,7 +16,7 @@ cargo_metadata = "0.23.0"
 clap = { workspace = true }
 config = { default-features = false, features = ["toml"], version = "0.15.18" }
 directories = "6.0.0"
-harvest_ir = { workspace = true }
+harvest_core = { workspace = true }
 libc = "0.2.177"
 llm = { default-features = false, features = ["ollama", "openai", "openrouter", "rustls-tls" ], version = "1.3.4" }
 serde = { workspace = true }

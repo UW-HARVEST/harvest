@@ -6,7 +6,7 @@ pub mod raw_source_to_cargo_llm;
 pub mod try_cargo_build;
 
 use crate::{cli::unknown_field_warning, diagnostics::ToolReporter};
-use harvest_ir::{Edit, HarvestIR, Id};
+use harvest_core::{Edit, HarvestIR, Id};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};

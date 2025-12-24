@@ -179,45 +179,49 @@ fn get_basic() -> io::Result<()> {
 //        file_c
 //    ));
 //}
-//
-///// Tests [Dir::get] with a symlink pattern for which the naive lookup algorithm exhibits
-///// exponential growth.
-//#[cfg(not(miri))]
-//#[test]
-//fn get_exponential() {
-//    let file = new_file();
-//    let dir = new_dir([
-//        ("file.txt", file.clone().into()),
-//        ("a", symlink_entry(".")),
-//        ("b", symlink_entry("a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")),
-//        ("c", symlink_entry("b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")),
-//        ("d", symlink_entry("c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")),
-//        ("e", symlink_entry("d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")),
-//        ("f", symlink_entry("e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")),
-//        ("g", symlink_entry("f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")),
-//        ("h", symlink_entry("g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")),
-//        ("i", symlink_entry("h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")),
-//        ("j", symlink_entry("i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")),
-//        ("k", symlink_entry("j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j")),
-//    ]);
-//    assert!(is_same_dir(dir.get("k"), dir.clone()));
-//    assert!(is_same_file(dir.get("k/file.txt"), file));
-//
-//    // And a variant that is a loop
-//    let file = new_file();
-//    let dir = new_dir([
-//        ("file.txt", file.clone().into()),
-//        ("a", symlink_entry(".")),
-//        ("b", symlink_entry("a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")),
-//        ("c", symlink_entry("b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")),
-//        ("d", symlink_entry("c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")),
-//        ("e", symlink_entry("d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")),
-//        ("f", symlink_entry("e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")),
-//        ("g", symlink_entry("f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")),
-//        ("h", symlink_entry("g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")),
-//        ("i", symlink_entry("h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")),
-//        ("j", symlink_entry("i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")),
-//        ("k", symlink_entry("j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/k")),
-//    ]);
-//    assert_eq!(dir.get("k").err(), Some(FilesystemLoop));
-//}
+
+/// Tests [Dir::get] with a symlink pattern for which the naive lookup algorithm exhibits
+/// exponential growth.
+#[cfg(not(miri))]
+#[test]
+fn get_exponential() -> io::Result<()> {
+    let dir = DirBuilder::new()
+        .add_file("file", "contents")?
+        .add_symlink("a", ".")?
+        .add_symlink("b", "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")?
+        .add_symlink("c", "b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")?
+        .add_symlink("d", "c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")?
+        .add_symlink("e", "d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")?
+        .add_symlink("f", "e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")?
+        .add_symlink("g", "f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")?
+        .add_symlink("h", "g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")?
+        .add_symlink("i", "h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")?
+        .add_symlink("j", "i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")?
+        .add_symlink("k", "j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j")?
+        .build()?;
+    assert_dir_contains(
+        dir.get("k"),
+        [
+            "file", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k",
+        ],
+    );
+    assert_file_contains(dir.get("k/file"), "contents");
+
+    // And a variant that is a loop
+    let dir = DirBuilder::new()
+        .add_file("file", "contents")?
+        .add_symlink("a", ".")?
+        .add_symlink("b", "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a")?
+        .add_symlink("c", "b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b/b")?
+        .add_symlink("d", "c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c/c")?
+        .add_symlink("e", "d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d")?
+        .add_symlink("f", "e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e/e")?
+        .add_symlink("g", "f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f/f")?
+        .add_symlink("h", "g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g/g")?
+        .add_symlink("i", "h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h/h")?
+        .add_symlink("j", "i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i/i")?
+        .add_symlink("k", "j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/j/k")?
+        .build()?;
+    assert_eq!(dir.get("k").err(), Some(FilesystemLoop));
+    Ok(())
+}

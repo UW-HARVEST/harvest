@@ -58,11 +58,6 @@ impl DirBuilder {
     }
 }
 
-/// Utility to return the names of the entries of this directory.
-fn entry_names(dir: Dir) -> HashSet<OsString> {
-    dir.entries().map(|(p, _)| p).collect()
-}
-
 /// Panics if `dir` is not a directory with the given entry names.
 #[track_caller]
 fn assert_dir_contains<const N: usize>(dir: Result<ResolvedEntry, GetError>, contents: [&str; N]) {

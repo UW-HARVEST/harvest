@@ -46,6 +46,10 @@
 //! retrieve the `b/` `Dir` and try to resolve `d` from them, resolution will fail (because the
 //! resolution traverses outside `b/`).
 
+// TODO: Everything that currently hard-codes a particular mode should probably be gentler about
+// it, e.g. preserve executable permissions. Note also that DirEntry has a metadata() function, so
+// we can check permissions during directory traversals (e.g. in freeze() and its dependencies).
+
 mod dir;
 mod file;
 
@@ -94,6 +98,7 @@ pub struct DiagnosticsDir {
     path: PathBuf,
     // Initialized to false; set to true if a reflink copy fails. Allows files to skip trying
     // reflink copies if they're never going to succeed.
+    // TODO: Does this belong in Freezer instead?
     #[allow(dead_code)] // TODO: Remove
     reflink_failed: AtomicBool,
     // Owns the directory if it is temporary, otherwise is None.
@@ -141,8 +146,8 @@ impl From<Symlink> for DirEntry {
     }
 }
 
-// This should be removed when this is migrated into harvest_core and the functionality put into
-// Reporter instead.
+// This should be removed when this crate is migrated into harvest_core. The data probably belongs
+// in diagnostics::Shared and the methods on Reporter (+ ToolReporter or something related).
 pub struct Freezer {
     diagnostics_dir: Arc<DiagnosticsDir>,
     // Paths are relative to the diagnostic directory, and do not contain symlinks, `.`, or `..`.
@@ -156,6 +161,18 @@ impl Freezer {
             diagnostics_dir,
             frozen: HashMap::new(),
         }
+    }
+
+    /// Makes a read-only copy of a filesystem object in the diagnostic directory. `path` must be
+    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    pub fn copy_ro<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
+        todo!()
+    }
+
+    /// Makes a read-write copy of a filesystem object in the diagnostic directory. `path` must be
+    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    pub fn copy_rw<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
+        todo!()
     }
 
     /// Freezes the given path, returning an object referencing it. `path` must be relative to the

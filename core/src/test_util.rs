@@ -22,13 +22,22 @@ pub fn tempdir() -> std::io::Result<tempfile::TempDir> {
 pub struct MockTool {
     name: &'static str,
     might_write: Box<dyn FnMut(MightWriteContext) -> MightWriteOutcome + Send>,
+    #[allow(clippy::type_complexity)]
     run: Box<dyn FnOnce(RunContext) -> Result<(), Box<dyn Error>> + Send>,
+}
+
+impl Default for MockTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Builder-style API for configuring how this MockTool behaves.
 ///
 /// # Example
 /// ```
+/// use harvest_core::test_util::MockTool;
+/// use harvest_core::tools::MightWriteOutcome;
 /// let tool = MockTool::new()
 ///     .might_write(|_| MightWriteOutcome::Runnable([].into()))
 ///     .run(|_| Ok(()));

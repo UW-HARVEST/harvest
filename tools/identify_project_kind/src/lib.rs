@@ -2,7 +2,8 @@ use std::fmt::Display;
 
 use harvest_core::Representation;
 
-use super::{MightWriteContext, MightWriteOutcome, RunContext, Tool, load_raw_source::RawSource};
+use full_source::RawSource;
+use harvest_core::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
 
 pub enum ProjectKind {
     Library,

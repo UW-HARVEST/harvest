@@ -1,0 +1,13 @@
+[package]
+name = "try_cargo_build"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cargo_metadata = "0.23.1"
+full_source = { version = "0.1.0", path = "../full_source" }
+harvest_core.workspace = true
+tracing = "0.1.44"
+
+[lints]
+workspace = true

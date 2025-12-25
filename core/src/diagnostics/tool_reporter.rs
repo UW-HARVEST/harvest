@@ -150,7 +150,7 @@ impl Display for ToolRunId {
 }
 
 /// A struct that can wait for all diagnostics handles for a tool to be dropped.
-pub(crate) struct ToolJoiner {
+pub struct ToolJoiner {
     // Receives a message from RunShared when RunShared is dropped.
     receiver: Receiver<()>,
 }

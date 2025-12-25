@@ -1,7 +1,8 @@
 //! Lifts a source code project into a RawSource representation.
 
-use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_core::{Representation, fs::RawDir};
+use full_source::RawSource;
+use harvest_core::fs::RawDir;
+use harvest_core::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -40,27 +41,5 @@ impl Tool for LoadRawSource {
             .ir_edit
             .add_representation(Box::new(RawSource { dir: rawdir }));
         Ok(())
-    }
-}
-
-/// A raw C project passed as input.
-pub struct RawSource {
-    pub dir: RawDir,
-}
-
-impl std::fmt::Display for RawSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        writeln!(f, "Raw C source:")?;
-        self.dir.display(0, f)
-    }
-}
-
-impl Representation for RawSource {
-    fn name(&self) -> &'static str {
-        "RawSource"
-    }
-
-    fn materialize(&self, path: &Path) -> std::io::Result<()> {
-        self.dir.materialize(path)
     }
 }

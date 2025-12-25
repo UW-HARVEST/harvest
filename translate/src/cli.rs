@@ -1,11 +1,10 @@
 //! The command-line arguments and configuration system for [crate::transpile] and HARVEST's
 //! `translate` binary.
 
-use crate::tools;
 use clap::Parser;
 use config::FileFormat::Toml;
 use directories::ProjectDirs;
-use serde::Deserialize;
+use harvest_core::config::Config;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,61 +34,6 @@ pub struct Args {
     pub output: Option<PathBuf>,
 }
 
-/// Configuration for this harvest-translate run. The sources of these configuration values (from
-/// highest-precedence to lowest-precedence) are:
-///
-/// 1. Configurations passed using the `--config` command line flag.
-/// 2. A user-specific configuration directory (e.g. `$HOME/.config/harvest/config.toml').
-/// 3. Defaults specified in the code (using `#[serde(default)]`).
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    /// Path to the directory containing the C code to translate.
-    pub input: PathBuf,
-
-    /// Path to output directory.
-    pub output: PathBuf,
-
-    /// Path to the diagnostics directory, if you want diagnostics output. If you do not specify a
-    /// diagnostics path, a temporary directory will be created (so that working directories can be
-    /// created for tools) and cleaned up when translate completes.
-    pub diagnostics_dir: Option<PathBuf>,
-
-    /// For both the output directory and diagnostics directory (if enabled):
-    /// If true: if the directory exists and is nonempty, translate will delete the contents of the
-    /// directory before running.
-    /// If false: if the directory exists and is nonempty, translate will output an error and exit.
-    pub force: bool,
-
-    /// Filter describing which log messages should be output to stdout. This is in the
-    /// `tracing_subscriber::filter::EnvFilter` format.
-    pub log_filter: String,
-
-    /// Sub-configuration for each tool.
-    pub tools: tools::ToolConfigs,
-
-    // serde will place any unrecognized fields here. This will be passed to unknown_field_warning
-    // after parsing to emit warnings on unrecognized config entries (we don't error on unknown
-    // fields because that can be annoying to work with if you are switching back and forth between
-    // commits that have different config options).
-    #[serde(flatten)]
-    unknown: HashMap<String, Value>,
-}
-
-impl Config {
-    /// Returns a mock config for testing.
-    pub fn mock() -> Self {
-        Self {
-            input: PathBuf::from("mock_input"),
-            output: PathBuf::from("mock_output"),
-            diagnostics_dir: None,
-            force: false,
-            log_filter: "off".to_owned(),
-            tools: tools::ToolConfigs::mock(),
-            unknown: HashMap::new(),
-        }
-    }
-}
-
 /// Prints out a warning message for every field in `unknown`.
 ///
 /// This is intended for use by config validation routines. `prefix` should be the path to this
@@ -116,7 +60,6 @@ pub fn initialize(args: Arc<Args>) -> Option<Config> {
     }
     let config = load_config(&args, dirs.config_dir());
     unknown_field_warning("", &config.unknown);
-    config.tools.validate();
     Some(config)
 }
 
@@ -184,7 +127,7 @@ mod tests {
     #[test]
     fn load_config_test() {
         use super::*;
-        use crate::test_util::tempdir;
+        use harvest_core::test_util::tempdir;
         use std::{fs, io::Write as _};
         let config_dir = tempdir().unwrap();
 
@@ -199,7 +142,7 @@ mod tests {
 
         fs::File::create(config_file(config_dir.path()))
             .unwrap()
-            .write(
+            .write_all(
                 br#"
                     input = "b"
                     [tools.raw_source_to_cargo_llm]

@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+serde_json.workspace = true
 thiserror = { workspace = true }
+tracing-subscriber = { features = ["env-filter"], version = "0.3.22" }
+tracing = { default-features = false, features = ["std"], version = "0.1.43" }
+tempfile = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

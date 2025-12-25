@@ -11,10 +11,10 @@
 mod tests;
 mod tool_reporter;
 
-use crate::cli::Config;
+use crate::HarvestIR;
+use crate::config::Config;
 use crate::tools::Tool;
-use crate::util::{EmptyDirError, empty_writable_dir};
-use harvest_core::HarvestIR;
+use crate::utils::{EmptyDirError, empty_writable_dir};
 use std::collections::HashMap;
 use std::fmt::{Arguments, Write as _};
 use std::fs::{File, canonicalize, create_dir, write};
@@ -33,7 +33,7 @@ use tracing_subscriber::fmt::{MakeWriter, layer};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _, Registry};
 
-pub(crate) use tool_reporter::ToolJoiner;
+pub use tool_reporter::ToolJoiner;
 pub use tool_reporter::ToolReporter;
 
 /// Diagnostics produced by transpilation. Can be used by callers of `transpile` to inspect the
@@ -57,7 +57,7 @@ impl Diagnostics {
 /// Component that collects diagnostics during the execution of `transpile`. Creating a Collector
 /// will start collecting `tracing` events (writing them into log files and echoing some events to
 /// stdout).
-pub(crate) struct Collector {
+pub struct Collector {
     // When the Shared is destructed, the Diagnostics will be sent to this Collector through this
     // receiver.
     diagnostics_receiver: Receiver<Diagnostics>,
@@ -141,7 +141,7 @@ impl Collector {
 
 /// A handle used to report diagnostics. Created by using `Collector::reporter`.
 #[derive(Clone)]
-pub(crate) struct Reporter {
+pub struct Reporter {
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -181,17 +181,14 @@ impl Reporter {
     }
 
     /// Reports the start of a tool's execution.
-    pub(crate) fn start_tool_run(
-        &self,
-        tool: &dyn Tool,
-    ) -> Result<(ToolJoiner, ToolReporter), io::Error> {
+    pub fn start_tool_run(&self, tool: &dyn Tool) -> Result<(ToolJoiner, ToolReporter), io::Error> {
         ToolReporter::new(self.shared.clone(), tool)
     }
 }
 
 /// Error type returned by Collector::new.
 #[derive(Debug, Error)]
-pub(crate) enum CollectorNewError {
+pub enum CollectorNewError {
     #[error("diagnostics directory error")]
     DiagnosticsEmptyDir(#[from] EmptyDirError),
     #[error("I/O error")]

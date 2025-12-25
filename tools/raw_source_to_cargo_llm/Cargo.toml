@@ -1,0 +1,17 @@
+[package]
+name = "raw_source_to_cargo_llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+full_source = { version = "0.1.0", path = "../full_source" }
+harvest_core.workspace = true
+identify_project_kind = { version = "0.1.0", path = "../identify_project_kind" }
+llm = { default-features = false, features = ["ollama", "openai", "openrouter", "rustls-tls" ], version = "1.3.4" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = "1.48.0"
+tracing = "0.1.44"
+
+[lints]
+workspace = true

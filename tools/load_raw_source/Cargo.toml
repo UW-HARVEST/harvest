@@ -1,0 +1,12 @@
+[package]
+name = "load_raw_source"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+full_source = { version = "0.1.0", path = "../full_source" }
+harvest_core.workspace = true
+tracing = "0.1.44"
+
+[lints]
+workspace = true

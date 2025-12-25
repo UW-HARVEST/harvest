@@ -125,8 +125,7 @@ mod tests {
             });
             let chunks = s.spawn(|| {
                 (0..10)
-                    .map(|_| new_array_testable::<CHUNK_SIZE>(highest_id))
-                    .flatten()
+                    .flat_map(|_| new_array_testable::<CHUNK_SIZE>(highest_id))
                     .collect()
             });
             let all_at_once = new_array_testable::<{ 10 * CHUNK_SIZE }>(highest_id).into();

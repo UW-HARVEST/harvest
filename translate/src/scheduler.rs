@@ -3,7 +3,7 @@
 //! The scheduler is responsible for determining which tools to invoke and also
 //! for invoking them.
 
-use crate::tools::Tool;
+use harvest_core::tools::Tool;
 use std::mem::replace;
 use tracing::debug;
 
@@ -58,7 +58,7 @@ pub enum NextInvocationOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::MockTool;
+    use harvest_core::test_util::MockTool;
 
     #[test]
     fn next_invocation() {

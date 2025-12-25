@@ -1,6 +1,6 @@
-use crate::diagnostics::Reporter;
-use crate::tools::{RunContext, Tool};
+use harvest_core::diagnostics::Reporter;
 use harvest_core::edit::{self, NewEditError};
+use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Edit, HarvestIR, Id};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -80,7 +80,7 @@ impl ToolRunner {
         tool: Box<dyn Tool>,
         ir_snapshot: Arc<HarvestIR>,
         might_write: HashSet<Id>,
-        config: Arc<crate::cli::Config>,
+        config: Arc<harvest_core::config::Config>,
     ) -> Result<(), (SpawnToolError, Box<dyn Tool>)> {
         let mut edit = match edit_organizer.new_edit(&might_write) {
             Err(error) => return Err((error.into(), tool)),
@@ -150,11 +150,11 @@ struct RunningInvocation {
 mod tests {
     use super::*;
     use crate::MightWriteOutcome::Runnable;
-    use crate::cli::Config;
     use crate::diagnostics::Collector;
-    use crate::test_util::MockTool;
     use harvest_core::Representation;
+    use harvest_core::config::Config;
     use harvest_core::edit::{self, NewEditError};
+    use harvest_core::test_util::MockTool;
     use std::fmt::{self, Display, Formatter};
 
     struct TestRepresentation;
@@ -174,7 +174,7 @@ mod tests {
         let collector = Collector::initialize(&Config::mock()).unwrap();
         let mut edit_organizer = edit::Organizer::default();
         let mut edit = edit_organizer.new_edit(&[].into()).unwrap();
-        let config = Arc::new(crate::cli::Config::mock());
+        let config = Arc::new(Config::mock());
         let [a, b, c] = [(); 3].map(|_| edit.add_representation(Box::new(TestRepresentation)));
         edit_organizer.apply_edit(edit).expect("setup edit failed");
         let mut runner = ToolRunner::new(collector.reporter());
@@ -235,7 +235,7 @@ mod tests {
         let mut runner = ToolRunner::new(collector.reporter());
         let (sender, receiver) = channel();
         let snapshot = edit_organizer.snapshot();
-        let config = Arc::new(crate::cli::Config::mock());
+        let config = Arc::new(Config::mock());
         let result = runner.spawn_tool(
             &mut edit_organizer,
             MockTool::new()
@@ -268,7 +268,7 @@ mod tests {
         let mut edit_organizer = edit::Organizer::default();
         let mut runner = ToolRunner::new(collector.reporter());
         let snapshot = edit_organizer.snapshot();
-        let config = Arc::new(crate::cli::Config::mock());
+        let config = Arc::new(Config::mock());
         let result = runner.spawn_tool(
             &mut edit_organizer,
             MockTool::new()
@@ -295,7 +295,7 @@ mod tests {
         let mut edit_organizer = edit::Organizer::default();
         let mut runner = ToolRunner::new(collector.reporter());
         let snapshot = edit_organizer.snapshot();
-        let config = Arc::new(crate::cli::Config::mock());
+        let config = Arc::new(Config::mock());
         let result = runner.spawn_tool(
             &mut edit_organizer,
             MockTool::new().run(|_| Err("test error".into())).boxed(),
@@ -315,7 +315,7 @@ mod tests {
         let mut edit_organizer = edit::Organizer::default();
         let mut runner = ToolRunner::new(collector.reporter());
         let snapshot = edit_organizer.snapshot();
-        let config = Arc::new(crate::cli::Config::mock());
+        let config = Arc::new(Config::mock());
         let result = runner.spawn_tool(
             &mut edit_organizer,
             MockTool::new().run(|_| panic!("test panic")).boxed(),

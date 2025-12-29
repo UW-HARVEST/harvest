@@ -108,8 +108,10 @@ pub fn parse_test_case_json<P: AsRef<Path>>(file_path: P) -> HarvestResult<TestC
     Ok(test_case)
 }
 
-/// Validate that required benchmark subdirectories exist
-/// Returns paths to (input/test_case/src, input/test_vectors)
+/// Validate that required benchmark subdirectories exist.
+/// Returns (test_case_dir, test_vectors_dir). Note: we return the `test_case`
+/// root (not `test_case/src`) so downstream tools can see CMakeLists.txt if
+/// present.
 pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)> {
     if !input_dir.exists() {
         return Err(format!("Input directory does not exist: {}", input_dir.display()).into());
@@ -147,7 +149,9 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    Ok((test_case_src_dir, test_vectors_dir))
+    // Return the test_case root so downstream tools can find metadata files
+    // (e.g., CMakeLists.txt) while still containing the src/ subtree.
+    Ok((test_case_dir, test_vectors_dir))
 }
 
 /// Reads all files in a directory and parses them as TestCase JSON files

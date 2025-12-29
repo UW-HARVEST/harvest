@@ -66,10 +66,9 @@ impl Tool for RawSourceToCargoLlm {
         // OpenRouter, the `openrouter` variant hadn't been added to
         // `from_str`. It's fixed on git tip, but not in a release
         // version. So just check for that case explicitly.
-        let backend = if config.backend == "openrouter" {
-            LLMBackend::OpenRouter
-        } else {
-            LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND")
+        let backend = match config.backend.as_str() {
+            "openrouter" => LLMBackend::OpenRouter,
+            other => LLMBackend::from_str(other).expect("unknown LLM_BACKEND"),
         };
         let llm = {
             let mut llm_builder = LLMBuilder::new()

@@ -195,7 +195,8 @@ fn benchmark_single_program(
     log::info!("Output directory: {}", output_dir.display());
 
     // Check for required subdirectories & log error if we don't find them
-    let (test_case_src_dir, test_vectors_dir) = match parse_benchmark_dir(program_dir) {
+    // We use the test_case root (not src/) so translate can see CMakeLists.txt.
+    let (test_case_dir, test_vectors_dir) = match parse_benchmark_dir(program_dir) {
         Ok(dirs) => dirs,
         Err(e) => {
             result.error_message = Some(e.to_string());
@@ -221,7 +222,7 @@ fn benchmark_single_program(
 
     // Do the actual translation
     let translation_result =
-        translate_c_directory_to_rust_project(&test_case_src_dir, &output_dir, config_overrides);
+        translate_c_directory_to_rust_project(&test_case_dir, &output_dir, config_overrides);
 
     result.translation_success = translation_result.translation_success;
     result.rust_build_success = translation_result.build_success;
@@ -310,7 +311,33 @@ fn run(args: Args) -> HarvestResult<()> {
 
     // Get the programs to evaluate
     // Should be in directories that are immediate children of input_dir
-    let program_dirs = collect_program_dirs(&args.input_dir)?;
+    let mut program_dirs = collect_program_dirs(&args.input_dir)?;
+
+    if args.no_lib {
+        let before = program_dirs.len();
+        let mut skipped_names = Vec::new();
+        program_dirs.retain(|path| {
+            let is_lib = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("_lib"))
+                .unwrap_or(false);
+            if is_lib {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    skipped_names.push(name.to_string());
+                }
+                return false;
+            }
+            true
+        });
+        let skipped = before.saturating_sub(program_dirs.len());
+        log::info!("no-lib flag enabled: skipped {} *_lib programs", skipped);
+        if !skipped_names.is_empty() {
+            log::info!("Skipped: {}", skipped_names.join(", "));
+        }
+        log::info!("Remaining programs: {}", program_dirs.len());
+    }
+
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs

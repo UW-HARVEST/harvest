@@ -1,5 +1,6 @@
 [workspace]
 members = ["benchmark", "ir", "translate"]
+exclude = ["out_b01", "out_single", "out_*"]
 resolver = "3"
 
 [workspace.dependencies]

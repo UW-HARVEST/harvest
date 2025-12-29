@@ -24,4 +24,8 @@ pub struct Args {
     /// Timeout in seconds for running test cases
     #[arg(long, default_value = "10")]
     pub timeout: u64,
+
+    /// Skip benchmarks whose directory names end with `_lib` (library runners)
+    #[arg(long = "no-lib", default_value_t = false)]
+    pub no_lib: bool,
 }

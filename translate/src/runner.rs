@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle, ThreadId, spawn};
 use thiserror::Error;
-use tracing::error;
+use tracing::{error, info};
 
 /// Spawns off each tool execution in its own thread, and keeps track of those threads.
 pub struct ToolRunner {
@@ -93,6 +93,7 @@ impl ToolRunner {
         };
         let join_handle = spawn(move || {
             let logger = tool_reporter.setup_thread_logger();
+            let tool_run = tool_reporter.tool_run();
             // Tool::run is not necessarily unwind safe, which means that if it panics it might
             // leave shared data in a state that violates invariants. Types that are shared between
             // threads can generally handle this (e.g. Mutex and RwLock have poisoning), but
@@ -109,17 +110,19 @@ impl ToolRunner {
                 })
                 .map(|_| edit)
             }));
-            // TODO: Diagnostics module.
             let out = match result {
                 Err(panic_error) => {
-                    error!("Tool panicked: {panic_error:?}");
+                    error!("Tool run {tool_run} panicked: {panic_error:?}");
                     Err(())
                 }
                 Ok(Err(tool_error)) => {
-                    error!("Tool invocation failed: {tool_error}");
+                    error!("Tool run {tool_run} failed: {tool_error}");
                     Err(())
                 }
-                Ok(Ok(edit)) => Ok(edit),
+                Ok(Ok(edit)) => {
+                    info!("Tool run {tool_run} succeeded");
+                    Ok(edit)
+                }
             };
             tool_joiner.join(logger);
             let _ = sender.send(thread::current().id());

@@ -88,35 +88,28 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::Collector;
+    use crate::test_util::MockRepresentation;
     use crate::test_util::MockTool;
 
     #[test]
     fn next_invocation() {
-        // Counters for the number of times the scheduler tries to run each tool invocation.
-        let [mut a_count, mut b_count] = [0, 0];
+        let config = Arc::new(crate::cli::Config::mock());
+        let collector = Collector::initialize(&config).unwrap();
+        let mut runner = ToolRunner::new(collector.reporter());
+        let mut ir = HarvestIR::default();
+
         let mut scheduler = Scheduler::default();
-        scheduler.queue_invocation(MockTool::new().name("a"));
-        scheduler.queue_invocation(MockTool::new().name("b"));
-        scheduler.next_invocations(|t| match t.name() {
-            "a" => {
-                a_count += 1;
-                None
-            }
-            "b" => {
-                b_count += 1;
-                Some(t)
-            }
-            _ => panic!("unexpected tool invocation {}", t.name()),
-        });
-        assert_eq!([a_count, b_count], [1, 1]);
-        scheduler.next_invocations(|t| match t.name() {
-            "b" => {
-                b_count += 1;
-                None
-            }
-            _ => panic!("unexpected tool invocation {}", t.name()),
-        });
-        assert_eq!([a_count, b_count], [1, 2]);
-        scheduler.next_invocations(|t| panic!("unexpected tool invocation {}", t.name()));
+        let a_id = scheduler.queue(MockTool::new().name("a"));
+        let _b_id = scheduler.queue_after(MockTool::new().name("b"), &[a_id]);
+        scheduler.run_all(&mut runner, &mut ir, config.clone());
+
+        // Ensure both tools ran to completion
+        assert!(scheduler.queued_invocations.is_empty());
+        let representations = ir
+            .get_by_representation::<MockRepresentation>()
+            .map(|(_, r)| r)
+            .collect::<Vec<_>>();
+        assert!(representations.len() == 2);
     }
 }

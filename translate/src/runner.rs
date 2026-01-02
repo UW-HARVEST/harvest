@@ -141,192 +141,53 @@ struct RunningInvocation {
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-    use crate::MightWriteOutcome::Runnable;
-    use crate::cli::Config;
     use crate::diagnostics::Collector;
     use crate::test_util::MockTool;
-    use harvest_ir::Representation;
-    use harvest_ir::edit::{self, NewEditError};
-    use std::fmt::{self, Display, Formatter};
-
-    struct TestRepresentation;
-    impl Display for TestRepresentation {
-        fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-            write!(f, "TestRepresentation")
-        }
-    }
-    impl Representation for TestRepresentation {
-        fn name(&self) -> &'static str {
-            "test"
-        }
-    }
-
-    #[test]
-    fn new_edit_errors() {
-        let collector = Collector::initialize(&Config::mock()).unwrap();
-        let mut edit_organizer = edit::Organizer::default();
-        let mut edit = edit_organizer.new_edit(&[].into()).unwrap();
-        let config = Arc::new(crate::cli::Config::mock());
-        let [a, b, c] = [(); 3].map(|_| edit.add_representation(Box::new(TestRepresentation)));
-        edit_organizer.apply_edit(edit).expect("setup edit failed");
-        let mut runner = ToolRunner::new(collector.reporter());
-        let unknown_id = Id::new();
-        let snapshot = edit_organizer.snapshot();
-        assert_eq!(
-            runner
-                .spawn_tool(
-                    &mut edit_organizer,
-                    MockTool::new()
-                        .might_write(move |_| Runnable([a, unknown_id].into()))
-                        .boxed(),
-                    snapshot.clone(),
-                    [a, unknown_id].into(),
-                    config.clone(),
-                )
-                .err()
-                .map(|e| e.cause),
-            Some(NewEditError::UnknownId)
-        );
-        let (sender, receiver) = channel();
-        assert!(
-            runner
-                .spawn_tool(
-                    &mut edit_organizer,
-                    MockTool::new()
-                        .might_write(move |_| Runnable([b, c].into()))
-                        .run(move |_| { receiver.recv().map_err(Into::into) })
-                        .boxed(),
-                    snapshot.clone(),
-                    [a, b].into(),
-                    config.clone(),
-                )
-                .is_ok()
-        );
-        assert_eq!(
-            runner
-                .spawn_tool(
-                    &mut edit_organizer,
-                    MockTool::new()
-                        .might_write(move |_| Runnable([b, c].into()))
-                        .boxed(),
-                    snapshot,
-                    [b, c].into(),
-                    config.clone(),
-                )
-                .err()
-                .map(|e| e.cause),
-            Some(NewEditError::IdInUse),
-            "spawned tool with in-use ID"
-        );
-        sender.send(()).expect("receiver dropped");
-        runner.process_tool_results(&mut edit_organizer);
-    }
-
-    #[test]
-    fn replaced_edit() {
-        let collector = Collector::initialize(&Config::mock()).unwrap();
-        let mut edit_organizer = edit::Organizer::default();
-        let mut edit = edit_organizer.new_edit(&[].into()).unwrap();
-        let a = edit.add_representation(Box::new(TestRepresentation));
-        edit_organizer.apply_edit(edit).expect("setup edit failed");
-        let mut runner = ToolRunner::new(collector.reporter());
-        let (sender, receiver) = channel();
-        let snapshot = edit_organizer.snapshot();
-        let config = Arc::new(crate::cli::Config::mock());
-        runner
-            .spawn_tool(
-                &mut edit_organizer,
-                MockTool::new()
-                    .might_write(move |_| Runnable([a].into()))
-                    .run(move |c| {
-                        *c.ir_edit = receiver.recv()?;
-                        Ok(())
-                    })
-                    .boxed(),
-                snapshot,
-                [a].into(),
-                config.clone(),
-            )
-            .expect("tool spawn failed");
-        // Verify that `a` was marked as in use
-        assert!(edit_organizer.new_edit(&[a].into()).err() == Some(NewEditError::IdInUse));
-        let mut edit = edit_organizer.new_edit(&[].into()).unwrap();
-        let b = edit.add_representation(Box::new(TestRepresentation));
-        sender.send(edit).expect("receiver dropped");
-        runner.process_tool_results(&mut edit_organizer);
-        let ir_ids: Vec<Id> = edit_organizer.snapshot().iter().map(|(id, _)| id).collect();
-        // We don't really need this *exact* behavior, but we do need to verify the runner does
-        // something reasonable.
-        assert_eq!(ir_ids, [a, b]);
-    }
 
     #[test]
     fn success() {
-        let collector = Collector::initialize(&Config::mock()).unwrap();
-        let mut edit_organizer = edit::Organizer::default();
-        let mut runner = ToolRunner::new(collector.reporter());
-        let snapshot = edit_organizer.snapshot();
         let config = Arc::new(crate::cli::Config::mock());
-        runner
-            .spawn_tool(
-                &mut edit_organizer,
-                MockTool::new()
-                    .run(|c| {
-                        c.ir_edit.add_representation(Box::new(TestRepresentation));
-                        Ok(())
-                    })
-                    .boxed(),
-                snapshot,
-                [].into(),
-                config.clone(),
-            )
-            .expect("tool spawn failed");
-        let ir_count = edit_organizer.snapshot().iter().count();
-        assert_eq!(ir_count, 0, "edit applied early");
-        runner.process_tool_results(&mut edit_organizer);
-        let ir_count = edit_organizer.snapshot().iter().count();
-        assert_eq!(ir_count, 1, "edit not applied on success");
+        let collector = Collector::initialize(&config).unwrap();
+        let mut ir = HarvestIR::default();
+        let mut runner = ToolRunner::new(collector.reporter());
+        let tool = MockTool::new().boxed();
+        let id = Id::new();
+
+        runner.spawn_tool(tool, Arc::new(ir.clone()), config.clone(), Vec::new(), id);
+
+        let ir_count = ir.iter().count();
+        assert_eq!(ir_count, 0, "ir updated early");
+        runner.process_tool_results(&mut ir);
+        let ir_count = ir.iter().count();
+        assert_eq!(ir_count, 1, "ir not updated on success");
     }
 
     #[test]
     fn tool_error() {
-        let collector = Collector::initialize(&Config::mock()).unwrap();
-        let mut edit_organizer = edit::Organizer::default();
-        let mut runner = ToolRunner::new(collector.reporter());
-        let snapshot = edit_organizer.snapshot();
         let config = Arc::new(crate::cli::Config::mock());
-        runner
-            .spawn_tool(
-                &mut edit_organizer,
-                MockTool::new().run(|_| Err("test error".into())).boxed(),
-                snapshot,
-                [].into(),
-                config.clone(),
-            )
-            .expect("tool spawn failed");
-        runner.process_tool_results(&mut edit_organizer);
-        let ir_count = edit_organizer.snapshot().iter().count();
-        assert_eq!(ir_count, 0, "edit applied when tool errored");
+        let collector = Collector::initialize(&config).unwrap();
+        let mut ir = HarvestIR::default();
+        let mut runner = ToolRunner::new(collector.reporter());
+        let tool = MockTool::new().run(|_, _| Err("test error".into())).boxed();
+        let id = Id::new();
+
+        runner.spawn_tool(tool, Arc::new(ir.clone()), config.clone(), Vec::new(), id);
+        runner.process_tool_results(&mut ir);
+        let ir_count = ir.iter().count();
+        assert_eq!(ir_count, 0, "ir updated when tool errored");
     }
 
     #[test]
     fn tool_panic() {
-        let collector = Collector::initialize(&Config::mock()).unwrap();
-        let mut edit_organizer = edit::Organizer::default();
-        let mut runner = ToolRunner::new(collector.reporter());
-        let snapshot = edit_organizer.snapshot();
         let config = Arc::new(crate::cli::Config::mock());
-        runner
-            .spawn_tool(
-                &mut edit_organizer,
-                MockTool::new().run(|_| panic!("test panic")).boxed(),
-                snapshot,
-                [].into(),
-                config.clone(),
-            )
-            .expect("tool spawn failed");
-        runner.process_tool_results(&mut edit_organizer);
-        let ir_count = edit_organizer.snapshot().iter().count();
-        assert_eq!(ir_count, 0, "edit applied when tool panicked");
+        let collector = Collector::initialize(&config).unwrap();
+        let mut ir = HarvestIR::default();
+        let mut runner = ToolRunner::new(collector.reporter());
+        let tool = MockTool::new().run(|_, _| panic!("test panic")).boxed();
+        let id = Id::new();
+        runner.spawn_tool(tool, Arc::new(ir.clone()), config.clone(), Vec::new(), id);
+        runner.process_tool_results(&mut ir);
+        let ir_count = ir.iter().count();
+        assert_eq!(ir_count, 0, "ir updated when tool panicked");
     }
 }

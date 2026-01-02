@@ -11,7 +11,7 @@ use harvest_translate::tools::try_cargo_build::CargoBuildResult;
 /// Returns an error if there are 0 or multiple CargoPackage representations.
 pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
     let cargo_packages: Vec<&RawDir> = ir
-        .get_all_by_representation::<CargoPackage>()
+        .get_by_representation::<CargoPackage>()
         .map(|(_, r)| &r.dir)
         .collect();
 
@@ -30,7 +30,7 @@ pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
 /// Returns an error if there are 0 or multiple RawSource representations.
 pub fn raw_source(ir: &HarvestIR) -> HarvestResult<&RawDir> {
     let raw_sources: Vec<&RawDir> = ir
-        .get_all_by_representation::<RawSource>()
+        .get_by_representation::<RawSource>()
         .map(|(_, r)| &r.dir)
         .collect();
 
@@ -45,7 +45,7 @@ pub fn raw_source(ir: &HarvestIR) -> HarvestResult<&RawDir> {
 /// Returns the build artifacts or an error if no results or multiple results are found.
 pub fn cargo_build_result(ir: &HarvestIR) -> Result<Vec<PathBuf>, String> {
     let build_results: Vec<Result<Vec<PathBuf>, String>> = ir
-        .get_all_by_representation::<CargoBuildResult>()
+        .get_by_representation::<CargoBuildResult>()
         .map(|(_, r)| r.result.clone())
         .collect();
 

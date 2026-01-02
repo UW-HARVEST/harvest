@@ -64,7 +64,7 @@ impl HarvestIR {
     }
 
     /// Returns all contained Representations of the given type.
-    pub fn get_all_by_representation<R: Representation>(&self) -> impl Iterator<Item = (Id, &R)> {
+    pub fn get_by_representation<R: Representation>(&self) -> impl Iterator<Item = (Id, &R)> {
         // TODO: Add a `TypeId -> Id` map to HarvestIR that allows us to look these up without
         // scanning through all the other representations.
         self.representations
@@ -130,10 +130,10 @@ mod tests {
     #[test]
     fn get_by_representation() {
         let mut ir = HarvestIR::default();
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let b = ir.add_representation(Box::new(IdRepresentation(1)));
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let d = ir.add_representation(Box::new(IdRepresentation(2)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let b = ir.insert_representation(Id::new(), Box::new(IdRepresentation(1)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let d = ir.insert_representation(Id::new(), Box::new(IdRepresentation(2)));
         assert_eq!(
             HashSet::from_iter(ir.get_by_representation::<IdRepresentation>()),
             HashSet::from([(b, &IdRepresentation(1)), (d, &IdRepresentation(2))])

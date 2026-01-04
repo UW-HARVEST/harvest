@@ -42,8 +42,10 @@ pub struct HarvestIR {
 }
 
 impl HarvestIR {
-    pub(crate) fn insert<R: Into<Arc<dyn Representation>>>(&mut self, id: Id, representation: R) {
+    /// Insert `representation` with `id` to IR.
+    pub fn insert_representation(&mut self, id: Id, representation: Box<dyn Representation>) -> Id {
         self.representations.insert(id, representation.into());
+        id
     }
 
     /// Returns an iterator over all [Representation] [Id]s
@@ -54,7 +56,7 @@ impl HarvestIR {
     /// Adds a representation with a new ID and returns the new ID.
     pub fn add_representation(&mut self, representation: Box<dyn Representation>) -> Id {
         let id = Id::new();
-        self.insert(id, representation);
+        self.insert_representation(id, representation);
         id
     }
 
@@ -71,6 +73,13 @@ impl HarvestIR {
         self.representations
             .iter()
             .filter_map(|(&i, r)| <dyn Any>::downcast_ref(&**r).map(|r| (i, r)))
+    }
+
+    /// Returns the representation with the given ID, if it is of the expected type.
+    pub fn get<R: Representation>(&self, id: Id) -> Option<&R> {
+        self.representations
+            .get(&id)
+            .and_then(|r| <dyn Any>::downcast_ref(&**r))
     }
 
     /// Returns an iterator over the IDs and representations in this IR.
@@ -124,10 +133,10 @@ pub(crate) mod tests {
     #[test]
     fn get_by_representation() {
         let mut ir = HarvestIR::default();
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let b = ir.add_representation(Box::new(IdRepresentation(1)));
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let d = ir.add_representation(Box::new(IdRepresentation(2)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let b = ir.insert_representation(Id::new(), Box::new(IdRepresentation(1)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let d = ir.insert_representation(Id::new(), Box::new(IdRepresentation(2)));
         assert_eq!(
             HashSet::from_iter(ir.get_by_representation::<IdRepresentation>()),
             HashSet::from([(b, &IdRepresentation(1)), (d, &IdRepresentation(2))])

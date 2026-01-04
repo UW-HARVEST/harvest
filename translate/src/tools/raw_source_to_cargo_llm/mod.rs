@@ -3,8 +3,8 @@
 
 use crate::cli::unknown_field_warning;
 use crate::load_raw_source::RawSource;
-use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_core::{Representation, fs::RawDir};
+use harvest_core::tools::{RunContext, Tool};
+use harvest_core::{Id, Representation, fs::RawDir};
 use llm::builder::{LLMBackend, LLMBuilder};
 use llm::chat::{ChatMessage, StructuredOutputFormat};
 use serde::{Deserialize, Serialize};
@@ -29,36 +29,24 @@ impl Tool for RawSourceToCargoLlm {
         "raw_source_to_cargo_llm"
     }
 
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        // We need a raw_source to be available, but we won't write any existing IDs.
-        match (
-            context.ir.get_by_representation::<ProjectKind>().next(),
-            context.ir.get_by_representation::<RawSource>().next(),
-        ) {
-            (Some(_), Some(_)) => MightWriteOutcome::Runnable([].into()),
-            _ => MightWriteOutcome::TryAgain,
-        }
-    }
-
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
         let config = &context.config.tools.raw_source_to_cargo_llm;
-        debug!("LLM Configuration {config:?}");
-        let in_dir = &context
+        log::debug!("LLM Configuration {config:?}");
+        // Get both inputs: RawSource and ProjectKind
+        let in_dir = context
             .ir_snapshot
-            .get_by_representation::<RawSource>()
-            .next()
-            .unwrap()
-            .1
-            .dir;
+            .get::<RawSource>(inputs[0])
+            .ok_or("No RawSource representation found in IR")?;
         let project_kind = context
             .ir_snapshot
-            .get_by_representation::<ProjectKind>()
-            .next()
-            .unwrap()
-            .1;
+            .get::<ProjectKind>(inputs[1])
+            .ok_or("No ProjectKind representation found in IR")?;
 
         // Use the llm crate to connect to Ollama.
-
         let output_format: StructuredOutputFormat = serde_json::from_str(STRUCTURED_OUTPUT_SCHEMA)?;
 
         // TODO: This is a workaround for a flaw in the current
@@ -105,7 +93,7 @@ impl Tool for RawSourceToCargoLlm {
         // Assemble the Ollama request.
         let mut request = vec!["Please translate the following C project into a Rust project including Cargo manifest:".into()];
         request.push(
-            serde_json::json!({"files": (&in_dir.files_recursive().iter().map(|(path, contents)| {
+            serde_json::json!({"files": (&in_dir.dir.files_recursive().iter().map(|(path, contents)| {
                 OutputFile {
                     path: path.clone(),
                     contents: String::from_utf8_lossy(contents).into(),
@@ -146,10 +134,7 @@ impl Tool for RawSourceToCargoLlm {
         for file in files.files {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
-        context
-            .ir_edit
-            .add_representation(Box::new(CargoPackage { dir: out_dir }));
-        Ok(())
+        Ok(Box::new(CargoPackage { dir: out_dir }))
     }
 }
 

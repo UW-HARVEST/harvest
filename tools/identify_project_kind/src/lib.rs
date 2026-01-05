@@ -21,7 +21,7 @@ impl Display for ProjectKind {
 
 impl Representation for ProjectKind {
     fn name(&self) -> &'static str {
-        "KindAndName"
+        "kind_and_name"
     }
 }
 

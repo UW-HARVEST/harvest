@@ -11,6 +11,7 @@ use llm::chat::{ChatMessage, StructuredOutputFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::read_to_string;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{debug, info, trace};
@@ -50,6 +51,14 @@ impl Tool for RawSourceToCargoLlm {
 
         // Use the llm crate to connect to Ollama.
 
+        let (config_prompt, builtin_prompt) = match project_kind {
+            ProjectKind::Executable => (config.prompt_executable, SYSTEM_PROMPT_EXECUTABLE),
+            ProjectKind::Library => (config.prompt_library, SYSTEM_PROMPT_LIBRARY),
+        };
+        let system_prompt = config_prompt
+            .map(read_to_string)
+            .transpose()?
+            .unwrap_or_else(|| builtin_prompt.to_owned());
         let output_format: StructuredOutputFormat = serde_json::from_str(STRUCTURED_OUTPUT_SCHEMA)?;
 
         // TODO: This is a workaround for a flaw in the current
@@ -67,17 +76,9 @@ impl Tool for RawSourceToCargoLlm {
                 .backend(backend)
                 .model(&config.model)
                 .max_tokens(config.max_tokens)
+                .system(system_prompt)
                 .temperature(0.0) // Suggestion from https://ollama.com/blog/structured-outputs
                 .schema(output_format);
-
-            match project_kind {
-                ProjectKind::Executable => {
-                    llm_builder = llm_builder.system(SYSTEM_PROMPT_EXECUTABLE);
-                }
-                ProjectKind::Library => {
-                    llm_builder = llm_builder.system(SYSTEM_PROMPT_LIBRARY);
-                }
-            }
 
             if let Some(ref address) = config.address
                 && !address.is_empty()
@@ -167,6 +168,14 @@ pub struct Config {
     /// Maximum output tokens.
     pub max_tokens: u32,
 
+    /// System prompt to use for executable projects. If not specified, a built-in default prompt
+    /// will be used.
+    pub prompt_executable: Option<PathBuf>,
+
+    /// System prompt to use for library projects. If not specified, a built-in default prompt will
+    /// be used.
+    pub prompt_library: Option<PathBuf>,
+
     #[serde(flatten)]
     unknown: HashMap<String, Value>,
 }
@@ -184,6 +193,8 @@ impl Config {
             backend: "mock_llm".into(),
             model: "mock_model".into(),
             max_tokens: 1000,
+            prompt_executable: None,
+            prompt_library: None,
             unknown: HashMap::new(),
         }
     }

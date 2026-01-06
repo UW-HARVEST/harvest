@@ -16,7 +16,7 @@ impl std::fmt::Display for RawSource {
 
 impl Representation for RawSource {
     fn name(&self) -> &'static str {
-        "RawSource"
+        "raw_source"
     }
 
     fn materialize(&self, path: &Path) -> std::io::Result<()> {
@@ -38,7 +38,7 @@ impl std::fmt::Display for CargoPackage {
 
 impl Representation for CargoPackage {
     fn name(&self) -> &'static str {
-        "CargoPackage"
+        "cargo_package"
     }
 
     fn materialize(&self, path: &Path) -> std::io::Result<()> {

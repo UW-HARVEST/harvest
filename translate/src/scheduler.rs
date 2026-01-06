@@ -13,6 +13,8 @@ use tracing::{debug, info};
 
 #[derive(Default)]
 pub struct Scheduler {
+    /// Queue of tool invocations to be run.
+    /// Each entry is (ID for tool's output, IDs of tool's inputs, tool instance).
     queued_invocations: Vec<(Id, Vec<Id>, Box<dyn Tool>)>,
 }
 
@@ -62,9 +64,7 @@ impl Scheduler {
             if !runner.process_tool_results(ir) {
                 // No tools are running now, which also indicates that no tools are schedulable.
                 if !self.queued_invocations.is_empty() {
-                    return Err(
-                        "No tools are running, yet tools are still scheduled to run. 
-                    Something has gone terrible wrong."
+                    return Err("No tools are running, yet tools are still scheduled to run.\nSomething has gone terrible wrong."
                             .into(),
                     );
                 }
@@ -89,6 +89,7 @@ impl Scheduler {
     }
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
 mod tests {
     use super::*;

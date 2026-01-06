@@ -64,8 +64,9 @@ impl ToolRunner {
                 continue;
             };
             self.ir_version += 1;
-            self.reporter.report_ir_version(self.ir_version, ir);
+            // Need to add new representation before reporting IR version, so that reporter can see it.
             ir.insert_representation(invocation.id, representation);
+            self.reporter.report_ir_version(self.ir_version, ir);
         }
         trace!(
             "Finished processing tool results. Current invocations: {:?}, IR keys: {:?}",

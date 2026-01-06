@@ -32,21 +32,13 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
-    match scheduler.run_all(&mut runner, &mut ir, config) {
-        Ok(()) => {
-            // Cleanup
-            drop(scheduler);
-            drop(runner);
-            collector.diagnostics(); // TODO: Return this value (see issue 51)
-            Ok(ir)
-        }
-        Err(e) => {
-            error!("Error during transpilation: {}", e);
-            // Cleanup
-            drop(scheduler);
-            drop(runner);
-            collector.diagnostics(); // TODO: Return this value (see issue 51)
-            Err(e)
-        }
+    let result = scheduler.run_all(&mut runner, &mut ir, config);
+    drop(scheduler);
+    drop(runner);
+    collector.diagnostics(); // TODO: Return this value (see issue 51)
+    if let Err(e) = result {
+        error!("Error during transpilation: {e}");
+        return Err(e);
     }
+    Ok(ir)
 }

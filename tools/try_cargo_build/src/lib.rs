@@ -1,8 +1,8 @@
 //! Checks if a generated Rust project builds by materializing
 //! it to a tempdir and running `cargo build --release`.
 use full_source::CargoPackage;
-use harvest_core::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
-use harvest_core::{HarvestIR, Representation, fs::RawDir};
+use harvest_core::tools::{RunContext, Tool};
+use harvest_core::{Id, Representation};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
@@ -78,55 +78,31 @@ fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::e
         Ok(Err(error_message))
     }
 }
-/// Returns the CargoPackage representation in IR.
-/// If there is not exactly 1 CargoPackage representation,
-/// return an error.
-fn raw_cargo_package(ir: &HarvestIR) -> Result<&RawDir, Box<dyn std::error::Error>> {
-    let cargo_packages: Vec<&RawDir> = ir
-        .get_by_representation::<CargoPackage>()
-        .map(|(_, r)| &r.dir)
-        .collect();
-
-    match cargo_packages.len() {
-        0 => Err("No CargoPackage representation found in IR".into()),
-        1 => Ok(cargo_packages[0]),
-        n => Err(format!(
-            "Found {} CargoPackage representations, expected at most 1",
-            n
-        )
-        .into()),
-    }
-}
 
 impl Tool for TryCargoBuild {
     fn name(&self) -> &'static str {
         "try_cargo_build"
     }
 
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        // We need a cargo_package to be available, but we won't write any existing IDs.
-        match raw_cargo_package(context.ir) {
-            Err(_) => MightWriteOutcome::TryAgain,
-            Ok(_) => MightWriteOutcome::Runnable([].into()),
-        }
-    }
-
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
-        // Get cargo package representation
-        let cargo_package = raw_cargo_package(&context.ir_snapshot)?;
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        // Get cargo package representation (the first and only arg of try_cargo_build)
+        let cargo_package = context
+            .ir_snapshot
+            .get::<CargoPackage>(inputs[0])
+            .ok_or("No CargoPackage representation found in IR")?;
         let output_path = context.config.output.clone();
         cargo_package.materialize(&output_path)?;
 
         // Validate that the Rust project builds
         let compilation_result = try_cargo_build(&output_path)?;
-        // Write result to IR
-        context
-            .ir_edit
-            .add_representation(Box::new(CargoBuildResult {
-                result: compilation_result,
-            }));
-
-        Ok(())
+        let repr = CargoBuildResult {
+            result: compilation_result,
+        };
+        Ok(Box::new(repr))
     }
 }
 

@@ -102,16 +102,17 @@ impl Tool for RawSourceToCargoLlm {
         };
 
         // Assemble the Ollama request.
+        let files = collect_source_files(in_dir);
+        let tips = collect_tips(in_dir);
         let mut request = vec!["Please translate the following C project into a Rust project including Cargo manifest:".into()];
-        request.push(
-            serde_json::json!({"files": (&in_dir.files_recursive().iter().map(|(path, contents)| {
-                OutputFile {
-                    path: path.clone(),
-                    contents: String::from_utf8_lossy(contents).into(),
-                }
-        }).collect::<Vec<OutputFile>>())})
-            .to_string(),
-        );
+        if !tips.is_empty() {
+            let tips_payload: Vec<_> = tips
+                .iter()
+                .map(|tip| serde_json::json!({"path": tip.path, "text": tip.tip}))
+                .collect();
+            request.push(serde_json::json!({"translation_tips": tips_payload}).to_string());
+        }
+        request.push(serde_json::json!({"files": files}).to_string());
         // "return as JSON" is suggested by https://ollama.com/blog/structured-outputs
         request.push("return as JSON".into());
         let request: Vec<_> = request
@@ -227,4 +228,54 @@ impl Config {
 struct OutputFile {
     contents: String,
     path: PathBuf,
+}
+
+/// A hint provided alongside a source file.
+struct FileTip {
+    path: PathBuf,
+    tip: String,
+}
+
+#[derive(Deserialize)]
+struct TipsJson {
+    file: String,
+}
+
+fn collect_source_files(in_dir: &RawDir) -> Vec<OutputFile> {
+    in_dir
+        .files_recursive()
+        .into_iter()
+        .filter(|(path, _)| is_c_source_or_header(path))
+        .map(|(path, contents)| OutputFile {
+            path,
+            contents: String::from_utf8_lossy(contents).into(),
+        })
+        .collect()
+}
+
+fn is_c_source_or_header(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()).map(|s| s.to_ascii_lowercase()),
+        Some(ref ext) if ext == "c" || ext == "h"
+    )
+}
+
+fn collect_tips(in_dir: &RawDir) -> Vec<FileTip> {
+    let mut tips = Vec::new();
+    for (path, contents) in in_dir.files_recursive().into_iter() {
+        let path_string = path.to_string_lossy();
+        let Some(stripped) = path_string.strip_suffix(".tips.json") else {
+            continue;
+        };
+        match serde_json::from_slice::<TipsJson>(contents) {
+            Ok(parsed) => {
+                tips.push(FileTip {
+                    path: PathBuf::from(stripped),
+                    tip: parsed.file,
+                });
+            }
+            Err(err) => debug!("Ignoring tips file {}: {err}", path.display()),
+        }
+    }
+    tips
 }

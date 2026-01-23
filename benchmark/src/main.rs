@@ -21,9 +21,12 @@ use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
 use harvest_ir::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
-use std::fs::File;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Encapsulate important results from transpilation
 pub struct TranspilationResult {
@@ -38,8 +41,12 @@ impl TranspilationResult {
     pub fn from_ir(ir: &HarvestIR) -> Self {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
-            Ok(artifacts) => (true, artifacts[0].clone(), None), // should check that there is only 1 artifact
-            Err(err) => (false, PathBuf::new(), Some(err)),
+            Ok(artifacts) => {
+                // Prefer the first artifact as the "binary" path for executable cases.
+                let first = artifacts.get(0).cloned().unwrap_or_default();
+                (true, first, None)
+            }
+            Err(err) => (false, PathBuf::new(), Some(err.clone())),
         };
 
         Self {
@@ -172,6 +179,218 @@ fn run_test_validation(
     (test_results, error_messages, passed_tests)
 }
 
+/// For library cases, copy the built shared object into the candidate directory so the provided
+/// cando2 runner can load it, build the runner, and execute each test vector.
+fn run_library_validation(
+    program_name: &str,
+    candidate_dir: &Path,
+    translation_result: &TranspilationResult,
+    test_cases: &[crate::harness::TestCase],
+    timeout: u64,
+) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
+    // Locate a shared library artifact built in this output directory.
+    let pkg_name = read_package_name(&candidate_dir.join("Cargo.toml"))
+        .unwrap_or_else(|| program_name.to_string());
+    let target_release = candidate_dir.join("target").join("release");
+    let expected_stem = format!("lib{}", pkg_name.replace('-', "_"));
+    let libs: Vec<_> = fs::read_dir(&target_release)
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            format!("Failed to read {}: {}", target_release.display(), e).into()
+        })?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| matches!(ext, "so" | "dylib" | "dll"))
+                .unwrap_or(false)
+        })
+        .collect();
+    let desired_stem =
+        read_runner_library_stem(candidate_dir).unwrap_or_else(|| expected_stem.clone());
+    let lib_path = libs
+        .iter()
+        .find(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| stem == desired_stem)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .or_else(|| {
+            libs.iter()
+                .find(|p| {
+                    p.file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|stem| stem == expected_stem)
+                        .unwrap_or(false)
+                })
+                .cloned()
+        })
+        .or_else(|| libs.get(0).cloned())
+        .ok_or_else(|| {
+            format!(
+                "No shared library found in {} (looked for stems {} or {})",
+                target_release.display(),
+                desired_stem,
+                expected_stem
+            )
+        })?;
+
+    // Copy it into CANDIDATE_DIR/translated_rust/target/release/lib<name>.so so the runner finds it.
+    let rust_artifacts_dir = candidate_dir
+        .join("translated_rust")
+        .join("target")
+        .join("release");
+    std::fs::create_dir_all(&rust_artifacts_dir)?;
+    let desired_stem = read_runner_library_stem(candidate_dir)
+        .unwrap_or_else(|| format!("lib{}", pkg_name.replace('-', "_")));
+    let dest_name = format!(
+        "{}.{}",
+        desired_stem,
+        lib_path.extension().unwrap().to_string_lossy()
+    );
+    let dest_path = rust_artifacts_dir.join(dest_name);
+    std::fs::copy(lib_path, &dest_path).map_err(|e| -> Box<dyn std::error::Error> {
+        format!(
+            "Failed to copy library artifact to {}: {}",
+            dest_path.display(),
+            e
+        )
+        .into()
+    })?;
+
+    // Build the provided runner.
+    let runner_dir = candidate_dir.join("runner");
+    let runner_target_dir = translation_result
+        .rust_binary_path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("runner_build"))
+        .unwrap_or_else(|| candidate_dir.join("runner_build"));
+    std::fs::create_dir_all(&runner_target_dir)?;
+    // Ensure cando2 is available in output and manifests point to it.
+    let cando_dst = candidate_dir.join("translated_tools").join("cando2");
+    if !cando_dst.exists() {
+        let cando_src = find_cando2_source(candidate_dir).ok_or_else(|| {
+            "Unable to locate cando2 source (searched ancestors for tools/cando2)".to_string()
+        })?;
+        copy_optional_dir(&cando_src, &cando_dst)?;
+    }
+    let new_dep_path = "../translated_tools/cando2";
+    rewrite_cando_dep(&runner_dir.join("Cargo.toml"), new_dep_path)?;
+    rewrite_cando_dep(&runner_dir.join("fuzz").join("Cargo.toml"), new_dep_path)?;
+    let status = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("--target-dir")
+        .arg(&runner_target_dir)
+        .current_dir(&runner_dir)
+        .status()
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            format!("Failed to build runner in {}: {}", runner_dir.display(), e).into()
+        })?;
+    if !status.success() {
+        return Err(format!("Runner build failed with status {:?}", status.code()).into());
+    }
+    let runner_bin = {
+        let pkg_name = read_package_name(&runner_dir.join("Cargo.toml"));
+        let candidate = runner_target_dir.join("release");
+        if let Some(name) = pkg_name {
+            let named = candidate.join(&name);
+            if named.exists() {
+                named
+            } else {
+                candidate.join("runner")
+            }
+        } else {
+            candidate.join("runner")
+        }
+    };
+    if !runner_bin.exists() {
+        return Err(format!("Runner binary not found at {}", runner_bin.display()).into());
+    }
+
+    // Run tests via the runner.
+    let mut test_results = Vec::new();
+    let mut error_messages = Vec::new();
+    let mut passed_tests = 0;
+    let timeout = Duration::from_secs(timeout);
+    let ld_path = format!(
+        "{}:{}",
+        rust_artifacts_dir.display(),
+        candidate_dir.join("target").join("release").display()
+    );
+
+    for (i, test_case) in test_cases.iter().enumerate() {
+        log::info!(
+            "Running library test case {} ({} of {})...",
+            test_case.filename,
+            i + 1,
+            test_cases.len()
+        );
+        let mut cmd = std::process::Command::new(&runner_bin);
+        cmd.arg("lib")
+            .arg("-c")
+            .arg(&test_case.filename)
+            .current_dir(&runner_dir)
+            .env("RUST_ARTIFACTS", "1")
+            .env("LD_LIBRARY_PATH", &ld_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| -> Box<dyn std::error::Error> {
+            format!("Failed to spawn runner for {}: {}", test_case.filename, e).into()
+        })?;
+
+        // Apply timeout.
+        use wait_timeout::ChildExt;
+        let output = match child.wait_timeout(timeout) {
+            Ok(Some(_)) => child
+                .wait_with_output()
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("Failed to read runner output: {}", e).into()
+                })?,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Runner timed out after {} seconds", timeout.as_secs()).into());
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Error waiting for runner: {}", e).into());
+            }
+        };
+
+        if output.status.success() {
+            passed_tests += 1;
+            test_results.push(TestResult {
+                filename: test_case.filename.clone(),
+                passed: true,
+            });
+        } else {
+            test_results.push(TestResult {
+                filename: test_case.filename.clone(),
+                passed: false,
+            });
+            let actual_stdout = String::from_utf8_lossy(&output.stdout);
+            let actual_stderr = String::from_utf8_lossy(&output.stderr);
+            let error = format!(
+                "Runner failed for {}: status {:?}\nstdout:\n{}\nstderr:\n{}",
+                test_case.filename,
+                output.status.code(),
+                actual_stdout,
+                actual_stderr
+            );
+            error_messages.push(error);
+        }
+    }
+
+    Ok((test_results, error_messages, passed_tests))
+}
+
 /// Run all benchmarks for a single program
 fn benchmark_single_program(
     program_dir: &Path,
@@ -253,13 +472,47 @@ fn benchmark_single_program(
 
     assert!(translation_result.rust_binary_path.exists());
 
-    // Run validation tests
-    let (test_results, error_messages, passed_tests) = run_test_validation(
-        &translation_result.rust_binary_path,
-        &test_cases,
-        timeout,
-        &output_dir,
-    );
+    let is_lib = program_name.ends_with("_lib");
+
+    // Library and executable validation differ.
+    let (test_results, error_messages, passed_tests) = if is_lib {
+        // Copy runner and test_vectors for convenience and for cando2 expectations.
+        let _ = copy_optional_dir(&program_dir.join("runner"), &output_dir.join("runner"));
+        let _ = copy_optional_dir(
+            &program_dir.join("test_vectors"),
+            &output_dir.join("test_vectors"),
+        );
+        if let Err(e) = ensure_cdylib(&output_dir) {
+            result.error_message = Some(format!("Failed to prepare cdylib: {e}"));
+            return result;
+        }
+        // Rebuild after ensuring cdylib.
+        let _ = Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .current_dir(&output_dir)
+            .status();
+        match run_library_validation(
+            &program_name,
+            &output_dir,
+            &translation_result,
+            &test_cases,
+            timeout,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                result.error_message = Some(e.to_string());
+                return result;
+            }
+        }
+    } else {
+        run_test_validation(
+            &translation_result.rust_binary_path,
+            &test_cases,
+            timeout,
+            &output_dir,
+        )
+    };
 
     result.test_results = test_results;
     result.passed_tests = passed_tests;
@@ -309,9 +562,13 @@ fn run(args: Args) -> HarvestResult<()> {
     log::info!("Input directory: {}", args.input_dir.display());
     log::info!("Output directory: {}", args.output_dir.display());
 
-    // Get the programs to evaluate
-    // Should be in directories that are immediate children of input_dir
-    let mut program_dirs = collect_program_dirs(&args.input_dir)?;
+    // Get the programs to evaluate.
+    // If the input itself is a single test case root, run just that; otherwise, run children.
+    let mut program_dirs = if parse_benchmark_dir(&args.input_dir).is_ok() {
+        vec![args.input_dir.clone()]
+    } else {
+        collect_program_dirs(&args.input_dir)?
+    };
 
     if args.no_lib {
         let before = program_dirs.len();
@@ -368,4 +625,120 @@ fn status_emoji(success: bool) -> &'static str {
         true => "✅",
         false => "❌",
     }
+}
+
+fn copy_optional_dir(src: &Path, dst: &Path) -> HarvestResult<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    fn recurse(src: &Path, dst: &Path) -> HarvestResult<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let path = entry.path();
+            let target = dst.join(entry.file_name());
+            if path.is_dir() {
+                recurse(&path, &target)?;
+            } else {
+                fs::copy(&path, &target)?;
+            }
+        }
+        Ok(())
+    }
+    recurse(src, dst)
+}
+
+/// Ensure the Cargo.toml in the output dir builds a cdylib (required for runner loading).
+fn ensure_cdylib(output_dir: &Path) -> HarvestResult<()> {
+    let manifest = output_dir.join("Cargo.toml");
+    if !manifest.exists() {
+        return Err(format!("Cargo.toml not found in {}", output_dir.display()).into());
+    }
+    let mut contents = fs::read_to_string(&manifest)?;
+    if contents.contains("crate-type") {
+        return Ok(());
+    }
+    contents.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
+    fs::write(&manifest, contents)?;
+    Ok(())
+}
+
+/// Extract package name from Cargo.toml (best-effort).
+fn read_package_name(manifest: &Path) -> Option<String> {
+    let contents = fs::read_to_string(manifest).ok()?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if in_package && trimmed.starts_with("name") {
+            if let Some((_, rest)) = trimmed.split_once('=') {
+                let val = rest.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Rewrite cando2 path dependency in a Cargo.toml to point to a local copied tool.
+fn rewrite_cando_dep(manifest: &Path, new_path: &str) -> HarvestResult<()> {
+    if !manifest.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(manifest)?;
+    let mut changed = false;
+    let mut new_lines = Vec::new();
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("cando2") && trimmed.contains("path") {
+            new_lines.push(format!("cando2 = {{ path = \"{}\" }}", new_path));
+            changed = true;
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+    if changed {
+        fs::write(manifest, new_lines.join("\n"))?;
+    }
+    Ok(())
+}
+
+/// Find the cando2 source directory by walking up ancestors from `start` and looking for
+/// `tools/cando2/Cargo.toml` or `Test-Corpus/tools/cando2/Cargo.toml`.
+fn find_cando2_source(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors() {
+        let candidates = [
+            ancestor.join("tools").join("cando2"),
+            ancestor.join("Test-Corpus").join("tools").join("cando2"),
+        ];
+        for cand in candidates {
+            if cand.join("Cargo.toml").exists() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Parse runner source to find an explicit `library: "<name>"` stem if provided.
+fn read_runner_library_stem(candidate_dir: &Path) -> Option<String> {
+    let runner_main = candidate_dir.join("runner").join("src").join("main.rs");
+    let contents = fs::read_to_string(&runner_main).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("library:") {
+            if let Some((_, val)) = rest.split_once('"') {
+                let name = val.split('"').next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    return Some(format!("lib{}", name));
+                }
+            }
+        }
+    }
+    None
 }

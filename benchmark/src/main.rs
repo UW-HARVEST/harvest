@@ -277,6 +277,8 @@ fn run_library_validation(
         })?;
         copy_optional_dir(&cando_src, &cando_dst)?;
     }
+    add_local_workspace_guard(&runner_dir.join("Cargo.toml"))?;
+    add_local_workspace_guard(&runner_dir.join("fuzz").join("Cargo.toml"))?;
     let new_dep_path = "../translated_tools/cando2";
     rewrite_cando_dep(&runner_dir.join("Cargo.toml"), new_dep_path)?;
     rewrite_cando_dep(&runner_dir.join("fuzz").join("Cargo.toml"), new_dep_path)?;
@@ -408,6 +410,11 @@ fn benchmark_single_program(
 
     log::info!("Translating program: {}", program_name);
     log::info!("Input directory: {}", program_dir.display());
+    let is_lib = program_name.ends_with("_lib");
+    log::info!(
+        "Detected project type: {}",
+        if is_lib { "library" } else { "executable" }
+    );
 
     // Get program output directory
     let output_dir = output_root_dir.join(&program_name);
@@ -476,6 +483,8 @@ fn benchmark_single_program(
 
     // Library and executable validation differ.
     let (test_results, error_messages, passed_tests) = if is_lib {
+        // Prevent cargo from attaching to the parent workspace when building generated outputs.
+        let _ = add_local_workspace_guard(&output_dir.join("Cargo.toml"));
         // Copy runner and test_vectors for convenience and for cando2 expectations.
         let _ = copy_optional_dir(&program_dir.join("runner"), &output_dir.join("runner"));
         let _ = copy_optional_dir(
@@ -741,4 +750,22 @@ fn read_runner_library_stem(candidate_dir: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// Ensure the given manifest opts out of any parent workspace by declaring an empty workspace.
+fn add_local_workspace_guard(manifest: &Path) -> HarvestResult<()> {
+    if !manifest.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(manifest)?;
+    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+        return Ok(());
+    }
+    let mut updated = contents;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("[workspace]\n");
+    fs::write(manifest, updated)?;
+    Ok(())
 }

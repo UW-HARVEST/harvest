@@ -3,6 +3,7 @@
 use crate::tools::raw_source_to_cargo_llm::CargoPackage;
 use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
 use harvest_ir::{HarvestIR, Representation, fs::RawDir};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
@@ -51,6 +52,11 @@ fn parse_compiled_artifacts(stdout: &[u8]) -> Result<Vec<PathBuf>, Box<dyn std::
 /// - If there is an error running cargo, it returns Err.
 fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
+
+    // Prevent accidentally picking up a parent workspace by marking this project as its own root.
+    add_local_workspace_guard(&project_path.join("Cargo.toml"))?;
+    // Normalize the package name to match the output directory so shared library names align with runner expectations.
+    normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
 
     // Run cargo build in the project directory
     let output = Command::new("cargo")
@@ -158,4 +164,66 @@ impl Representation for CargoBuildResult {
     fn materialize(&self, _path: &Path) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Add an empty `[workspace]` section to the manifest if one is not present, so that
+/// Cargo treats the generated project as a workspace root instead of trying to join
+/// any parent workspace (which would fail because this package is not listed).
+fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
+    if !manifest.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(manifest)?;
+    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+        return Ok(());
+    }
+    let mut updated = contents;
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("[workspace]\n");
+    fs::write(manifest, updated)
+}
+
+/// Force the package name to match the output directory name. This keeps the produced
+/// `lib<name>.so` aligned with the test runner's expected library stem.
+fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Result<()> {
+    if !manifest.exists() {
+        return Ok(());
+    }
+    let desired = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    if desired.is_empty() {
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(manifest)?;
+    let mut lines = Vec::new();
+    let mut in_package = false;
+    let mut changed = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            lines.push(line.to_string());
+            continue;
+        }
+        if in_package && trimmed.starts_with("name") {
+            lines.push(format!("name = \"{}\"", desired));
+            changed = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if changed {
+        let mut updated = lines.join("\n");
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        fs::write(manifest, updated)?;
+    }
+    Ok(())
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+c_ast.workspace = true
 full_source.workspace = true
 harvest_core.workspace = true
 identify_project_kind.workspace = true

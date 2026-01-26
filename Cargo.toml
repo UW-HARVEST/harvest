@@ -3,6 +3,7 @@ members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kin
 resolver = "3"
 
 [workspace.dependencies]
+c_ast = { path = "tools/c_ast" }
 clap = { version = "4.5.45", features = ["derive"] }
 harvest_core = { path = "core" }
 harvest_translate = { path = "translate" }

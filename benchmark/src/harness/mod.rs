@@ -175,6 +175,16 @@ pub fn parse_test_vectors<P: AsRef<Path>>(directory_path: P) -> HarvestResult<Ve
         })?;
         let file_path = entry.path();
 
+        // Only accept plain .json files (exclude backups like .json.bak, directories, etc.)
+        if file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext != "json")
+            .unwrap_or(true)
+        {
+            continue;
+        }
+
         // Try to parse the file as a test case JSON
         if let Ok(test_case) = parse_test_case_json(&file_path) {
             test_cases.push(test_case);

@@ -911,6 +911,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "modular_translation_llm"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "identify_project_kind",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate"]
+members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/modular_translation_llm", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -9,6 +9,7 @@ harvest_translate = { path = "translate" }
 full_source = { path = "tools/full_source" }
 identify_project_kind = { path = "tools/identify_project_kind" }
 load_raw_source = { path = "tools/load_raw_source" }
+modular_translation_llm = { path = "tools/modular_translation_llm" }
 raw_source_to_cargo_llm = { path = "tools/raw_source_to_cargo_llm" }
 try_cargo_build = { path = "tools/try_cargo_build" }
 log = "0.4.28"

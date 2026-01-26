@@ -185,17 +185,21 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
     fs::write(manifest, updated)
 }
 
-/// Force the package name to match the output directory name. This keeps the produced
-/// `lib<name>.so` aligned with the test runner's expected library stem.
+/// Force the package name to match the output directory name (sanitized). This keeps the produced
+/// `lib<name>.so` aligned with the test runner's expected library stem and avoids Cargo name errors.
 fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Result<()> {
     if !manifest.exists() {
         return Ok(());
     }
-    let desired = project_dir
+    let desired_raw = project_dir
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_string();
+    if desired_raw.is_empty() {
+        return Ok(());
+    }
+    let desired = sanitize_package_name(&desired_raw);
     if desired.is_empty() {
         return Ok(());
     }
@@ -226,4 +230,21 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
         fs::write(manifest, updated)?;
     }
     Ok(())
+}
+
+/// Sanitize a package name so Cargo accepts it:
+/// - replace invalid chars with '_'
+/// - if it starts with a digit or '-', prefix with '_'
+fn sanitize_package_name(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
+            _ => '_',
+        })
+        .collect();
+    if s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+        s.insert(0, '_');
+    }
+    s
 }

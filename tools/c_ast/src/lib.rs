@@ -1,7 +1,7 @@
 use clang_ast::Node;
 use harvest_core::{
     Id, Representation,
-    tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool},
+    tools::{RunContext, Tool},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -117,88 +117,84 @@ impl Tool for ParseToAst {
         "parse_to_ast"
     }
 
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        if context
-            .ir
-            .get_by_representation::<full_source::RawSource>()
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        // Expect exactly one input: the RawSource representation
+        let source_id = inputs
+            .into_iter()
             .next()
-            .is_some()
-        {
-            MightWriteOutcome::Runnable([].into())
-        } else {
-            MightWriteOutcome::TryAgain
-        }
-    }
+            .ok_or("parse_to_ast requires exactly one input")?;
 
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
-        for (id, rs) in context
+        let rs = context
             .ir_snapshot
-            .get_by_representation::<full_source::RawSource>()
-        {
-            let working_dir = tempfile::TempDir::new()?;
+            .get::<full_source::RawSource>(source_id)
+            .ok_or("Expected RawSource representation")?;
 
-            let src_dir = tempfile::TempDir::new()?;
-            rs.dir.materialize(src_dir.path())?;
-            let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
+        let working_dir = tempfile::TempDir::new()?;
 
-            Command::new("cmake")
-                .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
-                .arg("-S")
-                .arg(src_dir.path())
-                .arg("-B")
-                .arg(working_dir.path())
-                .output()?;
+        let src_dir = tempfile::TempDir::new()?;
+        rs.dir.materialize(src_dir.path())?;
+        let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
 
-            #[derive(Deserialize, Debug)]
-            struct CompileCommand {
-                command: String,
-                file: String,
-            }
-            let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
-                working_dir.path().join("compile_commands.json"),
-            )?)?;
+        Command::new("cmake")
+            .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
+            .arg("-S")
+            .arg(src_dir.path())
+            .arg("-B")
+            .arg(working_dir.path())
+            .output()?;
 
-            let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
-
-            info!(
-                "Parsing {} files: {}",
-                ccs.len(),
-                ccs.iter()
-                    .map(|cc| cc.file.as_str())
-                    .collect::<Vec<&str>>()
-                    .join(", ")
-            );
-
-            for cc in ccs {
-                let file = cc.file.replace(src_dir_prefix.as_str(), "");
-                let includes = cc
-                    .command
-                    .split(" ")
-                    .filter(|p| p.starts_with("-I"))
-                    .map(|p| p.replace(src_dir_prefix.as_str(), ""));
-
-                let mut clang_cmd = Command::new("clang");
-                let clang_cmd = clang_cmd
-                    .current_dir(src_dir.path())
-                    .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
-                    .args(includes)
-                    .arg(&file)
-                    .stderr(Stdio::null())
-                    .stdout(Stdio::piped());
-                let mut clang = clang_cmd.spawn()?;
-                let mut ast: clang_ast::Node<Clang> =
-                    serde_json::from_reader(clang.stdout.take().unwrap())?;
-                clang.wait()?;
-                annotate_ast(&mut ast);
-                info!("Parsed {file}");
-                asts.insert(file, ast);
-            }
-
-            context.ir_edit.add_representation(Box::new(ClangAst {
-                source_representation: id,
-                asts,
-            }));
+        #[derive(Deserialize, Debug)]
+        struct CompileCommand {
+            command: String,
+            file: String,
         }
-        Ok(())
+        let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
+            working_dir.path().join("compile_commands.json"),
+        )?)?;
+
+        let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
+
+        info!(
+            "Parsing {} files: {}",
+            ccs.len(),
+            ccs.iter()
+                .map(|cc| cc.file.as_str())
+                .collect::<Vec<&str>>()
+                .join(", ")
+        );
+
+        for cc in ccs {
+            let file = cc.file.replace(src_dir_prefix.as_str(), "");
+            let includes = cc
+                .command
+                .split(" ")
+                .filter(|p| p.starts_with("-I"))
+                .map(|p| p.replace(src_dir_prefix.as_str(), ""));
+
+            let mut clang_cmd = Command::new("clang");
+            let clang_cmd = clang_cmd
+                .current_dir(src_dir.path())
+                .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
+                .args(includes)
+                .arg(&file)
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped());
+            let mut clang = clang_cmd.spawn()?;
+            let mut ast: clang_ast::Node<Clang> =
+                serde_json::from_reader(clang.stdout.take().unwrap())?;
+            clang.wait()?;
+            annotate_ast(&mut ast);
+            info!("Parsed {file}");
+            asts.insert(file, ast);
+        }
+
+        Ok(Box::new(ClangAst {
+            source_representation: source_id,
+            asts,
+        }))
     }
 }

@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 c_ast.workspace = true
+clang-ast = { version = "0.1.35", features = ["serde"] }
 full_source.workspace = true
 harvest_core.workspace = true
 identify_project_kind.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tracing = "0.1"
 
 [lints]
 workspace = true

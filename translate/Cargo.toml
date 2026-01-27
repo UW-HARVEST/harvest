@@ -25,6 +25,8 @@ load_raw_source = { version = "0.1.0", path = "../tools/load_raw_source" }
 identify_project_kind = { version = "0.1.0", path = "../tools/identify_project_kind" }
 try_cargo_build = { version = "0.1.0", path = "../tools/try_cargo_build" }
 raw_source_to_cargo_llm = { version = "0.1.0", path = "../tools/raw_source_to_cargo_llm" }
+c_ast = { version = "0.1.0", path = "../tools/c_ast" }
+modular_translation_llm = { version = "0.1.0", path = "../tools/modular_translation_llm" }
 
 [lints]
 workspace = true

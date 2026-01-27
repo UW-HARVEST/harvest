@@ -7,6 +7,17 @@ pub struct RawSource {
     pub dir: RawDir,
 }
 
+impl RawSource {
+    /// Returns a set of all file paths in the source directory.
+    pub fn file_paths(&self) -> std::collections::HashSet<String> {
+        self.dir
+            .files_recursive()
+            .iter()
+            .map(|(path, _)| path.to_string_lossy().to_string())
+            .collect()
+    }
+}
+
 impl std::fmt::Display for RawSource {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "Raw C source:")?;

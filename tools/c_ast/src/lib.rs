@@ -42,6 +42,24 @@ pub enum Clang {
         qtype: QualType,
         annotation: Option<FunctionAnnotation>,
     },
+    RecordDecl {
+        loc: Option<clang_ast::SourceLocation>,
+        range: Option<clang_ast::SourceRange>,
+        name: Option<String>,
+        #[serde(rename = "tagUsed")]
+        tag_used: Option<String>,
+        annotation: Option<String>,
+    },
+    VarDecl {
+        loc: Option<clang_ast::SourceLocation>,
+        range: Option<clang_ast::SourceRange>,
+        name: String,
+        #[serde(rename = "type")]
+        qtype: QualType,
+        #[serde(rename = "storageClass")]
+        storage_class: Option<String>,
+        annotation: Option<String>,
+    },
     ParmVarDecl {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
@@ -90,7 +108,7 @@ fn annotate_ast(ast: &mut Node<Clang>) {
 #[derive(Serialize)]
 pub struct ClangAst {
     pub asts: HashMap<String, Node<Clang>>,
-    pub source_representation: Id,
+    // pub source_representation: Id,
 }
 
 impl std::fmt::Display for ClangAst {
@@ -123,14 +141,9 @@ impl Tool for ParseToAst {
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
         // Expect exactly one input: the RawSource representation
-        let source_id = inputs
-            .into_iter()
-            .next()
-            .ok_or("parse_to_ast requires exactly one input")?;
-
         let rs = context
             .ir_snapshot
-            .get::<full_source::RawSource>(source_id)
+            .get::<full_source::RawSource>(inputs[0])
             .ok_or("Expected RawSource representation")?;
 
         let working_dir = tempfile::TempDir::new()?;
@@ -193,7 +206,7 @@ impl Tool for ParseToAst {
         }
 
         Ok(Box::new(ClangAst {
-            source_representation: source_id,
+            // source_representation: source_id,
             asts,
         }))
     }

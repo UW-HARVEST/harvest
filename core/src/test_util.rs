@@ -1,7 +1,9 @@
 //! Place to put utilities that are only used by tests.
 
-use crate::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
+use crate::tools::{RunContext, Tool};
+use crate::{Id, Representation};
 use std::error::Error;
+use std::path::Path;
 
 /// Returns a new temporary directory. Unlike the defaults in the `tempdir` and `tempfile` crates,
 /// this directory is not world-accessible by default.
@@ -21,9 +23,10 @@ pub fn tempdir() -> std::io::Result<tempfile::TempDir> {
 /// `Tool`'s methods.
 pub struct MockTool {
     name: &'static str,
-    might_write: Box<dyn FnMut(MightWriteContext) -> MightWriteOutcome + Send>,
     #[allow(clippy::type_complexity)]
-    run: Box<dyn FnOnce(RunContext) -> Result<(), Box<dyn Error>> + Send>,
+    run: Box<
+        dyn FnOnce(RunContext, Vec<Id>) -> Result<Box<dyn Representation>, Box<dyn Error>> + Send,
+    >,
 }
 
 impl Default for MockTool {
@@ -36,11 +39,9 @@ impl Default for MockTool {
 ///
 /// # Example
 /// ```
-/// use harvest_core::test_util::MockTool;
-/// use harvest_core::tools::MightWriteOutcome;
+/// use harvest_core::test_util::{MockTool, MockRepresentation};
 /// let tool = MockTool::new()
-///     .might_write(|_| MightWriteOutcome::Runnable([].into()))
-///     .run(|_| Ok(()));
+///     .run(|_,_| Ok(Box::new(MockRepresentation)));
 /// ```
 #[cfg_attr(miri, allow(unused))]
 impl MockTool {
@@ -48,23 +49,13 @@ impl MockTool {
     pub fn new() -> MockTool {
         MockTool {
             name: "mock_tool",
-            might_write: Box::new(|_| MightWriteOutcome::Runnable([].into())),
-            run: Box::new(|_| Ok(())),
+            run: Box::new(|_, _| Ok(Box::new(MockRepresentation))),
         }
     }
 
     /// Returns this MockTool in a box. For use when a `Box<dyn Tool>` is needed.
     pub fn boxed(self) -> Box<MockTool> {
         self.into()
-    }
-
-    /// Sets a closure to be run when `Tool::might_write` is called.
-    pub fn might_write<F: FnMut(MightWriteContext) -> MightWriteOutcome + Send + 'static>(
-        mut self,
-        f: F,
-    ) -> MockTool {
-        self.might_write = Box::new(f);
-        self
     }
 
     /// Sets the return value of `Tool::name`.
@@ -74,7 +65,11 @@ impl MockTool {
     }
 
     /// Sets a closure to be run when `Tool::run` is called.
-    pub fn run<F: FnOnce(RunContext) -> Result<(), Box<dyn Error>> + Send + 'static>(
+    pub fn run<
+        F: FnOnce(RunContext, Vec<Id>) -> Result<Box<dyn Representation>, Box<dyn Error>>
+            + Send
+            + 'static,
+    >(
         mut self,
         f: F,
     ) -> MockTool {
@@ -88,11 +83,29 @@ impl Tool for MockTool {
         self.name
     }
 
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        (self.might_write)(context)
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn Error>> {
+        (self.run)(context, inputs)
+    }
+}
+
+pub struct MockRepresentation;
+
+impl Representation for MockRepresentation {
+    fn name(&self) -> &'static str {
+        "mock_representation"
     }
 
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn Error>> {
-        (self.run)(context)
+    fn materialize(&self, _path: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for MockRepresentation {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "MockRepresentation")
     }
 }

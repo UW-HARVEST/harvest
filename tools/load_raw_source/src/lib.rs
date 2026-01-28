@@ -1,8 +1,8 @@
 //! Lifts a source code project into a RawSource representation.
 
 use full_source::RawSource;
-use harvest_core::fs::RawDir;
-use harvest_core::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
+use harvest_core::tools::{RunContext, Tool};
+use harvest_core::{Id, Representation, fs::RawDir};
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -24,22 +24,17 @@ impl Tool for LoadRawSource {
         "load_raw_source"
     }
 
-    // LoadRawSource will create a new representation, not modify an existing
-    // one.
-    fn might_write(&mut self, _context: MightWriteContext) -> MightWriteOutcome {
-        MightWriteOutcome::Runnable([].into())
-    }
-
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
+    fn run(
+        self: Box<Self>,
+        _context: RunContext,
+        _inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
         let dir = read_dir(self.directory.clone())?;
         let (rawdir, directories, files) = RawDir::populate_from(dir)?;
         info!(
             "Loaded {directories} directories and {files} files from {}.",
             self.directory.display()
         );
-        context
-            .ir_edit
-            .add_representation(Box::new(RawSource { dir: rawdir }));
-        Ok(())
+        Ok(Box::new(RawSource { dir: rawdir }))
     }
 }

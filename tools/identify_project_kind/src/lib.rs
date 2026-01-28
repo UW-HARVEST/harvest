@@ -3,7 +3,8 @@ use std::fmt::Display;
 use harvest_core::Representation;
 
 use full_source::RawSource;
-use harvest_core::tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool};
+use harvest_core::Id;
+use harvest_core::tools::{RunContext, Tool};
 
 pub enum ProjectKind {
     Library,
@@ -21,7 +22,7 @@ impl Display for ProjectKind {
 
 impl Representation for ProjectKind {
     fn name(&self) -> &'static str {
-        "KindAndName"
+        "kind_and_name"
     }
 }
 
@@ -32,34 +33,30 @@ impl Tool for IdentifyProjectKind {
         "identify_project_kind"
     }
 
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        // We need a raw_source to be available, but we won't write any existing IDs.
-        match context.ir.get_by_representation::<RawSource>().next() {
-            None => MightWriteOutcome::TryAgain,
-            Some(_) => MightWriteOutcome::Runnable([].into()),
-        }
-    }
-
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
-        for (_, repr) in context.ir_snapshot.get_by_representation::<RawSource>() {
-            if let Ok(cmakelists) = repr.dir.get_file("CMakeLists.txt") {
-                if String::from_utf8_lossy(cmakelists)
-                    .lines()
-                    .any(|line| line.starts_with("add_executable("))
-                {
-                    context
-                        .ir_edit
-                        .add_representation(Box::new(ProjectKind::Executable));
-                } else if String::from_utf8_lossy(cmakelists)
-                    .lines()
-                    .any(|line| line.starts_with("add_library("))
-                {
-                    context
-                        .ir_edit
-                        .add_representation(Box::new(ProjectKind::Library));
-                }
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        // Get RawSource representation (the first and only arg of identify_project_kind)
+        let repr = context
+            .ir_snapshot
+            .get::<RawSource>(inputs[0])
+            .ok_or("No RawSource representation found in IR")?;
+        if let Ok(cmakelists) = repr.dir.get_file("CMakeLists.txt") {
+            if String::from_utf8_lossy(cmakelists)
+                .lines()
+                .any(|line| line.starts_with("add_executable("))
+            {
+                return Ok(Box::new(ProjectKind::Executable));
+            } else if String::from_utf8_lossy(cmakelists)
+                .lines()
+                .any(|line| line.starts_with("add_library("))
+            {
+                return Ok(Box::new(ProjectKind::Library));
             }
         }
-        Ok(())
+
+        Err("Could not identify project kind from CMakeLists.txt (or could not find it)".into())
     }
 }

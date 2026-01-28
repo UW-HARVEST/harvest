@@ -7,7 +7,7 @@ edition = "2024"
 cargo_metadata = "0.23.1"
 full_source.workspace = true
 harvest_core.workspace = true
-tracing = "0.1.44"
+tracing.workspace = true
 
 [lints]
 workspace = true

@@ -128,7 +128,7 @@ impl std::fmt::Display for CargoBuildResult {
 
 impl Representation for CargoBuildResult {
     fn name(&self) -> &'static str {
-        "CargoBuildResult"
+        "cargo_build_result"
     }
 
     fn materialize(&self, _path: &Path) -> std::io::Result<()> {

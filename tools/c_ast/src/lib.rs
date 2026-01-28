@@ -1,7 +1,8 @@
 use clang_ast::Node;
+use full_source::RawSource;
 use harvest_core::{
     Id, Representation,
-    tools::{MightWriteContext, MightWriteOutcome, RunContext, Tool},
+    tools::{RunContext, Tool},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,19 +12,28 @@ use std::{
 };
 use tracing::info;
 
+/// Represents a (possibly) qualified type in the Clang AST, such as `int`, `const int`, or `const volatile int`.
+/// Clang Docs on QualType: https://clang.llvm.org/doxygen/classclang_1_1QualType.html
 #[derive(Serialize, Deserialize, Debug)]
 pub struct QualType {
+    /// String representation of the desugared type, i.e., it will have `typedefs` and `typeofs` resolved.
     #[serde(rename = "desugaredQualType")]
     pub desugared_qual_type: Option<String>,
+    /// String representation of the type as written in the source code, i.e., it may include `typedefs` and `typeofs`.
     #[serde(rename = "qualType")]
     pub qual_type: String,
+    /// The ID of the type alias declaration, if this type is a typedef.
     #[serde(rename = "typeAliasDecId")]
     pub type_alias_dec_id: Option<clang_ast::Id>,
 }
 
+/// Represents a node in the Clang AST.
+/// For the sake of simplicity, it only encodes a subset of the Clang AST nodes that are relevant for our analysis.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Clang {
     TranslationUnitDecl,
+    /// Represents a typedef declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1TypedefDecl.html
     TypedefDecl {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
@@ -32,6 +42,8 @@ pub enum Clang {
         qtype: QualType,
         annotation: Option<String>,
     },
+    /// Represents a function declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html
     FunctionDecl {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
@@ -42,6 +54,8 @@ pub enum Clang {
         qtype: QualType,
         annotation: Option<FunctionAnnotation>,
     },
+    /// Represents a parameter variable declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1ParmVarDecl.html
     ParmVarDecl {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
@@ -50,17 +64,23 @@ pub enum Clang {
         qtype: QualType,
         annotation: Option<String>,
     },
+    /// Represents a compound statement in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1CompoundStmt.html
     CompoundStmt {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
         annotation: Option<String>,
     },
+    /// Every other node (not relevant to our analysis at the moment)
     Other {
         kind: Option<String>,
         annotation: Option<String>,
     },
 }
 
+/// Our annotations for functions in the Clang AST.
+/// Will expand as Harvest's analyses get more sophisticated.
+#[non_exhaustive]
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FunctionAnnotation {
     Entry,
@@ -87,9 +107,12 @@ fn annotate_ast(ast: &mut Node<Clang>) {
     }
 }
 
+/// Represents a Clang AST for a set of source files.
 #[derive(Serialize)]
 pub struct ClangAst {
+    /// Maps file paths to the root node of the Clang AST for that file.
     pub asts: HashMap<String, Node<Clang>>,
+    /// The ID of the source representation from which this AST was generated.
     pub source_representation: Id,
 }
 
@@ -116,89 +139,83 @@ impl Tool for ParseToAst {
     fn name(&self) -> &'static str {
         "parse_to_ast"
     }
-
-    fn might_write(&mut self, context: MightWriteContext) -> MightWriteOutcome {
-        if context
-            .ir
-            .get_by_representation::<full_source::RawSource>()
-            .next()
-            .is_some()
-        {
-            MightWriteOutcome::Runnable([].into())
-        } else {
-            MightWriteOutcome::TryAgain
-        }
-    }
-
-    fn run(self: Box<Self>, context: RunContext) -> Result<(), Box<dyn std::error::Error>> {
-        for (id, rs) in context
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        let id = inputs[0];
+        let rs = context
             .ir_snapshot
-            .get_by_representation::<full_source::RawSource>()
-        {
-            let working_dir = tempfile::TempDir::new()?;
+            .get::<RawSource>(id)
+            .ok_or("No RawSource representation found in IR")?;
 
-            let src_dir = tempfile::TempDir::new()?;
-            rs.dir.materialize(src_dir.path())?;
-            let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
+        let working_dir = tempfile::TempDir::new()?;
 
-            Command::new("cmake")
-                .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
-                .arg("-S")
-                .arg(src_dir.path())
-                .arg("-B")
-                .arg(working_dir.path())
-                .output()?;
+        let src_dir = tempfile::TempDir::new()?;
+        rs.dir.materialize(src_dir.path())?;
+        let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
 
-            #[derive(Deserialize, Debug)]
-            struct CompileCommand {
-                command: String,
-                file: String,
-            }
-            let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
-                working_dir.path().join("compile_commands.json"),
-            )?)?;
+        Command::new("cmake")
+            .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
+            .arg("-S")
+            .arg(src_dir.path())
+            .arg("-B")
+            .arg(working_dir.path())
+            .output()?;
 
-            let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
-
-            info!(
-                "Parsing {} files: {}",
-                ccs.len(),
-                ccs.iter()
-                    .map(|cc| cc.file.as_str())
-                    .collect::<Vec<&str>>()
-                    .join(", ")
-            );
-
-            for cc in ccs {
-                let file = cc.file.replace(src_dir_prefix.as_str(), "");
-                let includes = cc
-                    .command
-                    .split(" ")
-                    .filter(|p| p.starts_with("-I"))
-                    .map(|p| p.replace(src_dir_prefix.as_str(), ""));
-
-                let mut clang_cmd = Command::new("clang");
-                let clang_cmd = clang_cmd
-                    .current_dir(src_dir.path())
-                    .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
-                    .args(includes)
-                    .arg(&file)
-                    .stderr(Stdio::null())
-                    .stdout(Stdio::piped());
-                let mut clang = clang_cmd.spawn()?;
-                let mut ast: clang_ast::Node<Clang> =
-                    serde_json::from_reader(clang.stdout.take().unwrap())?;
-                clang.wait()?;
-                annotate_ast(&mut ast);
-                info!("Parsed {file}");
-                asts.insert(file, ast);
-            }
-
-            context.ir_edit.add_representation(Box::new(ClangAst {
-                source_representation: id,
-                asts,
-            }));
+        #[derive(Deserialize, Debug)]
+        struct CompileCommand {
+            command: String,
+            file: String,
         }
-        Ok(())
+        let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
+            working_dir.path().join("compile_commands.json"),
+        )?)?;
+
+        let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
+
+        info!(
+            "Parsing {} files: {}",
+            ccs.len(),
+            ccs.iter()
+                .map(|cc| cc.file.as_str())
+                .collect::<Vec<&str>>()
+                .join(", ")
+        );
+
+        for cc in ccs {
+            let file = cc
+                .file
+                .strip_prefix(src_dir_prefix.as_str())
+                .unwrap_or(&cc.file)
+                .to_string();
+            let includes = cc
+                .command
+                .split(" ")
+                .filter(|p| p.starts_with("-I"))
+                .map(|p| p.replace(src_dir_prefix.as_str(), ""));
+
+            let mut clang_cmd = Command::new("clang");
+            let clang_cmd = clang_cmd
+                .current_dir(src_dir.path())
+                .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
+                .args(includes)
+                .arg(&file)
+                .stderr(Stdio::null())
+                .stdout(Stdio::piped());
+            let mut clang = clang_cmd.spawn()?;
+            let mut ast: clang_ast::Node<Clang> =
+                serde_json::from_reader(clang.stdout.take().unwrap())?;
+            clang.wait()?;
+            annotate_ast(&mut ast);
+            info!("Parsed {file}");
+            asts.insert(file, ast);
+        }
+
+        Ok(Box::new(ClangAst {
+            source_representation: id,
+            asts,
+        }))
     }
 }

@@ -513,10 +513,12 @@ dependencies = [
 name = "harvest_core"
 version = "0.1.0"
 dependencies = [
+ "llm",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -951,8 +953,10 @@ dependencies = [
  "full_source",
  "harvest_core",
  "identify_project_kind",
+ "llm",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

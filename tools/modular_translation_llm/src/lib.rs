@@ -1,178 +1,58 @@
 //! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules and translates them one-by-one using an LLM.
 
-use c_ast::{Clang, ClangAst};
-use clang_ast::Node;
+use c_ast::ClangAst;
 use full_source::RawSource;
+use harvest_core::config::unknown_field_warning;
+use harvest_core::llm::LLMConfig;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use identify_project_kind::ProjectKind;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use tracing::info;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Config {}
+mod clang;
+mod recombine;
+mod translation;
+mod utils;
+pub use clang::{ClangDeclarations, extract_top_level_decls};
+pub use translation::{RustDeclaration, translate_decls};
 
-/// Container for categorizing declarations by their source.
-#[derive(Debug)]
-pub struct Declarations<'a> {
-    /// Declarations imported from external sources (not in the project source files)
-    pub imported: Vec<&'a Node<Clang>>,
-    /// Declarations from the project application files
-    pub app: Vec<&'a Node<Clang>>,
+/// Configuration for the modular translation tool.
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    #[serde(flatten)]
+    pub llm: LLMConfig,
+
+    #[serde(flatten)]
+    unknown: HashMap<String, Value>,
 }
 
-impl<'a> Declarations<'a> {
-    /// Logs all declarations with their source file and translation status.
-    pub fn show_all(&self, source_files: &std::collections::HashSet<String>) {
-        info!("Declarations:");
-        info!("Total imported declarations: {}", self.imported.len());
-        info!("Total app declarations: {}", self.app.len());
-        for decl in self.imported.iter().chain(self.app.iter()) {
-            let file = match &decl.kind {
-                Clang::FunctionDecl { loc, .. }
-                | Clang::TypedefDecl { loc, .. }
-                | Clang::RecordDecl { loc, .. }
-                | Clang::VarDecl { loc, .. } => get_file_from_location(loc),
-                _ => "Unknown".to_string(),
-            };
-            let is_app = source_files.contains(&file);
-
-            match &decl.kind {
-                Clang::FunctionDecl { name, .. } => {
-                    let scheduled = if is_app {
-                        " - Scheduled to translate"
-                    } else {
-                        ""
-                    };
-                    info!("    FunctionDecl for {} from {}{}", name, file, scheduled);
-                }
-                Clang::TypedefDecl { name, .. } => {
-                    let scheduled = if is_app {
-                        " - Scheduled to translate"
-                    } else {
-                        ""
-                    };
-                    info!("    TypedefDecl for {} from {}{}", name, file, scheduled);
-                }
-                Clang::RecordDecl { name, .. } => {
-                    let scheduled = if is_app {
-                        " - Scheduled to translate"
-                    } else {
-                        ""
-                    };
-                    info!(
-                        "    RecordDecl for {} from {}{}",
-                        name.as_deref().unwrap_or("<anonymous>"),
-                        file,
-                        scheduled
-                    );
-                }
-                Clang::VarDecl { name, .. } => {
-                    let scheduled = if is_app {
-                        " - Scheduled to translate"
-                    } else {
-                        ""
-                    };
-                    info!("    VarDecl for {} from {}{}", name, file, scheduled);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Extracts all top-level translation unit declarations from a ClangAst and categorizes them.
-///
-/// This function iterates through all AST nodes in the ClangAst's HashMap,
-/// asserts that each root node is of kind `TranslationUnitDecl`, then categorizes
-/// all child declarations into imported (from external sources) and app (from project sources).
-///
-/// # Arguments
-/// * `clang_ast` - The ClangAst structure containing parsed ASTs
-/// * `source_files` - Set of file paths that are part of the project source
-///
-/// # Returns
-/// A Declarations struct containing categorized declaration nodes
-///
-/// # Panics
-/// Panics if any AST root node is not of kind `TranslationUnitDecl` or if an unexpected child kind is encountered
-pub fn extract_top_level_decls<'a>(
-    clang_ast: &'a ClangAst,
-    source_files: &std::collections::HashSet<String>,
-) -> Declarations<'a> {
-    let top_level_nodes: Vec<&Node<Clang>> = clang_ast
-        .asts
-        .values()
-        .map(|node| {
-            // Assert that the node is a TranslationUnitDecl
-            assert!(
-                matches!(node.kind, Clang::TranslationUnitDecl),
-                "Expected TranslationUnitDecl but found {:?}",
-                node.kind
-            );
-            node
-        })
-        .collect();
-
-    let mut declarations = Declarations {
-        imported: Vec::new(),
-        app: Vec::new(),
-    };
-
-    for node in &top_level_nodes {
-        for child in &node.inner {
-            let is_source = match &child.kind {
-                Clang::FunctionDecl { loc, .. }
-                | Clang::TypedefDecl { loc, .. }
-                | Clang::RecordDecl { loc, .. }
-                | Clang::VarDecl { loc, .. } => {
-                    let file = get_file_from_location(loc);
-                    source_files.contains(&file)
-                }
-                _ => {
-                    panic!("Unexpected child kind: {:?}", child.kind);
-                }
-            };
-
-            if is_source {
-                declarations.app.push(child);
-            } else {
-                declarations.imported.push(child);
-            }
-        }
+impl Config {
+    pub fn validate(&self) {
+        unknown_field_warning("tools.modular_translation_llm", &self.unknown);
     }
 
-    declarations
-}
-
-/// Extracts the file path from a SourceLocation.
-///
-/// # Arguments
-/// * `loc` - An optional SourceLocation
-///
-/// # Returns
-/// A string representing the file path, or "Unknown" if the location or file is not available
-fn get_file_from_location(loc: &Option<clang_ast::SourceLocation>) -> String {
-    loc.as_ref()
-        .and_then(|l| l.spelling_loc.as_ref())
-        .map(|sl| sl.file.to_string())
-        .unwrap_or_else(|| "Unknown".to_string())
+    /// Returns a mock config for testing.
+    pub fn mock() -> Self {
+        Self {
+            llm: LLMConfig {
+                address: None,
+                api_key: None,
+                backend: "mock_llm".into(),
+                model: "mock_model".into(),
+                max_tokens: 4000,
+            },
+            unknown: HashMap::new(),
+        }
+    }
 }
 
 /// The main tool struct for modular translation.
 pub struct ModularTranslationLlm;
 
 /// Extracts and validates the tool's input arguments from the context.
-///
-/// # Arguments
-/// * `context` - The run context containing the IR snapshot
-/// * `inputs` - Vector of input IDs
-///
-/// # Returns
-/// A tuple of (RawSource, ClangAst, ProjectKind) references
-///
-/// # Errors
-/// Returns an error if any required representation is not found in the IR
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
@@ -202,7 +82,16 @@ impl Tool for ModularTranslationLlm {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        let (raw_source, clang_ast, _) = extract_args(&context, &inputs)?;
+        let config = Config::deserialize(
+            context
+                .config
+                .tools
+                .get("modular_translation_llm")
+                .ok_or("No modular_translation_llm config found")?,
+        )?;
+        config.validate();
+
+        let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
         // Get all source files from RawSource
         let source_files = raw_source.file_paths();
@@ -211,7 +100,24 @@ impl Tool for ModularTranslationLlm {
         let declarations = extract_top_level_decls(clang_ast, &source_files);
         declarations.show_all(&source_files);
 
-        // Should return a CargoPackage representation
-        Err("modular_translation_llm not yet implemented".into())
+        // Translate all declarations
+        let translations = translation::translate_decls(&declarations, raw_source, &config)?;
+
+        // Log the translations
+        info!(
+            "Successfully translated {} declarations",
+            translations.len()
+        );
+        for (i, translation) in translations.iter().enumerate() {
+            info!("Translation {}:", i + 1);
+            info!("  Rust code:\n{}", translation.rust_code);
+            info!("  Dependencies: {:?}", translation.dependencies);
+        }
+
+        // Assemble translations into a CargoPackage representation
+        let package_name = "translated_project"; // TODO: Derive from source project
+        let cargo_package = recombine::recombine_decls(translations, project_kind, package_name)?;
+
+        Ok(Box::new(cargo_package))
     }
 }

@@ -14,3 +14,6 @@ pub use id::Id;
 pub use ir::{HarvestIR, Representation};
 
 pub mod config;
+
+#[cfg(feature = "llm-support")]
+pub mod llm;

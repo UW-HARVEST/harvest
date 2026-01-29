@@ -12,7 +12,7 @@ use harvest_core::{HarvestIR, diagnostics};
 use identify_project_kind::IdentifyProjectKind;
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
-use raw_source_to_cargo_llm::RawSourceToCargoLlm;
+// use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -31,9 +31,9 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let identify_kind = scheduler.queue_after(IdentifyProjectKind, &[load_src]);
     let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-    let _modular_translate =
+    let translate =
         scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, identify_kind]);
-    let translate = scheduler.queue_after(RawSourceToCargoLlm, &[load_src, identify_kind]);
+    // let translate = scheduler.queue_after(RawSourceToCargoLlm, &[load_src, identify_kind]);
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`

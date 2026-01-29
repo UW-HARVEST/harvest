@@ -79,6 +79,42 @@ pub enum Clang {
     },
 }
 
+impl Clang {
+    /// Returns the source location of this AST node, if available.
+    ///
+    /// # Returns
+    /// - `Some(&SourceLocation)` if the node has a location field
+    /// - `None` if the node doesn't have a location or if the location field is None
+    pub fn loc(&self) -> Option<&clang_ast::SourceLocation> {
+        match self {
+            Clang::TypedefDecl { loc, .. }
+            | Clang::FunctionDecl { loc, .. }
+            | Clang::RecordDecl { loc, .. }
+            | Clang::VarDecl { loc, .. }
+            | Clang::ParmVarDecl { loc, .. }
+            | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
+            Clang::TranslationUnitDecl | Clang::Other { .. } => None,
+        }
+    }
+
+    /// Returns the source range of this AST node, if available.
+    ///
+    /// # Returns
+    /// - `Some(&SourceRange)` if the node has a range field
+    /// - `None` if the node doesn't have a range or if the range field is None
+    pub fn range(&self) -> Option<&clang_ast::SourceRange> {
+        match self {
+            Clang::TypedefDecl { range, .. }
+            | Clang::FunctionDecl { range, .. }
+            | Clang::RecordDecl { range, .. }
+            | Clang::VarDecl { range, .. }
+            | Clang::ParmVarDecl { range, .. }
+            | Clang::CompoundStmt { range, .. } => range.as_ref(),
+            Clang::TranslationUnitDecl | Clang::Other { .. } => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FunctionAnnotation {
     Entry,

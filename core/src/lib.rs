@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod fs;
 mod id;
 pub mod ir;
+pub mod llm;
 pub mod tools;
 pub mod utils;
 

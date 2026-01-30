@@ -7,10 +7,8 @@ edition = "2024"
 full_source.workspace = true
 harvest_core.workspace = true
 identify_project_kind.workspace = true
-llm = { default-features = false, features = ["ollama", "openai", "openrouter", "rustls-tls" ], version = "1.3.4" }
-serde = { workspace = true, features = ["derive"] }
+serde.workspace = true
 serde_json.workspace = true
-tokio = "1.48.0"
 tracing.workspace = true
 
 [lints]

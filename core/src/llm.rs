@@ -51,17 +51,7 @@ impl HarvestLLM {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Parse the output format from JSON string
         let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
-
-        // TODO: This is a workaround for a flaw in the current
-        // version (1.3.4) of the `llm` crate. While it supports
-        // OpenRouter, the `openrouter` variant hadn't been added to
-        // `from_str`. It's fixed on git tip, but not in a release
-        // version. So just check for that case explicitly.
-        let backend = if config.backend == "openrouter" {
-            LLMBackend::OpenRouter
-        } else {
-            LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND")
-        };
+        let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
 
         let mut llm_builder = LLMBuilder::new()
             .backend(backend)

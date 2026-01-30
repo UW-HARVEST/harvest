@@ -98,7 +98,7 @@ impl Tool for ModularTranslationLlm {
 
         // Extract and categorize top-level declarations
         let declarations = extract_top_level_decls(clang_ast, &source_files);
-        declarations.show_all(&source_files);
+        // declarations.show_all(&source_files);
 
         // Translate all declarations
         let translations = translation::translate_decls(&declarations, raw_source, &config)?;

@@ -222,6 +222,12 @@ fn benchmark_single_program(
         log::info!("✅ Successfully parsed {} test case(s)", test_cases.len());
     }
 
+    log::info!(
+        "Starting translation from {} to {}...",
+        test_case_src_dir.display(),
+        output_dir.display()
+    );
+
     // Do the actual translation
     let translation_result =
         translate_c_directory_to_rust_project(&test_case_src_dir, &output_dir, config_overrides);

@@ -60,19 +60,25 @@ pub enum Clang {
         storage_class: Option<String>,
         annotation: Option<String>,
     },
-    ParmVarDecl {
+    EnumDecl {
         loc: Option<clang_ast::SourceLocation>,
         range: Option<clang_ast::SourceRange>,
         name: Option<String>,
-        #[serde(rename = "type")]
-        qtype: QualType,
         annotation: Option<String>,
     },
-    CompoundStmt {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        annotation: Option<String>,
-    },
+    // ParmVarDecl {
+    //     loc: Option<clang_ast::SourceLocation>,
+    //     range: Option<clang_ast::SourceRange>,
+    //     name: Option<String>,
+    //     #[serde(rename = "type")]
+    //     qtype: QualType,
+    //     annotation: Option<String>,
+    // },
+    // CompoundStmt {
+    //     loc: Option<clang_ast::SourceLocation>,
+    //     range: Option<clang_ast::SourceRange>,
+    //     annotation: Option<String>,
+    // },
     Other {
         kind: Option<String>,
         annotation: Option<String>,
@@ -87,13 +93,15 @@ impl Clang {
     /// - `None` if the node doesn't have a location or if the location field is None
     pub fn loc(&self) -> Option<&clang_ast::SourceLocation> {
         match self {
+            Clang::TranslationUnitDecl => None,
             Clang::TypedefDecl { loc, .. }
             | Clang::FunctionDecl { loc, .. }
             | Clang::RecordDecl { loc, .. }
             | Clang::VarDecl { loc, .. }
-            | Clang::ParmVarDecl { loc, .. }
-            | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
-            Clang::TranslationUnitDecl | Clang::Other { .. } => None,
+            | Clang::EnumDecl { loc, .. } => loc.as_ref(),
+            // | Clang::ParmVarDecl { loc, .. }
+            // | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
+            Clang::Other { .. } => None,
         }
     }
 
@@ -104,13 +112,15 @@ impl Clang {
     /// - `None` if the node doesn't have a range or if the range field is None
     pub fn range(&self) -> Option<&clang_ast::SourceRange> {
         match self {
+            Clang::TranslationUnitDecl => None,
             Clang::TypedefDecl { range, .. }
             | Clang::FunctionDecl { range, .. }
             | Clang::RecordDecl { range, .. }
             | Clang::VarDecl { range, .. }
-            | Clang::ParmVarDecl { range, .. }
-            | Clang::CompoundStmt { range, .. } => range.as_ref(),
-            Clang::TranslationUnitDecl | Clang::Other { .. } => None,
+            // | Clang::ParmVarDecl { range, .. }
+            | Clang::EnumDecl { range, .. } => range.as_ref(),
+            // | Clang::CompoundStmt { range, .. } => range.as_ref(),
+            Clang::Other { .. } => None,
         }
     }
 }

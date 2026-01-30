@@ -32,6 +32,10 @@ pub struct Config {
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
 
+    /// If true, use ModularTranslationLLM; if false, use RawSourceToCargoLLM.
+    #[serde(default)]
+    pub modular: bool,
+
     /// Sub-configuration for each tool.
     pub tools: HashMap<String, serde_json::Value>,
 
@@ -52,6 +56,7 @@ impl Config {
             diagnostics_dir: None,
             force: false,
             log_filter: "off".to_owned(),
+            modular: false,
             tools: Default::default(),
             unknown: Default::default(),
         }

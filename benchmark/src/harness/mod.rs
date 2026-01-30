@@ -147,7 +147,7 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    Ok((test_case_src_dir, test_vectors_dir))
+    Ok((test_case_dir, test_vectors_dir))
 }
 
 /// Reads all files in a directory and parses them as TestCase JSON files

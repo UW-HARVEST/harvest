@@ -1,10 +1,11 @@
 //! Utilities for translating C declarations to Rust.
 
+use c_ast;
 use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, build_request};
 use llm::chat::{ChatMessage, StructuredOutputFormat};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::Config;
 use crate::clang::ClangDeclarations;
@@ -43,6 +44,39 @@ struct TranslationsResponse {
     translations: Vec<RustDeclaration>,
 }
 
+/// Logs the declaration kind with appropriate log level.
+fn log_decl_kind(kind: &c_ast::Clang) {
+    match kind {
+        c_ast::Clang::TranslationUnitDecl => {
+            debug!("Processing TranslationUnitDecl");
+        }
+        c_ast::Clang::TypedefDecl { name, .. } => {
+            debug!("Processing TypedefDecl: {}", name);
+        }
+        c_ast::Clang::FunctionDecl { name, .. } => {
+            debug!("Processing FunctionDecl: {}", name);
+        }
+        c_ast::Clang::RecordDecl { name, .. } => {
+            debug!("Processing RecordDecl: {:?}", name);
+        }
+        c_ast::Clang::VarDecl { name, .. } => {
+            debug!("Processing VarDecl: {}", name);
+        }
+        c_ast::Clang::EnumDecl { name, .. } => {
+            debug!("Processing EnumDecl: {:?}", name);
+        }
+        // c_ast::Clang::ParmVarDecl { name, .. } => {
+        //     warn!("Unexpected ParmVarDecl at top level: {:?}", name);
+        // }
+        // c_ast::Clang::CompoundStmt { .. } => {
+        //     warn!("Unexpected CompoundStmt at top level");
+        // }
+        c_ast::Clang::Other { kind, .. } => {
+            warn!("Unexpected 'Other' declaration type: {:?}", kind);
+        }
+    }
+}
+
 /// Helper function to build a translation request for declarations.
 fn build_decls_translation_request(
     declarations: &ClangDeclarations,
@@ -51,6 +85,8 @@ fn build_decls_translation_request(
     // Extract source text for all declarations
     let mut decl_sources = Vec::new();
     for decl in &declarations.app {
+        log_decl_kind(&decl.kind);
+
         let source_text = if let Some(range) = decl.kind.range() {
             read_source_at_range(range, raw_source)?
         } else {

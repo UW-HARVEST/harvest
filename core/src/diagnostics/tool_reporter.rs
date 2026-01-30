@@ -1,14 +1,17 @@
 //! Diagnostics-reporting infrastructure for tools.
 
 use super::{Shared, SharedWriter, lock_shared};
+use crate::fs::DirEntry;
 use crate::tools::Tool;
 use std::fmt::{self, Display, Formatter};
 use std::fs::create_dir;
 use std::io;
 use std::num::NonZeroU64;
+use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{collections::hash_map::Entry, path::PathBuf};
+use thiserror::Error;
 use tracing::dispatcher::{DefaultGuard, set_default};
 use tracing::{Dispatch, error, info};
 use tracing_subscriber::fmt::layer;
@@ -80,6 +83,12 @@ impl ToolReporter {
         ))
     }
 
+    /// Creates a new scratch location within this tool's diagnostic directory.
+    pub fn scratch(&self, name: &str) -> Result<Scratch, ScratchError> {
+        let _ = name;
+        todo!()
+    }
+
     /// Initializes log collection for this thread. Tools should call this for each new thread they
     /// spawn, if they spawn threads. Note that the tool runner sets up the thread logger for the
     /// tool's main thread, so Tools that do not spawn any threads do not need to call this.
@@ -110,6 +119,40 @@ impl ToolReporter {
                 poisoned.into_inner()
             }
         }
+    }
+}
+
+/// An error returned by [ToolReporter::scratch]
+#[derive(Debug, Error, Hash, Eq, PartialEq)]
+pub enum ScratchError {
+    #[error("location already exists")]
+    AlreadyExists,
+}
+
+/// A scratch area in a tool run's diagnostic directory. Tools may use this scratch location to
+/// create a file, directory, or symlink. Tools may use `freeze` to freeze the scratch value,
+/// converting it into a [DirEntry] for further use (e.g. to store in a repr). Dropping a `Scratch`
+/// also freezes the directory.
+pub struct Scratch {
+    // TODO: Implement
+}
+
+impl Scratch {
+    /// Freezes this scratch area.
+    pub fn freeze(self) -> io::Result<DirEntry> {
+        todo!()
+    }
+
+    /// Returns the path to this scratch area.
+    pub fn path(&self) -> &Path {
+        todo!()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // TODO Freeze the scratch area. Ignore NotFound errors (that just means the scratch area
+        // was not used), but panic on any other error.
     }
 }
 

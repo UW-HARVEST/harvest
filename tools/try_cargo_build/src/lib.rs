@@ -3,6 +3,7 @@
 use full_source::CargoPackage;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;

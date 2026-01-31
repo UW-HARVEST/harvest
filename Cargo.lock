@@ -527,6 +527,7 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
+ "c_ast",
  "clap",
  "config",
  "directories",
@@ -534,6 +535,7 @@ dependencies = [
  "identify_project_kind",
  "libc",
  "load_raw_source",
+ "modular_translation_llm",
  "raw_source_to_cargo_llm",
  "serde",
  "serde_json",

@@ -2,6 +2,7 @@
 
 force = false
 log_filter = "info"
+modular = false
 
 [tools.raw_source_to_cargo_llm]
 address = "http://localhost:11434"

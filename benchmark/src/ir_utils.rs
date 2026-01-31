@@ -1,11 +1,10 @@
 use crate::error::HarvestResult;
-use harvest_ir::fs::RawDir;
-use harvest_ir::HarvestIR;
+use harvest_core::fs::RawDir;
+use harvest_core::HarvestIR;
 use std::path::PathBuf;
 
-use harvest_translate::tools::load_raw_source::RawSource;
-use harvest_translate::tools::raw_source_to_cargo_llm::CargoPackage;
-use harvest_translate::tools::try_cargo_build::CargoBuildResult;
+use full_source::{CargoPackage, RawSource};
+use try_cargo_build::CargoBuildResult;
 
 /// Extract a single CargoPackage representation from the IR.
 /// Returns an error if there are 0 or multiple CargoPackage representations.

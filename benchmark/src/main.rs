@@ -19,7 +19,7 @@ use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
-use harvest_ir::HarvestIR;
+use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -76,13 +76,16 @@ pub fn translate_c_directory_to_rust_project(
     if config.log_filter.is_empty() {
         config.log_filter = "off".to_owned(); // Disable console logging in harvest_translate
     }
+    /*
+    TODO: This isn't general anyway, only logs a single tool's parameters
+
     let tool_config = &config.tools.raw_source_to_cargo_llm;
     log::info!(
         "Translating code using {}:{} with max tokens: {}",
         tool_config.backend,
         tool_config.model,
         tool_config.max_tokens
-    );
+    );*/
     let ir_result = transpile(config.into());
     let raw_c_source = raw_source(ir_result.as_ref().unwrap()).unwrap();
     raw_c_source

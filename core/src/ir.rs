@@ -1,35 +1,8 @@
-//! The Harvest Intermediate Representation ([HarvestIR]), types it depends on (e.g.
-//! [Representation]), and utilities for working with them.
+use std::{
+    any::Any, collections::BTreeMap, fmt::Display, fs::File, io::Write, path::Path, sync::Arc,
+};
 
-pub mod edit;
-pub mod fs;
-mod id;
-
-pub use edit::Edit;
-pub use id::Id;
-use std::any::Any;
-use std::collections::BTreeMap;
-use std::fmt::Display;
-use std::fs::File;
-use std::io::Write as _;
-use std::path::Path;
-use std::sync::Arc;
-
-/// Harvest Intermediate Representation
-///
-/// The Harvest IR is a collection of [Representation]s of a
-/// program. Transformations of the IR may add or modify
-/// representations.
-#[derive(Clone, Default)]
-pub struct HarvestIR {
-    // The IR is composed of a set of [Representation]s identified by
-    // some [Id] that is unique to that [Resentation] (at least for a
-    // particular run of the pipeline). There may or may not be a
-    // useful ordering for [Id]s, but for now using an ordered map at
-    // least gives us a stable ordering when iterating, e.g. to print
-    // the IR.
-    representations: BTreeMap<Id, Arc<dyn Representation>>,
-}
+use crate::Id;
 
 /// An abstract representation of a program
 pub trait Representation: Any + Display + Send + Sync {
@@ -52,11 +25,38 @@ pub trait Representation: Any + Display + Send + Sync {
     }
 }
 
+/// Harvest Intermediate Representation
+///
+/// The Harvest IR is a collection of [Representation]s of a
+/// program. Transformations of the IR may add or modify
+/// representations.
+#[derive(Clone, Default)]
+pub struct HarvestIR {
+    // The IR is composed of a set of [Representation]s identified by
+    // some [Id] that is unique to that [Resentation] (at least for a
+    // particular run of the pipeline). There may or may not be a
+    // useful ordering for [Id]s, but for now using an ordered map at
+    // least gives us a stable ordering when iterating, e.g. to print
+    // the IR.
+    pub(crate) representations: BTreeMap<Id, Arc<dyn Representation>>,
+}
+
 impl HarvestIR {
+    /// Insert `representation` with `id` to IR.
+    pub fn insert_representation(&mut self, id: Id, representation: Box<dyn Representation>) -> Id {
+        self.representations.insert(id, representation.into());
+        id
+    }
+
+    /// Returns an iterator over all [Representation] [Id]s
+    pub fn ids(&self) -> impl Iterator<Item = &Id> {
+        self.representations.keys()
+    }
+
     /// Adds a representation with a new ID and returns the new ID.
     pub fn add_representation(&mut self, representation: Box<dyn Representation>) -> Id {
         let id = Id::new();
-        self.representations.insert(id, representation.into());
+        self.insert_representation(id, representation);
         id
     }
 
@@ -75,6 +75,13 @@ impl HarvestIR {
             .filter_map(|(&i, r)| <dyn Any>::downcast_ref(&**r).map(|r| (i, r)))
     }
 
+    /// Returns the representation with the given ID, if it is of the expected type.
+    pub fn get<R: Representation>(&self, id: Id) -> Option<&R> {
+        self.representations
+            .get(&id)
+            .and_then(|r| <dyn Any>::downcast_ref(&**r))
+    }
+
     /// Returns an iterator over the IDs and representations in this IR.
     pub fn iter(&self) -> impl Iterator<Item = (Id, &dyn Representation)> {
         self.representations.iter().map(|(&id, repr)| (id, &**repr))
@@ -91,7 +98,7 @@ impl Display for HarvestIR {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::fmt::{self, Display, Formatter};
@@ -126,10 +133,10 @@ mod tests {
     #[test]
     fn get_by_representation() {
         let mut ir = HarvestIR::default();
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let b = ir.add_representation(Box::new(IdRepresentation(1)));
-        ir.add_representation(Box::new(EmptyRepresentation));
-        let d = ir.add_representation(Box::new(IdRepresentation(2)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let b = ir.insert_representation(Id::new(), Box::new(IdRepresentation(1)));
+        ir.insert_representation(Id::new(), Box::new(EmptyRepresentation));
+        let d = ir.insert_representation(Id::new(), Box::new(IdRepresentation(2)));
         assert_eq!(
             HashSet::from_iter(ir.get_by_representation::<IdRepresentation>()),
             HashSet::from([(b, &IdRepresentation(1)), (d, &IdRepresentation(2))])

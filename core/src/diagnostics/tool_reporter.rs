@@ -71,7 +71,11 @@ impl ToolReporter {
         Ok((
             ToolJoiner { receiver },
             ToolReporter {
-                run_shared: Arc::new(Mutex::new(RunShared { dispatch, sender })),
+                run_shared: Arc::new(Mutex::new(RunShared {
+                    dispatch,
+                    sender,
+                    tool_run,
+                })),
             },
         ))
     }
@@ -84,6 +88,16 @@ impl ToolReporter {
             _default_guard: set_default(&self.lock_shared().dispatch),
             run_shared: self.run_shared.clone(),
         }
+    }
+
+    /// Returns this tool's [ToolId].
+    pub fn tool_id(&self) -> ToolId {
+        self.tool_run().tool_id()
+    }
+
+    /// Returns this invocation's [ToolRunId].
+    pub fn tool_run(&self) -> ToolRunId {
+        self.lock_shared().tool_run
     }
 
     /// Utility to lock this reporter's shared reference.
@@ -111,7 +125,7 @@ pub struct ThreadGuard {
 /// design allows us to optimize the representation in the future to e.g. use TypeId for faster
 /// comparisons and hashing.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub(super) struct ToolId {
+pub struct ToolId {
     /// The name returned by `Tool::name`.
     name: &'static str,
 }
@@ -134,7 +148,7 @@ impl Display for ToolId {
 /// An identifier for a tool run. Can be converted into a string, which will look like
 /// `try_cargo_build_2`. This string should be suitable to use as a file/directory name.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub(super) struct ToolRunId {
+pub struct ToolRunId {
     pub tool: ToolId,
     /// The first run of a particular tool has number 1, the second has 2, etc.
     pub number: NonZeroU64,
@@ -149,8 +163,14 @@ impl Display for ToolRunId {
     }
 }
 
+impl ToolRunId {
+    pub fn tool_id(self) -> ToolId {
+        self.tool
+    }
+}
+
 /// A struct that can wait for all diagnostics handles for a tool to be dropped.
-pub(crate) struct ToolJoiner {
+pub struct ToolJoiner {
     // Receives a message from RunShared when RunShared is dropped.
     receiver: Receiver<()>,
 }
@@ -175,6 +195,7 @@ struct RunShared {
     dispatch: Dispatch,
     // Used to send a message to ToolJoiner when RunShared is dropped.
     sender: Sender<()>,
+    tool_run: ToolRunId,
 }
 
 impl Drop for RunShared {

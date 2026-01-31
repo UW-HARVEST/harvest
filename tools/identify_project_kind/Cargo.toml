@@ -1,0 +1,12 @@
+[package]
+name = "identify_project_kind"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+full_source.workspace = true
+harvest_core.workspace = true
+load_raw_source.workspace = true
+
+[lints]
+workspace = true

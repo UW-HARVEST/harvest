@@ -1,7 +1,8 @@
 use clap::Parser;
+use harvest_core::utils::empty_writable_dir;
 use harvest_translate::cli::{Args, initialize};
 use harvest_translate::transpile;
-use harvest_translate::util::{empty_writable_dir, set_user_only_umask};
+use harvest_translate::util::set_user_only_umask;
 use std::sync::Arc;
 
 fn main() {

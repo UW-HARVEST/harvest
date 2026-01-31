@@ -3,6 +3,8 @@ use std::num::NonZeroU64;
 use std::process::abort;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
+use serde::{Deserialize, Serialize};
+
 /// An opaque type that refers to a particular representation instance in
 /// HarvestIR.
 // Because IDs can be generated and dropped, it is possible (on 32-bit systems)
@@ -10,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 // practice, we run on 64-bit systems, so that matches usize anyway). NonZeroU64
 // is used to make Option<Id> smaller, because it's easy and doesn't have a
 // downside.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Id(NonZeroU64);
 
 impl Id {
@@ -25,7 +27,7 @@ impl Id {
     ///
     /// # Example
     /// ```
-    /// # use harvest_ir::Id;
+    /// # use harvest_core::Id;
     /// # fn main() {
     ///     // Allocate two new IDs.
     ///     let [c_ast, rust_ast] = Id::new_array();
@@ -125,8 +127,7 @@ mod tests {
             });
             let chunks = s.spawn(|| {
                 (0..10)
-                    .map(|_| new_array_testable::<CHUNK_SIZE>(highest_id))
-                    .flatten()
+                    .flat_map(|_| new_array_testable::<CHUNK_SIZE>(highest_id))
                     .collect()
             });
             let all_at_once = new_array_testable::<{ 10 * CHUNK_SIZE }>(highest_id).into();

@@ -16,10 +16,10 @@ fn messages() {
     let spawn_tool_thread = |name| {
         let ((send_msg, recv_msg), (send_done, recv_done)) = (channel(), channel());
         let reporter = collector.reporter();
+        let (_, tool_reporter) = reporter
+            .start_tool_run(&MockTool::new().name(name))
+            .unwrap();
         let join = spawn(move || {
-            let (_, tool_reporter) = reporter
-                .start_tool_run(&MockTool::new().name(name))
-                .unwrap();
             let _guard = tool_reporter.setup_thread_logger();
             while let Ok(msg) = recv_msg.recv() {
                 info!("{msg}");
@@ -56,11 +56,13 @@ fn messages() {
         let mut lines = contents.lines();
         for (i, expected) in expected.iter().enumerate() {
             let line = lines.next().unwrap();
-            assert!(
-                line.contains(expected),
-                "{path} line number {} contains {line}, expected {expected}",
-                i + 1
-            );
+            if !line.contains(expected) {
+                println!("Full contents of {path}:\n{contents}");
+                panic!(
+                    "{path} line number {} contains {line}, expected {expected}",
+                    i + 1
+                );
+            }
         }
         assert_eq!(lines.next(), None);
     };

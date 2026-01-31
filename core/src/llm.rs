@@ -4,7 +4,8 @@
 
 use llm::LLMProvider;
 use llm::builder::{LLMBackend, LLMBuilder};
-use llm::chat::{ChatMessage, StructuredOutputFormat};
+pub use llm::chat::ChatMessage;
+use llm::chat::StructuredOutputFormat;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 

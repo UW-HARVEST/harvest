@@ -1,0 +1,62 @@
+//! Utilities for recombining translated Rust declarations into a Cargo package.
+
+use full_source::CargoPackage;
+use harvest_core::fs::RawDir;
+use identify_project_kind::ProjectKind;
+use std::collections::HashSet;
+
+use crate::translation::RustDeclaration;
+
+/// Recombines translated Rust declarations into a CargoPackage representation.
+///
+/// This function takes a list of translated declarations and assembles them into
+/// a complete Cargo project structure with:
+/// - A Cargo.toml manifest
+/// - A src/main.rs (for executables) or src/lib.rs (for libraries)
+/// - All necessary imports derived from declaration dependencies
+pub fn recombine_decls(
+    declarations: Vec<RustDeclaration>,
+    project_kind: &ProjectKind,
+    package_name: &str,
+) -> Result<CargoPackage, Box<dyn std::error::Error>> {
+    // Collect all unique dependencies from all declarations
+    let mut all_dependencies: HashSet<String> = HashSet::new();
+    for decl in &declarations {
+        for dep in &decl.dependencies {
+            all_dependencies.insert(dep.clone());
+        }
+    }
+
+    // Concatenate all Rust code
+    let rust_code = declarations
+        .into_iter()
+        .map(|decl| decl.rust_code)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // Determine the main source file name and content based on project kind
+    let (source_file, source_content) = match project_kind {
+        ProjectKind::Executable => ("src/main.rs", rust_code),
+        ProjectKind::Library => ("src/lib.rs", rust_code),
+    };
+
+    // Generate Cargo.toml content
+    // TODO: seperate LLM call to
+    let cargo_toml = format!(
+        r#"[package]
+name = "{}"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#,
+        package_name
+    );
+
+    // Create the directory structure
+    let mut dir = RawDir::default();
+    dir.set_file("Cargo.toml", cargo_toml.into_bytes())?;
+    dir.set_file(source_file, source_content.into_bytes())?;
+
+    Ok(CargoPackage { dir })
+}

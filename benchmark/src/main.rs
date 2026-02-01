@@ -231,13 +231,14 @@ fn run_library_validation(
                 .cloned()
         })
         .or_else(|| libs.get(0).cloned())
-        .ok_or_else(|| {
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
             format!(
                 "No shared library found in {} (looked for stems {} or {})",
                 target_release.display(),
                 desired_stem,
                 expected_stem
             )
+            .into()
         })?;
 
     // Copy it into CANDIDATE_DIR/translated_rust/target/release/lib<name>.so so the runner finds it.
@@ -251,7 +252,7 @@ fn run_library_validation(
     let lib_extension = lib_path
         .extension()
         .and_then(|ext| ext.to_str())
-        .ok_or_else(|| {
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
             format!(
                 "Selected library '{}' has no file extension; expected .so, .dylib, or .dll",
                 lib_path.display()

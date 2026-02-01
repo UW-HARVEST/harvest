@@ -43,7 +43,7 @@ impl TranspilationResult {
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
             Ok(artifacts) => {
                 // Prefer the first artifact as the "binary" path for executable cases.
-                let first = artifacts.get(0).cloned().unwrap_or_default();
+                let first = artifacts.first().cloned().unwrap_or_default();
                 (true, first, None)
             }
             Err(err) => (false, PathBuf::new(), Some(err.clone())),
@@ -230,7 +230,7 @@ fn run_library_validation(
                 })
                 .cloned()
         })
-        .or_else(|| libs.get(0).cloned())
+        .or_else(|| libs.first().cloned())
         .ok_or_else(|| -> Box<dyn std::error::Error> {
             format!(
                 "No shared library found in {} (looked for stems {} or {})",
@@ -497,7 +497,6 @@ fn benchmark_single_program(
         return result;
     }
 
-
     // Library and executable validation differ.
     let (test_results, error_messages, passed_tests) = if is_lib {
         // Prevent cargo from attaching to the parent workspace when building generated outputs.
@@ -531,8 +530,10 @@ fn benchmark_single_program(
                 return result;
             }
             Err(e) => {
-                result.error_message =
-                    Some(format!("Failed to run cargo build in {}: {e}", output_dir.display()));
+                result.error_message = Some(format!(
+                    "Failed to run cargo build in {}: {e}",
+                    output_dir.display()
+                ));
                 return result;
             }
         }

@@ -191,17 +191,16 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
             lines.push(line.to_string());
             continue;
         }
-        if in_package {
-            if let Some((key, _rest)) = trimmed.split_once('=') {
-                if key.trim() == "name" {
-                    // Preserve original indentation when rewriting the name field.
-                    let leading_ws_len = line.len() - line.trim_start().len();
-                    let indent = &line[..leading_ws_len];
-                    lines.push(format!("{indent}name = \"{}\"", desired));
-                    changed = true;
-                    continue;
-                }
-            }
+        if in_package
+            && let Some((key, _rest)) = trimmed.split_once('=')
+            && key.trim() == "name"
+        {
+            // Preserve original indentation when rewriting the name field.
+            let leading_ws_len = line.len() - line.trim_start().len();
+            let indent = &line[..leading_ws_len];
+            lines.push(format!("{indent}name = \"{}\"", desired));
+            changed = true;
+            continue;
         }
         lines.push(line.to_string());
     }

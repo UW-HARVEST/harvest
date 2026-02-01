@@ -248,11 +248,17 @@ fn run_library_validation(
     std::fs::create_dir_all(&rust_artifacts_dir)?;
     let desired_stem = read_runner_library_stem(candidate_dir)
         .unwrap_or_else(|| format!("lib{}", pkg_name.replace('-', "_")));
-    let dest_name = format!(
-        "{}.{}",
-        desired_stem,
-        lib_path.extension().unwrap().to_string_lossy()
-    );
+    let lib_extension = lib_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .ok_or_else(|| {
+            format!(
+                "Selected library '{}' has no file extension; expected .so, .dylib, or .dll",
+                lib_path.display()
+            )
+            .into()
+        })?;
+    let dest_name = format!("{}.{}", desired_stem, lib_extension);
     let dest_path = rust_artifacts_dir.join(dest_name);
     std::fs::copy(lib_path, &dest_path).map_err(|e| -> Box<dyn std::error::Error> {
         format!(
@@ -480,30 +486,55 @@ fn benchmark_single_program(
         return result;
     }
 
-    assert!(translation_result.rust_binary_path.exists());
+    if !translation_result.rust_binary_path.exists() {
+        let error = format!(
+            "Rust build reported success, but expected output artifact was not found at {:?}",
+            translation_result.rust_binary_path
+        );
+        log::error!("{}", error);
+        result.error_message = Some(error);
+        return result;
+    }
 
-    let is_lib = program_name.ends_with("_lib");
 
     // Library and executable validation differ.
     let (test_results, error_messages, passed_tests) = if is_lib {
         // Prevent cargo from attaching to the parent workspace when building generated outputs.
-        let _ = add_local_workspace_guard(&output_dir.join("Cargo.toml"));
+        if let Err(e) = add_local_workspace_guard(&output_dir.join("Cargo.toml")) {
+            log::warn!("Failed to add local workspace guard: {e}");
+        }
         // Copy runner and test_vectors for convenience and for cando2 expectations.
-        let _ = copy_optional_dir(&program_dir.join("runner"), &output_dir.join("runner"));
-        let _ = copy_optional_dir(
+        if let Err(e) = copy_optional_dir(&program_dir.join("runner"), &output_dir.join("runner")) {
+            log::warn!("Failed to copy optional 'runner' directory: {e}");
+        }
+        if let Err(e) = copy_optional_dir(
             &program_dir.join("test_vectors"),
             &output_dir.join("test_vectors"),
-        );
+        ) {
+            log::warn!("Failed to copy optional 'test_vectors' directory: {e}");
+        }
         if let Err(e) = ensure_cdylib(&output_dir) {
             result.error_message = Some(format!("Failed to prepare cdylib: {e}"));
             return result;
         }
         // Rebuild after ensuring cdylib.
-        let _ = Command::new("cargo")
+        let build_status = Command::new("cargo")
             .arg("build")
             .arg("--release")
             .current_dir(&output_dir)
             .status();
+        match build_status {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                result.error_message = Some(format!("cargo build failed with status: {status}"));
+                return result;
+            }
+            Err(e) => {
+                result.error_message =
+                    Some(format!("Failed to run cargo build in {}: {e}", output_dir.display()));
+                return result;
+            }
+        }
         match run_library_validation(
             &program_name,
             &output_dir,
@@ -667,7 +698,23 @@ fn ensure_cdylib(output_dir: &Path) -> HarvestResult<()> {
         return Err(format!("Cargo.toml not found in {}", output_dir.display()).into());
     }
     let mut contents = fs::read_to_string(&manifest)?;
-    if contents.contains("crate-type") {
+
+    // Look specifically for a `crate-type` entry within the `[lib]` section.
+    let mut in_lib = false;
+    let mut has_lib_crate_type = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_lib = trimmed == "[lib]";
+            continue;
+        }
+        if in_lib && trimmed.starts_with("crate-type") {
+            has_lib_crate_type = true;
+            break;
+        }
+    }
+
+    if has_lib_crate_type {
         return Ok(());
     }
     contents.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
@@ -705,9 +752,26 @@ fn rewrite_cando_dep(manifest: &Path, new_path: &str) -> HarvestResult<()> {
     let contents = fs::read_to_string(manifest)?;
     let mut changed = false;
     let mut new_lines = Vec::new();
+    let mut in_deps = false;
     for line in contents.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("cando2") && trimmed.contains("path") {
+        let trimmed_full = line.trim();
+
+        // Track whether we are in a *dependencies* section (e.g. [dependencies],
+        // [dev-dependencies], [build-dependencies], or target-specific dependencies).
+        if trimmed_full.starts_with('[') && trimmed_full.ends_with(']') {
+            let section_name = &trimmed_full[1..trimmed_full.len().saturating_sub(1)];
+            in_deps = section_name.contains("dependencies");
+            new_lines.push(line.to_string());
+            continue;
+        }
+
+        if in_deps
+            && !trimmed.starts_with('#')
+            && trimmed.starts_with("cando2")
+            && trimmed.contains('=')
+            && trimmed.contains("path")
+        {
             new_lines.push(format!("cando2 = {{ path = \"{}\" }}", new_path));
             changed = true;
         } else {
@@ -756,19 +820,26 @@ fn read_runner_library_stem(candidate_dir: &Path) -> Option<String> {
 }
 
 /// Ensure the given manifest opts out of any parent workspace by declaring an empty workspace.
+fn ensure_local_workspace_guard(mut contents: String) -> String {
+    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+        return contents;
+    }
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str("[workspace]\n");
+    contents
+}
+
 fn add_local_workspace_guard(manifest: &Path) -> HarvestResult<()> {
     if !manifest.exists() {
         return Ok(());
     }
     let contents = fs::read_to_string(manifest)?;
-    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+    let updated = ensure_local_workspace_guard(contents.clone());
+    if updated == contents {
         return Ok(());
     }
-    let mut updated = contents;
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated.push_str("[workspace]\n");
     fs::write(manifest, updated)?;
     Ok(())
 }

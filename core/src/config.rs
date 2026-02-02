@@ -3,6 +3,13 @@ use std::{collections::HashMap, path::PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectKindOverride {
+    Executable,
+    Library,
+}
+
 /// Configuration for this harvest-translate run. The sources of these configuration values (from
 /// highest-precedence to lowest-precedence) are:
 ///
@@ -16,6 +23,10 @@ pub struct Config {
 
     /// Path to output directory.
     pub output: PathBuf,
+
+    /// Optional manual override for project kind. If set, identify_project_kind is skipped.
+    #[serde(default)]
+    pub project_kind: Option<ProjectKindOverride>,
 
     /// Path to the diagnostics directory, if you want diagnostics output. If you do not specify a
     /// diagnostics path, a temporary directory will be created (so that working directories can be
@@ -49,6 +60,7 @@ impl Config {
         Self {
             input: PathBuf::from("mock_input"),
             output: PathBuf::from("mock_output"),
+            project_kind: None,
             diagnostics_dir: None,
             force: false,
             log_filter: "off".to_owned(),

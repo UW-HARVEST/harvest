@@ -61,6 +61,8 @@ cargo run -- --print-config-path
 cargo run --bin=translate --release -- /path/to/c/code -o /path/to/output
 # Example:
 # cargo run --bin=translate --release -- Test-Corpus/Public-Tests/B01_synthetic/001_helloworld/test_case/ -o example_output/
+# If your project has no CMakeLists.txt or you want to override detection, pass:
+#   --project-kind exe   # or: lib
 ```
 
 ### Running a set of TRACTOR benchmarks

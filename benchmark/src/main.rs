@@ -70,6 +70,7 @@ pub fn translate_c_directory_to_rust_project(
         print_config_path: false,
         config: config_overrides.to_vec(),
         force: false,
+        project_kind: harvest_translate::cli::ProjectKindArg::Auto,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");

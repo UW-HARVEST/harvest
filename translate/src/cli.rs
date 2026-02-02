@@ -1,14 +1,24 @@
 //! The command-line arguments and configuration system for [crate::transpile] and HARVEST's
 //! `translate` binary.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use config::FileFormat::Toml;
 use directories::ProjectDirs;
 use harvest_core::config::Config;
+use harvest_core::config::ProjectKindOverride;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProjectKindArg {
+    Auto,
+    #[value(alias = "executable")]
+    Exe,
+    #[value(alias = "library")]
+    Lib,
+}
 
 /// Command-line arguments for HARVEST's `translate` binary.
 #[derive(Debug, Parser)]
@@ -32,6 +42,10 @@ pub struct Args {
     /// Path to output directory containing the translated Rust code.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Manually set project kind (skip CMakeLists detection).
+    #[arg(long, value_enum, default_value = "auto")]
+    pub project_kind: ProjectKindArg,
 }
 
 /// Prints out a warning message for every field in `unknown`.
@@ -102,6 +116,18 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
             .expect("settings override failed");
     }
 
+    // Manual project kind override
+    if !matches!(args.project_kind, ProjectKindArg::Auto) {
+        let kind = match args.project_kind {
+            ProjectKindArg::Exe => "executable",
+            ProjectKindArg::Lib => "library",
+            ProjectKindArg::Auto => unreachable!(),
+        };
+        settings = settings
+            .set_override("project_kind", kind)
+            .expect("settings override failed");
+    }
+
     let mut config: Config = settings
         .build()
         .expect("failed to build settings")
@@ -112,6 +138,14 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     }
     if let Some(ref output) = args.output {
         config.output = output.clone();
+    }
+    // CLI overrides config value if provided
+    if !matches!(args.project_kind, ProjectKindArg::Auto) {
+        config.project_kind = Some(match args.project_kind {
+            ProjectKindArg::Exe => ProjectKindOverride::Executable,
+            ProjectKindArg::Lib => ProjectKindOverride::Library,
+            ProjectKindArg::Auto => unreachable!(),
+        });
     }
     config
 }

@@ -93,26 +93,16 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // // Get all source files from RawSource
-        // let source_files = raw_source.file_paths();
-
         // Extract and categorize top-level declarations
         let declarations = extract_top_level_decls(clang_ast, raw_source);
-        // declarations.show_all(&source_files);
 
         // Translate all declarations
         let translations = translation::translate_decls(&declarations, raw_source, &config)?;
 
-        // Log the translations
         info!(
             "Successfully translated {} declarations",
             translations.len()
         );
-        for (i, translation) in translations.iter().enumerate() {
-            info!("Translation {}:", i + 1);
-            info!("  Rust code:\n{}", translation.rust_code);
-            info!("  Dependencies: {:?}", translation.dependencies);
-        }
 
         // Assemble translations into a CargoPackage representation
         let package_name = "translated_project"; // TODO: Derive from source project

@@ -12,11 +12,13 @@ use crate::utils::get_file_from_location;
 pub struct ClangDeclarations<'a> {
     /// Declarations imported from external sources (not in the project source files)
     pub imported: Vec<&'a Node<Clang>>,
-    /// Declarations from the project application files
+    /// Declarations from the project source files
     pub app: Vec<&'a Node<Clang>>,
 }
 
 /// Logs the declaration kind with appropriate log level.
+/// The role of this function is to alert the user when we encounter an unexpected declaration kind
+/// i.e., an AST node that should never be a top-level declaration.
 fn log_decl_kind(kind: &c_ast::Clang) {
     match kind {
         c_ast::Clang::TranslationUnitDecl => {
@@ -50,20 +52,8 @@ fn log_decl_kind(kind: &c_ast::Clang) {
 }
 
 /// Extracts all top-level translation unit declarations from a ClangAst and categorizes them.
-///
-/// This function iterates through all AST nodes in the ClangAst's HashMap,
-/// asserts that each root node is of kind `TranslationUnitDecl`, then categorizes
-/// all child declarations into imported (from external sources) and app (from project sources).
-///
-/// # Arguments
-/// * `clang_ast` - The ClangAst structure containing parsed ASTs
-/// * `source_files` - Set of file paths that are part of the project source
-///
-/// # Returns
-/// A ClangDeclarations struct containing categorized declaration nodes
-///
-/// # Panics
-/// Panics if any AST root node is not of kind `TranslationUnitDecl` or if an unexpected child kind is encountered
+/// This function assumes that the structure of the Clang AST is a list of TranslationUnitDecl nodes,
+/// whose children are the top-level declarations.
 pub fn extract_top_level_decls<'a>(
     clang_ast: &'a ClangAst,
     source_files: &'a RawSource,

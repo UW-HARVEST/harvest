@@ -17,7 +17,7 @@ mod recombine;
 mod translation;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
-pub use translation::{RustDeclaration, translate_decls};
+pub use translation::{RustDeclaration, TranslationResult, translate_decls};
 
 /// Configuration for the modular translation tool.
 #[derive(Debug, Deserialize)]
@@ -96,17 +96,17 @@ impl Tool for ModularTranslationLlm {
         // Extract and categorize top-level declarations
         let declarations = extract_top_level_decls(clang_ast, raw_source);
 
-        // Translate all declarations
-        let translations = translation::translate_decls(&declarations, raw_source, &config)?;
+        // Translate all declarations (includes Cargo.toml generation)
+        let translation_result =
+            translation::translate_decls(&declarations, raw_source, project_kind, &config)?;
 
         info!(
             "Successfully translated {} declarations",
-            translations.len()
+            translation_result.translations.len()
         );
 
         // Assemble translations into a CargoPackage representation
-        let package_name = "translated_project"; // TODO: Derive from source project
-        let cargo_package = recombine::recombine_decls(translations, project_kind, package_name)?;
+        let cargo_package = recombine::recombine_decls(translation_result, project_kind)?;
 
         Ok(Box::new(cargo_package))
     }

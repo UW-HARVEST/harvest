@@ -16,8 +16,11 @@
                     },
                     "required": ["rust_code", "dependencies"]
                 }
+            },
+            "cargo_toml": {
+                "type": "string"
             }
         },
-        "required": ["translations"]
+        "required": ["translations", "cargo_toml"]
     }
 }

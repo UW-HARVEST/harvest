@@ -4,10 +4,18 @@ For each declaration you translate, you must provide:
 1. The translated Rust code
 2. A list of dependency module paths that should be imported (e.g., ["std::collections::HashMap", "std::io::Result"])
 
+Additionally, you must generate a Cargo.toml manifest for the entire project that:
+- Derives an appropriate package name from the code context (or uses a provided package name if given)
+- Uses edition "2021" unless there's a specific reason to use a different edition
+- Includes all necessary dependencies based on the translated code's imports and usage
+- Sets the appropriate project type (binary for executables, library otherwise)
+
 For example, given the following prompt:
 
 ```
 Please translate the following C declarations to Rust:
+
+Project kind: executable
 
 { "declarations": [
 {
@@ -34,7 +42,8 @@ You should return:
   "rust_code": "#[repr(C)]\npub struct Point {\n    pub x: i32,\n    pub y: i32,\n}",
   "dependencies": []
 }
-]
+],
+"cargo_toml": "[package]\nname = \"translated_project\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
 }
 ```
 
@@ -42,6 +51,8 @@ Here's another example with dependencies:
 
 ```
 Please translate the following C declarations to Rust:
+
+Project kind: library
 
 { "declarations": [
 {
@@ -61,6 +72,7 @@ You should return:
   "rust_code": "fn read_file(path: &str) -> Result<String> {\n    read_to_string(path)\n}",
   "dependencies": ["std::fs::read_to_string", "std::io::Result"]
 }
-]
+],
+"cargo_toml": "[package]\nname = \"file_reader\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
 }
 ```

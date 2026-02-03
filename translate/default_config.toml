@@ -9,3 +9,10 @@ address = "http://localhost:11434"
 backend = "ollama"
 model = "codellama:7b"
 max_tokens = 10000
+
+[tools.modular_translation_llm]
+address = "http://localhost:11434"
+backend = "ollama"
+model = "codellama:7b"
+max_tokens = 10000
+

@@ -530,6 +530,7 @@ dependencies = [
  "clap",
  "config",
  "directories",
+ "full_source",
  "harvest_core",
  "identify_project_kind",
  "libc",
@@ -537,9 +538,11 @@ dependencies = [
  "raw_source_to_cargo_llm",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "try_cargo_build",
+ "walkdir",
 ]
 
 [[package]]

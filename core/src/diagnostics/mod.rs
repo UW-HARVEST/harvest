@@ -17,7 +17,7 @@ use crate::tools::Tool;
 use crate::utils::{EmptyDirError, empty_writable_dir};
 use std::collections::HashMap;
 use std::fmt::{Arguments, Write as _};
-use std::fs::{File, canonicalize, create_dir, write};
+use std::fs::{File, canonicalize, create_dir, create_dir_all, write};
 use std::io::{self, IoSlice, Write};
 use std::mem::replace;
 use std::num::NonZeroU64;
@@ -85,11 +85,11 @@ impl Collector {
             }
         };
         let diagnostics_dir = diagnostics_dir.expect("invalid diagnostics path?");
-        create_dir(PathBuf::from_iter([
+        create_dir_all(PathBuf::from_iter([
             diagnostics_dir.as_path(),
             "ir".as_ref(),
         ]))?;
-        create_dir(PathBuf::from_iter([
+        create_dir_all(PathBuf::from_iter([
             diagnostics_dir.as_path(),
             "steps".as_ref(),
         ]))?;

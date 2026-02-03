@@ -46,6 +46,14 @@ pub struct Args {
     /// Manually set project kind (skip CMakeLists detection).
     #[arg(long, value_enum, default_value = "auto")]
     pub project_kind: ProjectKindArg,
+
+    /// Path to compile_commands.json (enables compile-commands single-file mode).
+    #[arg(long)]
+    pub compile_commands: Option<PathBuf>,
+
+    /// Project root for resolving headers (defaults to directory of compile_commands.json).
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
 }
 
 /// Prints out a warning message for every field in `unknown`.
@@ -104,7 +112,7 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     // However, the config crate does not support providing a Path in an override.
     // We could convert to a string and back, but that can be lossy. Instead, this just sets a
     // blank value and then corrects it after deserialization.
-    if args.input.is_some() {
+    if args.input.is_some() || args.compile_commands.is_some() {
         settings = settings
             .set_override("input", " ")
             .expect("settings override failed");
@@ -135,6 +143,10 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
         .expect("config deserialization failed");
     if let Some(ref input) = args.input {
         config.input = input.clone();
+    } else if let Some(ref cc) = args.compile_commands {
+        // Fallback to the directory containing compile_commands.json; will be replaced later.
+        let parent = cc.parent().unwrap_or_else(|| std::path::Path::new("."));
+        config.input = parent.to_path_buf();
     }
     if let Some(ref output) = args.output {
         config.output = output.clone();
@@ -146,6 +158,12 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
             ProjectKindArg::Lib => ProjectKindOverride::Library,
             ProjectKindArg::Auto => unreachable!(),
         });
+    }
+    if args.compile_commands.is_some() {
+        config.compile_commands = args.compile_commands.clone();
+    }
+    if args.project_root.is_some() {
+        config.project_root = args.project_root.clone();
     }
     config
 }

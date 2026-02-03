@@ -16,13 +16,22 @@ pub enum ProjectKindOverride {
 /// 1. Configurations passed using the `--config` command line flag.
 /// 2. A user-specific configuration directory (e.g. `$HOME/.config/harvest/config.toml').
 /// 3. Defaults specified in the code (using `#[serde(default)]`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     /// Path to the directory containing the C code to translate.
     pub input: PathBuf,
 
     /// Path to output directory.
     pub output: PathBuf,
+
+    /// Optional path to compile_commands.json; when set, translate can synthesize per-file inputs.
+    #[serde(default)]
+    pub compile_commands: Option<PathBuf>,
+
+    /// Optional project root for resolving headers; defaults to the directory containing
+    /// compile_commands.json when compile_commands is set.
+    #[serde(default)]
+    pub project_root: Option<PathBuf>,
 
     /// Optional manual override for project kind. If set, identify_project_kind is skipped.
     #[serde(default)]
@@ -60,6 +69,8 @@ impl Config {
         Self {
             input: PathBuf::from("mock_input"),
             output: PathBuf::from("mock_output"),
+            compile_commands: None,
+            project_root: None,
             project_kind: None,
             diagnostics_dir: None,
             force: false,

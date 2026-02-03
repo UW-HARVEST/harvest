@@ -10,7 +10,7 @@ use harvest_core::{Id, Representation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, trace};
 
 use identify_project_kind::ProjectKind;
@@ -48,9 +48,20 @@ impl Tool for RawSourceToCargoLlm {
 
         // Use the llm crate to connect to the LLM.
         // Select system prompt based on project kind
-        let system_prompt = match project_kind {
+        let base_prompt = match project_kind {
             ProjectKind::Executable => SYSTEM_PROMPT_EXECUTABLE,
             ProjectKind::Library => SYSTEM_PROMPT_LIBRARY,
+        };
+        let system_prompt_owned;
+        let system_prompt = if config.header_light {
+            const HEADER_LIGHT_HINT: &str = "Headers are provided only for reference. Translate the .c file; only translate header content actually used by the .c (inline functions, macros it depends on). Unused declarations without bodies do not need Rust equivalents.";
+            system_prompt_owned = format!(
+                "{HEADER_LIGHT_HINT}\n\n{base}",
+                base = base_prompt.trim_end()
+            );
+            &system_prompt_owned
+        } else {
+            base_prompt
         };
 
         // Build LLM client using core/llm
@@ -90,7 +101,49 @@ impl Tool for RawSourceToCargoLlm {
         let files: OutputFiles = serde_json::from_str(&response)?;
         info!("LLM response contains {} files.", files.files.len());
         let mut out_dir = RawDir::default();
-        for file in files.files {
+        let filtered = if let Some(ref single_path) = config.single_out_path {
+            // Prefer file whose filename matches the target; else first non-TOML; else first.
+            let target_name = Path::new(single_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            let mut name_match: Option<OutputFile> = None;
+            let mut non_toml: Option<OutputFile> = None;
+            let mut first: Option<OutputFile> = None;
+            for f in files.files {
+                if first.is_none() {
+                    first = Some(f.clone());
+                }
+                let is_toml = Path::new(&f.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("toml"))
+                    .unwrap_or(false);
+                if !is_toml && non_toml.is_none() {
+                    non_toml = Some(f.clone());
+                }
+                if let Some(tn) = &target_name {
+                    if Path::new(&f.path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n == tn)
+                        .unwrap_or(false)
+                    {
+                        name_match = Some(f.clone());
+                        break;
+                    }
+                }
+            }
+            let mut chosen = name_match
+                .or(non_toml)
+                .or(first)
+                .ok_or("LLM returned no files")?;
+            chosen.path = single_path.clone().into();
+            vec![chosen]
+        } else {
+            files.files
+        };
+        for file in filtered {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
         Ok(Box::new(CargoPackage { dir: out_dir }))
@@ -102,6 +155,14 @@ pub struct Config {
     /// LLM configuration.
     #[serde(flatten)]
     pub llm: LLMConfig,
+
+    /// If true, headers are reference-only: translate the .c file; include only used inline/macro parts.
+    #[serde(default)]
+    pub header_light: bool,
+
+    /// When set, keep only one output file and force its path to this value (used by compile_commands mode).
+    #[serde(default)]
+    pub single_out_path: Option<String>,
 
     #[serde(flatten)]
     unknown: HashMap<String, Value>,
@@ -122,13 +183,15 @@ impl Config {
                 model: "mock_model".into(),
                 max_tokens: 1000,
             },
+            header_light: false,
+            single_out_path: None,
             unknown: HashMap::new(),
         }
     }
 }
 
 /// Structure representing a file created by the LLM.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct OutputFile {
     contents: String,
     path: PathBuf,

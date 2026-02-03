@@ -12,6 +12,7 @@ load_raw_source = { path = "tools/load_raw_source" }
 raw_source_to_cargo_llm = { path = "tools/raw_source_to_cargo_llm" }
 try_cargo_build = { path = "tools/try_cargo_build" }
 c_ast = { path = "tools/c_ast" }
+modular_translation_llm = { path = "tools/modular_translation_llm" }
 log = "0.4.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

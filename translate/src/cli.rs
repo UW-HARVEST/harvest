@@ -21,6 +21,10 @@ pub struct Args {
     #[arg(long, short)]
     pub force: bool,
 
+    /// Use modular translation rather than standard all-at-once translation.
+    #[arg(long)]
+    pub modular: bool,
+
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
     pub input: Option<PathBuf>,
@@ -83,6 +87,12 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     if args.force {
         settings = settings
             .set_override("force", "true")
+            .expect("settings override failed");
+    }
+
+    if args.modular {
+        settings = settings
+            .set_override("modular", "true")
             .expect("settings override failed");
     }
 

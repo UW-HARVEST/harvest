@@ -54,6 +54,36 @@ pub enum Clang {
         qtype: QualType,
         annotation: Option<FunctionAnnotation>,
     },
+    /// Represents a record (struct/union) declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1RecordDecl.html
+    RecordDecl {
+        loc: Option<clang_ast::SourceLocation>,
+        range: Option<clang_ast::SourceRange>,
+        name: Option<String>,
+        #[serde(rename = "tagUsed")]
+        tag_used: Option<String>,
+        annotation: Option<String>,
+    },
+    /// Represents an enum declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1EnumDecl.html
+    EnumDecl {
+        loc: Option<clang_ast::SourceLocation>,
+        range: Option<clang_ast::SourceRange>,
+        name: Option<String>,
+        annotation: Option<String>,
+    },
+    /// Represents a variable declaration in the Clang AST.
+    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1VarDecl.html
+    VarDecl {
+        loc: Option<clang_ast::SourceLocation>,
+        range: Option<clang_ast::SourceRange>,
+        name: String,
+        #[serde(rename = "type")]
+        qtype: QualType,
+        #[serde(rename = "storageClass")]
+        storage_class: Option<String>,
+        annotation: Option<String>,
+    },
     /// Represents a parameter variable declaration in the Clang AST.
     /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1ParmVarDecl.html
     ParmVarDecl {
@@ -76,6 +106,46 @@ pub enum Clang {
         kind: Option<String>,
         annotation: Option<String>,
     },
+}
+
+impl Clang {
+    /// Returns the source location of this AST node, if available.
+    ///
+    /// # Returns
+    /// - `Some(&SourceLocation)` if the node has a location field
+    /// - `None` if the node doesn't have a location or if the location field is None
+    pub fn loc(&self) -> Option<&clang_ast::SourceLocation> {
+        match self {
+            Clang::TranslationUnitDecl => None,
+            Clang::TypedefDecl { loc, .. }
+            | Clang::FunctionDecl { loc, .. }
+            | Clang::RecordDecl { loc, .. }
+            | Clang::VarDecl { loc, .. }
+            | Clang::EnumDecl { loc, .. }
+            | Clang::ParmVarDecl { loc, .. }
+            | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
+            Clang::Other { .. } => None,
+        }
+    }
+
+    /// Returns the source range of this AST node, if available.
+    ///
+    /// # Returns
+    /// - `Some(&SourceRange)` if the node has a range field
+    /// - `None` if the node doesn't have a range or if the range field is None
+    pub fn range(&self) -> Option<&clang_ast::SourceRange> {
+        match self {
+            Clang::TranslationUnitDecl => None,
+            Clang::TypedefDecl { range, .. }
+            | Clang::FunctionDecl { range, .. }
+            | Clang::RecordDecl { range, .. }
+            | Clang::VarDecl { range, .. }
+            | Clang::ParmVarDecl { range, .. }
+            | Clang::EnumDecl { range, .. }
+            | Clang::CompoundStmt { range, .. } => range.as_ref(),
+            Clang::Other { .. } => None,
+        }
+    }
 }
 
 /// Our annotations for functions in the Clang AST.

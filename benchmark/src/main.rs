@@ -63,6 +63,7 @@ pub fn translate_c_directory_to_rust_project(
     input_dir: &Path,
     output_dir: &Path,
     config_overrides: &[String],
+    modular: bool,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -70,6 +71,7 @@ pub fn translate_c_directory_to_rust_project(
         print_config_path: false,
         config: config_overrides.to_vec(),
         force: false,
+        modular,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -109,6 +111,7 @@ pub fn run_all_benchmarks(
     output_dir: &Path,
     config_overrides: &[String],
     timeout: u64,
+    modular: bool,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -119,7 +122,8 @@ pub fn run_all_benchmarks(
         log::info!("Processing example {} of {}", i + 1, total_examples);
         log::info!("{}", "=".repeat(80));
 
-        let result = benchmark_single_program(program_dir, output_dir, config_overrides, timeout);
+        let result =
+            benchmark_single_program(program_dir, output_dir, config_overrides, timeout, modular);
 
         results.push(result);
     }
@@ -409,6 +413,7 @@ fn benchmark_single_program(
     output_root_dir: &Path,
     config_overrides: &[String],
     timeout: u64,
+    modular: bool,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -457,8 +462,12 @@ fn benchmark_single_program(
     }
 
     // Do the actual translation
-    let translation_result =
-        translate_c_directory_to_rust_project(&test_case_dir, &output_dir, config_overrides);
+    let translation_result = translate_c_directory_to_rust_project(
+        &test_case_src_dir,
+        &output_dir,
+        config_overrides,
+        modular,
+    );
 
     result.translation_success = translation_result.translation_success;
     result.rust_build_success = translation_result.build_success;
@@ -643,7 +652,13 @@ fn run(args: Args) -> HarvestResult<()> {
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs
-    let results = run_all_benchmarks(&program_dirs, &args.output_dir, &args.config, args.timeout)?;
+    let results = run_all_benchmarks(
+        &program_dirs,
+        &args.output_dir,
+        &args.config,
+        args.timeout,
+        args.modular,
+    )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;
 

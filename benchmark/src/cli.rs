@@ -17,6 +17,10 @@ pub struct Args {
     #[arg(help = "Path to the output directory for all translated Rust projects")]
     pub output_dir: PathBuf,
 
+    /// Use modular translation rather than standard all-at-once translation.
+    #[arg(long)]
+    pub modular: bool,
+
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,

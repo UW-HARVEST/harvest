@@ -30,11 +30,11 @@ struct DeclarationInput {
     source: String,
 }
 
-// /// Internal structure for the batch request.
-// #[derive(Debug, Serialize)]
-// struct DeclarationsRequest {
-//     declarations: Vec<DeclarationInput>,
-// }
+/// Result of the type translation (Pass 1) containing only type declarations
+#[derive(Debug, Clone, Deserialize)]
+pub struct TypeTranslationResult {
+    pub translations: Vec<RustDeclaration>,
+}
 
 /// Result of the translation containing both declarations and Cargo.toml
 #[derive(Debug, Deserialize)]
@@ -49,9 +49,18 @@ fn build_decls_translation_request(
     raw_source: &RawSource,
     project_kind: &ProjectKind,
 ) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
-    // Extract source text for all declarations
+    // Extract source text for all declarations (combining all three categories temporarily)
     let mut decl_sources = Vec::new();
-    for decl in &declarations.app {
+
+    // Combine all declaration types in order: types, globals, functions
+    let all_decls: Vec<_> = declarations
+        .app_types
+        .iter()
+        .chain(declarations.app_globals.iter())
+        .chain(declarations.app_functions.iter())
+        .collect();
+
+    for decl in all_decls {
         let source_text = if let Some(range) = decl.kind.range() {
             read_source_at_range(range, raw_source)?
         } else {
@@ -96,12 +105,19 @@ pub fn translate_decls(
     project_kind: &ProjectKind,
     config: &Config,
 ) -> Result<TranslationResult, Box<dyn std::error::Error>> {
+    let total_decls = declarations.app_types.len()
+        + declarations.app_globals.len()
+        + declarations.app_functions.len();
+
     debug!(
-        "Starting translation of {} declarations",
-        declarations.app.len()
+        "Starting translation of {} declarations ({} types, {} globals, {} functions)",
+        total_decls,
+        declarations.app_types.len(),
+        declarations.app_globals.len(),
+        declarations.app_functions.len()
     );
 
-    if declarations.app.is_empty() {
+    if total_decls == 0 {
         return Err("No declarations to translate".into());
     }
 
@@ -118,11 +134,11 @@ pub fn translate_decls(
 
     let translation_result: TranslationResult = serde_json::from_str(&response)?;
 
-    if translation_result.translations.len() != declarations.app.len() {
+    if translation_result.translations.len() != total_decls {
         return Err(format!(
             "LLM returned {} translations but expected {}",
             translation_result.translations.len(),
-            declarations.app.len()
+            total_decls
         )
         .into());
     }

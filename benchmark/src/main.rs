@@ -21,6 +21,7 @@ use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
 use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
+use regex::Regex;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -463,7 +464,7 @@ fn benchmark_single_program(
 
     // Do the actual translation
     let translation_result = translate_c_directory_to_rust_project(
-        &test_case_src_dir,
+        &test_case_dir,
         &output_dir,
         config_overrides,
         modular,
@@ -624,29 +625,38 @@ fn run(args: Args) -> HarvestResult<()> {
         collect_program_dirs(&args.input_dir)?
     };
 
-    if args.no_lib {
+    if let Some(filter_pattern) = &args.filter {
+        let regex = Regex::new(filter_pattern)
+            .map_err(|e| format!("Invalid regex pattern '{}': {}", filter_pattern, e))?;
+
         let before = program_dirs.len();
-        let mut skipped_names = Vec::new();
+        let mut filtered_out_names = Vec::new();
         program_dirs.retain(|path| {
-            let is_lib = path
+            let matches = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.ends_with("_lib"))
+                .map(|name| regex.is_match(name))
                 .unwrap_or(false);
-            if is_lib {
+
+            if !matches {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    skipped_names.push(name.to_string());
+                    filtered_out_names.push(name.to_string());
                 }
                 return false;
             }
             true
         });
-        let skipped = before.saturating_sub(program_dirs.len());
-        log::info!("no-lib flag enabled: skipped {} *_lib programs", skipped);
-        if !skipped_names.is_empty() {
-            log::info!("Skipped: {}", skipped_names.join(", "));
+
+        let filtered_out = before.saturating_sub(program_dirs.len());
+        log::info!(
+            "Filter '{}' applied: {} programs match, {} filtered out",
+            filter_pattern,
+            program_dirs.len(),
+            filtered_out
+        );
+        if !filtered_out_names.is_empty() {
+            log::info!("Filtered out: {}", filtered_out_names.join(", "));
         }
-        log::info!("Remaining programs: {}", program_dirs.len());
     }
 
     log_found_programs(&program_dirs, &args.input_dir)?;

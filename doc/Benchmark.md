@@ -14,14 +14,31 @@ Arguments:
 Options:
   -c, --config <CONFIG>    Set a configuration value; format $NAME=$VALUE
       --timeout <TIMEOUT>  Timeout in seconds for running test cases [default: 10]
-      --no-lib              Skip benchmarks whose directory names end with `_lib`
+      --filter <FILTER>    Filter benchmarks by regex pattern on directory names (keeps matching directories)
   -h, --help               Print help
 ```
 
-This interface should be fairly intuitive. 
-The most important detail is that `benchmark` inherits all translation settings (e.g., LLM model choice) from your existing `translate` configuration file. 
-Only the input and output directories are determined by the command-line arguments. 
+This interface should be fairly intuitive.
+The most important detail is that `benchmark` inherits all translation settings (e.g., LLM model choice) from your existing `translate` configuration file.
+Only the input and output directories are determined by the command-line arguments.
 If you need to override a configuration value, you can use the `--config` flag, which behaves exactly the same way as in translate.
+
+#### Using the `--filter` option
+The `--filter` option takes a regular expression pattern and only runs benchmarks whose directory names match the pattern. Here are some common examples:
+
+```bash
+# Run only library benchmarks (directories ending with _lib)
+benchmark Test-Corpus/Public-Tests/B01_synthetic output/ --filter=".*_lib$"
+
+# Run only executable benchmarks (exclude directories ending with _lib)
+benchmark Test-Corpus/Public-Tests/B01_synthetic output/ --filter="^(?!.*_lib$)"
+
+# Run only benchmarks starting with B01
+benchmark Test-Corpus/Public-Tests output/ --filter="^B01"
+
+# Run only benchmarks containing "example" in the name
+benchmark Test-Corpus/Public-Tests output/ --filter=".*example.*"
+```
 
 
 ### Input Format

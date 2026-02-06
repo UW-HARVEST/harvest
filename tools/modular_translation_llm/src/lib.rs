@@ -1,4 +1,8 @@
 //! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules and translates them one-by-one using an LLM.
+//!
+//! Uses a two-pass translation approach:
+//! - Pass 1: Translates type declarations (TypedefDecl, RecordDecl, EnumDecl) to establish data layout
+//! - Pass 2: Translates functions and globals (FunctionDecl, VarDecl) with type context from Pass 1
 
 use c_ast::ClangAst;
 use full_source::RawSource;
@@ -17,7 +21,10 @@ mod recombine;
 mod translation;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
-pub use translation::{RustDeclaration, TranslationResult, translate_decls};
+pub use translation::{
+    RustDeclaration, TranslationResult, TypeTranslationResult, translate_decls,
+    translate_functions, translate_types,
+};
 
 /// Configuration for the modular translation tool.
 #[derive(Debug, Deserialize)]

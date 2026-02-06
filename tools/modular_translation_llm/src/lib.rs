@@ -100,15 +100,25 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // Extract and categorize top-level declarations
+        // Extract and categorize top-level declarations into types, globals, and functions
         let declarations = extract_top_level_decls(clang_ast, raw_source);
 
-        // Translate all declarations (includes Cargo.toml generation)
+        info!(
+            "Extracted {} type declarations, {} global declarations, {} function declarations",
+            declarations.app_types.len(),
+            declarations.app_globals.len(),
+            declarations.app_functions.len()
+        );
+
+        // Perform two-pass translation:
+        // Pass 1: Types (TypedefDecl, RecordDecl, EnumDecl) - establishes data layout
+        // Pass 2: Functions and Globals (FunctionDecl, VarDecl) - with type context
         let translation_result =
-            translation::translate_decls(&declarations, raw_source, project_kind, &config)?;
+            translation::translate_decls(&declarations, raw_source, project_kind, &config)
+                .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
-            "Successfully translated {} declarations",
+            "Two-pass translation complete: {} total declarations translated",
             translation_result.translations.len()
         );
 

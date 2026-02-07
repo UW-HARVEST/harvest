@@ -28,4 +28,9 @@ pub struct Args {
     /// Timeout in seconds for running test cases
     #[arg(long, default_value = "10")]
     pub timeout: u64,
+
+    /// Filter benchmarks by regex pattern on directory names (keeps matching directories).
+    /// Examples: ".*_lib$" (only libraries), "^example" (only examples), "^(?!.*_lib$)" (exclude libraries)
+    #[arg(long)]
+    pub filter: Option<String>,
 }

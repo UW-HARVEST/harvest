@@ -1,11 +1,11 @@
 {
-    "name": "translations",
+    "name": "type_translations",
     "schema": {
         "type": "object",
         "properties": {
             "translations": {
-                "type": "array",
-                "items": {
+                "type": "object",
+                "additionalProperties": {
                     "type": "object",
                     "properties": {
                         "rust_code": { "type": "string" },
@@ -16,11 +16,8 @@
                     },
                     "required": ["rust_code", "dependencies"]
                 }
-            },
-            "cargo_toml": {
-                "type": "string"
             }
         },
-        "required": ["translations", "cargo_toml"]
+        "required": ["translations"]
     }
 }

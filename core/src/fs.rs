@@ -1,11 +1,276 @@
-//! Types representing a filesystem. Example use cases: representing a C source project, a Cargo
-//! project, etc.
+//! Filesystem abstractions. Used to represent directory trees, such as the input project or
+//! lowered Rust source.
+//!
+//! # Freezing
+//!
+//! These types are read-only. To create them:
+//!
+//! 1. Create the file/directory/symlink in the diagnostic directory and populate it as intended.
+//! 2. "freeze" the file using `Reporter::freeze_path` or `Scratch::freeze`.
+//!
+//! Freezing the contents will:
+//! 1. Make the on-disk structures read-only. This applies recursively, but does not follow
+//!    symlinks.
+//! 2. Construct a [DirEntry] representing the on-disk structure.
+//!
+//! After you have frozen a filesystem object, it (and everything else frozen with it, if it is a
+//! directory) must be left unchanged in the diagnostic directory. This is to avoid the need to
+//! store the contents of files in memory.
 
-use std::collections::{BTreeMap, btree_map};
-use std::ffi::OsString;
+use std::collections::{BTreeMap, HashMap, btree_map};
+use std::ffi::{OsStr, OsString};
 use std::fs::ReadDir;
+use std::io;
+use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
+use std::str::Utf8Error;
+use std::sync::Arc;
+use thiserror::Error;
 
+/// View of a frozen directory element.
+#[derive(Clone, Debug)]
+pub enum DirEntry {
+    Dir(Dir),
+    File(File),
+    Symlink(Symlink),
+}
+
+impl DirEntry {
+    /// Returns the contained [Dir] if this is a directory.
+    pub fn dir(&self) -> Option<Dir> {
+        match self {
+            DirEntry::Dir(dir) => Some(dir.clone()),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained [File] if this is a file.
+    pub fn file(&self) -> Option<File> {
+        match self {
+            DirEntry::File(file) => Some(file.clone()),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained [Symlink] if this is a symlink.
+    pub fn symlink(&self) -> Option<Symlink> {
+        match self {
+            DirEntry::Symlink(symlink) => Some(symlink.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl From<Dir> for DirEntry {
+    fn from(dir: Dir) -> DirEntry {
+        DirEntry::Dir(dir)
+    }
+}
+
+impl From<File> for DirEntry {
+    fn from(file: File) -> DirEntry {
+        DirEntry::File(file)
+    }
+}
+
+impl From<ResolvedEntry> for DirEntry {
+    fn from(resolved: ResolvedEntry) -> DirEntry {
+        match resolved {
+            ResolvedEntry::Dir(dir) => DirEntry::Dir(dir),
+            ResolvedEntry::File(file) => DirEntry::File(file),
+        }
+    }
+}
+
+impl From<Symlink> for DirEntry {
+    fn from(symlink: Symlink) -> DirEntry {
+        DirEntry::Symlink(symlink)
+    }
+}
+
+/// A DirEntry after symlinks have been fully resolved.
+#[derive(Clone, Debug)]
+pub enum ResolvedEntry {
+    Dir(Dir),
+    File(File),
+}
+
+impl ResolvedEntry {
+    /// Returns the contained [Dir] if this is a directory.
+    pub fn dir(&self) -> Option<Dir> {
+        match self {
+            ResolvedEntry::Dir(dir) => Some(dir.clone()),
+            _ => None,
+        }
+    }
+
+    /// Returns the contained [File] if this is a file.
+    pub fn file(&self) -> Option<File> {
+        match self {
+            ResolvedEntry::File(file) => Some(file.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl From<Dir> for ResolvedEntry {
+    fn from(dir: Dir) -> ResolvedEntry {
+        ResolvedEntry::Dir(dir)
+    }
+}
+
+impl From<File> for ResolvedEntry {
+    fn from(file: File) -> ResolvedEntry {
+        ResolvedEntry::File(file)
+    }
+}
+
+/// A frozen directory.
+#[derive(Clone, Debug)]
+pub struct Dir {
+    contents: Arc<HashMap<OsString, DirEntry>>,
+}
+
+impl Dir {
+    /// Iterates through the contents of this directory.
+    pub fn entries(&self) -> impl Iterator<Item = (OsString, DirEntry)> {
+        self.contents.iter().map(|(p, e)| (p.clone(), e.clone()))
+    }
+
+    /// Retrieves the entry at the specified location under this directory. This will resolve
+    /// symlinks, but only if they are relative and do not traverse outside this `Dir`.
+    pub fn get<P: AsRef<Path>>(&self, path: P) -> Result<ResolvedEntry, GetError> {
+        let _ = path;
+        todo!()
+    }
+
+    /// Retrieves the entry at the specified location. If you want a recursive lookup (traversing
+    /// into subdirectories), use [Dir::get] instead.
+    /// Returns `None` if there is no entry at `name`.
+    pub fn get_entry<N: AsRef<OsStr>>(&self, name: N) -> Option<DirEntry> {
+        self.contents.get(name.as_ref()).cloned()
+    }
+
+    /// Retrieves the entry at the specified location under this directory without following
+    /// symlinks or `.`/`..` entries. If an intermediate directory is a symlink (e.g. the path is
+    /// `a/b/c` where `a/b` is a symlink), this will return NotADirectory.
+    pub fn get_nofollow<P: AsRef<Path>>(&self, path: P) -> Result<DirEntry, GetNofollowError> {
+        let _ = path;
+        todo!()
+    }
+}
+
+/// An error returned from [Dir::get].
+#[derive(Debug, Error, Hash, Eq, PartialEq)]
+pub enum GetError {
+    #[error("symlink loop")]
+    FilesystemLoop,
+    #[error("path leaves the Dir")]
+    LeavesDir,
+    #[error("intermediate path component is a file")]
+    NotADirectory,
+    #[error("file or directory not found")]
+    NotFound,
+}
+
+/// An error returned from [Dir::get_nofollow].
+#[derive(Debug, Error, Hash, Eq, PartialEq)]
+pub enum GetNofollowError {
+    #[error("path leaves the Dir")]
+    LeavesDir,
+    #[error("intermediate path component is a file")]
+    NotADirectory,
+    #[error("file or directory not found")]
+    NotFound,
+}
+
+// Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
+// of the file can be shared between the copies, because it is computed lazily.
+/// A frozen file. A file can be a valid UTF-8, in which case it is considered a text file, or not
+/// UTF-8, in which case it is not. A [File] can be converted into a [TextFile] using [TryFrom] if
+/// the file is valid UTF-8.
+#[derive(Clone, Debug)]
+pub struct File {
+    // TODO: Implement
+}
+
+impl File {
+    /// Returns this file's contents as a byte array.
+    pub fn bytes(&self) -> Arc<[u8]> {
+        todo!()
+    }
+
+    /// Returns true if this file is UTF-8 (in which case it can be converted into a TextFile),
+    /// false otherwise.
+    pub fn is_utf8(&self) -> bool {
+        todo!()
+    }
+
+    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
+    pub fn path(&self) -> PathBuf {
+        todo!()
+    }
+}
+
+impl From<TextFile> for File {
+    fn from(file: TextFile) -> File {
+        let _ = file;
+        todo!()
+    }
+}
+
+/// A frozen UTF-8 file.
+#[derive(Clone, Debug)]
+pub struct TextFile {
+    // TODO: Implement
+}
+
+impl TextFile {
+    /// Returns this file's contents as a byte array.
+    pub fn bytes(&self) -> Arc<[u8]> {
+        self.str().into()
+    }
+
+    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
+    pub fn path(&self) -> PathBuf {
+        todo!()
+    }
+
+    /// Returns this file's contents as a str.
+    pub fn str(&self) -> Arc<str> {
+        todo!()
+    }
+}
+
+impl TryFrom<File> for TextFile {
+    type Error = Utf8Error;
+    fn try_from(file: File) -> Result<TextFile, Utf8Error> {
+        let _ = file;
+        todo!()
+    }
+}
+
+/// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
+/// not exist or may be entirely outside the diagnostics directory.
+#[derive(Clone, Debug)]
+pub struct Symlink {
+    // The path contained by this symlink.
+    contents: Arc<Path>,
+}
+
+impl Symlink {
+    /// Returns this symlink's target path.
+    pub fn contents(&self) -> &Path {
+        &self.contents
+    }
+
+    /// Writes this symlink into the filesystem at the given path.
+    pub fn write_rw<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        symlink(&self.contents, path)
+    }
+}
+
+// TODO: Remove; RawEntry is being replaced by DirEntry.
 /// A representation of a file-system directory entry.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -31,6 +296,7 @@ impl RawEntry {
 }
 
 /// A representation of a file-system directory tree.
+// TODO: Removed; RawDir is being replaced by Dir.
 #[derive(Debug, Default)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct RawDir(BTreeMap<OsString, RawEntry>);
@@ -271,6 +537,7 @@ impl RawDir {
 }
 
 /// Error type returned by [RawDir::set_file].
+// TODO: Remove when no longer needed.
 #[derive(Debug, Eq, Hash, PartialEq, thiserror::Error)]
 pub enum SetFileError {
     #[error("tried to set file at absolute path")]
@@ -289,6 +556,7 @@ pub enum SetFileError {
 
 /// Error type returned by [RawDir::get_file].
 #[derive(Debug, Eq, Hash, PartialEq, thiserror::Error)]
+// TODO: Remove when no longer needed.
 pub enum GetFileError {
     #[error("tried to get file at absolute path")]
     AbsolutePath,

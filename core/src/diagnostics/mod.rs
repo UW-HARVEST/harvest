@@ -13,6 +13,7 @@ mod tool_reporter;
 
 use crate::HarvestIR;
 use crate::config::Config;
+use crate::fs::DirEntry;
 use crate::tools::Tool;
 use crate::utils::{EmptyDirError, empty_writable_dir};
 use std::collections::HashMap;
@@ -33,8 +34,7 @@ use tracing_subscriber::fmt::{MakeWriter, layer};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _, Registry};
 
-pub use tool_reporter::ToolJoiner;
-pub use tool_reporter::ToolReporter;
+pub use tool_reporter::{Scratch, ToolJoiner, ToolReporter};
 
 /// Diagnostics produced by transpilation. Can be used by callers of `transpile` to inspect the
 /// diagnostics produced during its execution.
@@ -146,6 +146,29 @@ pub struct Reporter {
 }
 
 impl Reporter {
+    /// Makes a read-only copy of a filesystem object in the diagnostic directory. `path` must be
+    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    pub fn copy_ro<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
+        let _ = (path, entry);
+        todo!()
+    }
+
+    /// Makes a read-write copy of a filesystem object in the diagnostic directory. `path` must be
+    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    pub fn copy_rw<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
+        let _ = (path, entry);
+        todo!()
+    }
+
+    /// Freezes the given path, returning an object referencing it. `path` must be relative to the
+    /// diagnostics directory, and cannot contain `.` or `..`. This will not follow symlinks (i.e.
+    /// `path` cannot have symlinks in its directory path, and if `path` points to a symlink then a
+    /// Symlink will be returned).
+    pub fn freeze<P: AsRef<Path>>(&mut self, path: P) -> io::Result<DirEntry> {
+        let _ = path;
+        todo!()
+    }
+
     /// Reports a new version of the IR.
     pub fn report_ir_version(&self, version: u64, snapshot: &HarvestIR) {
         let shared = lock_shared(&self.shared);

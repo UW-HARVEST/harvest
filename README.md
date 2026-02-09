@@ -68,9 +68,18 @@ cargo run --bin=translate --release -- /path/to/c/code -o /path/to/output
 ### Running a set of TRACTOR benchmarks
 ```bash
 cargo run --bin=benchmark --release -- /path/to/input/dir /path/to/output/dir
-# Example:
+# Example: run all benchmarks
 # cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/
-# Optional: add --no-lib to skip benchmarks whose directory names end with `_lib` when you only want executable cases.
+
+# Optional: add --filter=<regex> to filter benchmarks by directory name (only matching directories will run)
+# Example: run only library benchmarks (directories ending with _lib)
+# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/ --filter=".*_lib$"
+
+# Example: run only executable benchmarks (exclude directories ending with _lib)
+# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/ --filter="^(?!.*_lib$)"
+
+# Example: run only benchmarks starting with B01
+# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests example_output/ --filter="^B01"
 ```
 
 ### Configuration

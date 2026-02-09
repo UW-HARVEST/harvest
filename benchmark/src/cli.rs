@@ -17,6 +17,10 @@ pub struct Args {
     #[arg(help = "Path to the output directory for all translated Rust projects")]
     pub output_dir: PathBuf,
 
+    /// Use modular translation rather than standard all-at-once translation.
+    #[arg(long)]
+    pub modular: bool,
+
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,
@@ -25,7 +29,8 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub timeout: u64,
 
-    /// Skip benchmarks whose directory names end with `_lib` (library runners)
-    #[arg(long = "no-lib", default_value_t = false)]
-    pub no_lib: bool,
+    /// Filter benchmarks by regex pattern on directory names (keeps matching directories).
+    /// Examples: ".*_lib$" (only libraries), "^example" (only examples), "^(?!.*_lib$)" (exclude libraries)
+    #[arg(long)]
+    pub filter: Option<String>,
 }

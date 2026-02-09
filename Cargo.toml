@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate", "tools/c_ast" ]
+members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate", "tools/c_ast", "tools/modular_translation_llm" ]
 resolver = "3"
 
 [workspace.dependencies]
@@ -11,12 +11,15 @@ identify_project_kind = { path = "tools/identify_project_kind" }
 load_raw_source = { path = "tools/load_raw_source" }
 raw_source_to_cargo_llm = { path = "tools/raw_source_to_cargo_llm" }
 try_cargo_build = { path = "tools/try_cargo_build" }
+c_ast = { path = "tools/c_ast" }
+modular_translation_llm = { path = "tools/modular_translation_llm" }
 log = "0.4.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
 tracing = { default-features = false, features = ["std"], version = "0.1.44" }
+clang-ast = { version = "0.1.35", features = ["serde"] }
 
 [workspace.lints.clippy]
 self_named_module_files = "warn"

@@ -10,6 +10,7 @@ use harvest_core::{Id, Representation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, trace};
 
@@ -48,9 +49,9 @@ impl Tool for RawSourceToCargoLlm {
 
         // Use the llm crate to connect to the LLM.
         // Select system prompt based on project kind
-        let base_prompt = match project_kind {
-            ProjectKind::Executable => SYSTEM_PROMPT_EXECUTABLE,
-            ProjectKind::Library => SYSTEM_PROMPT_LIBRARY,
+        let (config_prompt, builtin_prompt) = match project_kind {
+            ProjectKind::Executable => (config.prompt_executable, SYSTEM_PROMPT_EXECUTABLE),
+            ProjectKind::Library => (config.prompt_library, SYSTEM_PROMPT_LIBRARY),
         };
         let system_prompt_owned;
         let system_prompt = if config.header_light {
@@ -65,7 +66,7 @@ impl Tool for RawSourceToCargoLlm {
         };
 
         // Build LLM client using core/llm
-        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, system_prompt)?;
+        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, &system_prompt)?;
 
         // Assemble the LLM request.
         let files: Vec<OutputFile> = in_dir
@@ -156,6 +157,14 @@ pub struct Config {
     #[serde(flatten)]
     pub llm: LLMConfig,
 
+    /// System prompt to use for executable projects. If not specified, a built-in default prompt
+    /// will be used.
+    pub prompt_executable: Option<PathBuf>,
+
+    /// System prompt to use for library projects. If not specified, a built-in default prompt will
+    /// be used.
+    pub prompt_library: Option<PathBuf>,
+
     /// If true, headers are reference-only: translate the .c file; include only used inline/macro parts.
     #[serde(default)]
     pub header_light: bool,
@@ -183,6 +192,8 @@ impl Config {
                 model: "mock_model".into(),
                 max_tokens: 1000,
             },
+            prompt_executable: None,
+            prompt_library: None,
             header_light: false,
             single_out_path: None,
             unknown: HashMap::new(),

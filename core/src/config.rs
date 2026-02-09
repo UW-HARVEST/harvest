@@ -48,6 +48,10 @@ pub struct Config {
     /// If false: if the directory exists and is nonempty, translate will output an error and exit.
     pub force: bool,
 
+    /// If true, use modular translation (translating one declaration at a time).
+    // If false, use standard all-at-once translation.
+    pub modular: bool,
+
     /// Filter describing which log messages should be output to stdout. This is in the
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
@@ -74,6 +78,7 @@ impl Config {
             project_kind: None,
             diagnostics_dir: None,
             force: false,
+            modular: false,
             log_filter: "off".to_owned(),
             tools: Default::default(),
             unknown: Default::default(),

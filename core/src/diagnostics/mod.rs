@@ -13,19 +13,18 @@ mod tool_reporter;
 
 use crate::HarvestIR;
 use crate::config::Config;
-use crate::fs::DirEntry;
+use crate::fs::{DiagnosticsDir, DiagnosticsDirNewError, DirEntry, Freezer};
 use crate::tools::Tool;
-use crate::utils::{EmptyDirError, empty_writable_dir};
+use crate::utils::EmptyDirError;
 use std::collections::HashMap;
 use std::fmt::{Arguments, Write as _};
-use std::fs::{File, canonicalize, create_dir, write};
+use std::fs::{File, create_dir, write};
 use std::io::{self, IoSlice, Write};
 use std::mem::replace;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tempfile::{TempDir, tempdir};
 use thiserror::Error;
 use tool_reporter::ToolId;
 use tracing::{dispatcher::DefaultGuard, error, info, subscriber::set_default};
@@ -43,9 +42,6 @@ pub struct Diagnostics {
     // https://github.com/betterbytes-org/harvest-code/issues/51#issuecomment-3524208160,
     // we at least want information on tool invocation results (successes and errors with error
     // messages).
-
-    // TODO: If this needs to access the diagnostics directory, then we need to move
-    // Option<TempDir> from `Collector` into here.
 }
 
 impl Diagnostics {
@@ -64,38 +60,27 @@ pub struct Collector {
     shared: Arc<Mutex<Shared>>,
 
     // Guards that clean up values on drop.
-    _tempdir: Option<TempDir>,
     _tracing_guard: DefaultGuard,
 }
 
 impl Collector {
     /// Creates a Collector, starting diagnostics collection.
     pub fn initialize(config: &Config) -> Result<Collector, CollectorNewError> {
-        // We canonicalize the diagnostics path because it will be used to construct paths that are
-        // passed as to external commands (as command-line arguments), and the canonicalized path
-        // is probably the most compatible representation.
-        let (diagnostics_dir, _tempdir) = match &config.diagnostics_dir {
-            None => {
-                let tempdir = tempdir()?;
-                (canonicalize(tempdir.path()), Some(tempdir))
-            }
-            Some(path) => {
-                empty_writable_dir(path, config.force)?;
-                (canonicalize(path), None)
-            }
+        use DiagnosticsDirNewError::*;
+        let diagnostics_dir = DiagnosticsDir::new(config.diagnostics_dir.as_deref(), config.force);
+        let diagnostics_dir = match diagnostics_dir {
+            Ok(diagnostics_dir) => Arc::new(diagnostics_dir),
+            Err(EmptyDir(error)) => return Err(CollectorNewError::DiagnosticsEmptyDir(error)),
+            Err(IoError(error)) => return Err(CollectorNewError::IoError(error)),
         };
-        let diagnostics_dir = diagnostics_dir.expect("invalid diagnostics path?");
+        create_dir(PathBuf::from_iter([diagnostics_dir.path(), "ir".as_ref()]))?;
         create_dir(PathBuf::from_iter([
-            diagnostics_dir.as_path(),
-            "ir".as_ref(),
-        ]))?;
-        create_dir(PathBuf::from_iter([
-            diagnostics_dir.as_path(),
+            diagnostics_dir.path(),
             "steps".as_ref(),
         ]))?;
         let (diagnostics_sender, diagnostics_receiver) = channel();
         let messages_file = SharedWriter::new_append(PathBuf::from_iter([
-            diagnostics_dir.as_path(),
+            diagnostics_dir.path(),
             "messages".as_ref(),
         ]))?;
         let console_filter = EnvFilter::builder().parse(&config.log_filter)?;
@@ -109,12 +94,12 @@ impl Collector {
             shared: Arc::new(Mutex::new(Shared {
                 console_filter,
                 diagnostics: Diagnostics::new(),
-                diagnostics_dir,
+                diagnostics_dir: diagnostics_dir.clone(),
                 diagnostics_sender,
+                freezer: Freezer::new(diagnostics_dir),
                 messages_file,
                 tool_run_counts: HashMap::new(),
             })),
-            _tempdir,
             _tracing_guard,
         })
     }
@@ -149,15 +134,13 @@ impl Reporter {
     /// Makes a read-only copy of a filesystem object in the diagnostic directory. `path` must be
     /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
     pub fn copy_ro<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
-        let _ = (path, entry);
-        todo!()
+        lock_shared(&self.shared).freezer.copy_ro(path, entry)
     }
 
     /// Makes a read-write copy of a filesystem object in the diagnostic directory. `path` must be
     /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
     pub fn copy_rw<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
-        let _ = (path, entry);
-        todo!()
+        lock_shared(&self.shared).freezer.copy_rw(path, entry)
     }
 
     /// Freezes the given path, returning an object referencing it. `path` must be relative to the
@@ -165,14 +148,13 @@ impl Reporter {
     /// `path` cannot have symlinks in its directory path, and if `path` points to a symlink then a
     /// Symlink will be returned).
     pub fn freeze<P: AsRef<Path>>(&mut self, path: P) -> io::Result<DirEntry> {
-        let _ = path;
-        todo!()
+        lock_shared(&self.shared).freezer.freeze(path)
     }
 
     /// Reports a new version of the IR.
     pub fn report_ir_version(&self, version: u64, snapshot: &HarvestIR) {
         let shared = lock_shared(&self.shared);
-        let mut path = shared.diagnostics_dir.clone();
+        let mut path = shared.diagnostics_dir.path().to_owned();
         path.push("ir");
         path.push(format!("{version:03}"));
         if let Err(error) = create_dir(&path) {
@@ -239,10 +221,10 @@ fn lock_shared<'m>(shared: &'m Mutex<Shared>) -> MutexGuard<'m, Shared> {
 struct Shared {
     console_filter: EnvFilter,
     diagnostics: Diagnostics,
-    // Path to the root of the diagnostics directory structure.
-    diagnostics_dir: PathBuf,
+    diagnostics_dir: Arc<DiagnosticsDir>,
     // Channel to send the Diagnostics to the Collector when this Shared is dropped.
     diagnostics_sender: Sender<Diagnostics>,
+    freezer: Freezer,
 
     // Writer for $diagnostic_dir/messages
     messages_file: SharedWriter<File>,

@@ -5,12 +5,13 @@
 //! Design decisions to come back to:
 //! - Pass 1 results included as context for pass 2
 //! - No ordering constraints of function translations
-//! - Cargo.toml generated only in pass 2 (its not clear how well this works yet)
+//! - Cargo.toml generated after pass 2 using aggregated dependencies
 
 use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tracing::{debug, info, trace};
 
 use crate::Config;
@@ -26,11 +27,18 @@ const STRUCTURED_OUTPUT_SCHEMA_TYPES: &str =
 const STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS: &str =
     include_str!("prompts/func_translation/structured_schema.json");
 
+/// Structured output JSON schema for Cargo.toml generation.
+const STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML: &str =
+    include_str!("prompts/cargo_toml/structured_schema.json");
+
 /// System prompt for Pass 1 (types).
 const SYSTEM_PROMPT_TYPES: &str = include_str!("prompts/type_translation/system_prompt.txt");
 
 /// System prompt for Pass 2 (functions).
 const SYSTEM_PROMPT_FUNCTIONS: &str = include_str!("prompts/func_translation/system_prompt.txt");
+
+/// System prompt for Cargo.toml generation.
+const SYSTEM_PROMPT_CARGO_TOML: &str = include_str!("prompts/cargo_toml/system_prompt.txt");
 
 /// Represents a translated Rust declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,14 +68,16 @@ pub struct TranslationResult {
     pub cargo_toml: String,
 }
 
-fn default_cargo_toml() -> String {
-    "[package]
-name = \"translated_project\"
-version = \"0.1.0\"
-edition = \"2021\"
-[dependencies]
-"
-    .to_string()
+/// Result of a single-pass function/global translation response.
+#[derive(Debug, Deserialize)]
+struct FunctionTranslationResult {
+    pub translations: Vec<RustDeclaration>,
+}
+
+/// Result of Cargo.toml generation.
+#[derive(Debug, Deserialize)]
+struct CargoTomlResult {
+    pub cargo_toml: String,
 }
 
 /// Helper function to build a translation request for type declarations (Pass 1).
@@ -109,25 +119,22 @@ fn build_types_translation_request(
     )
 }
 
-/// Helper function to build a translation request for function/global declarations (Pass 2).
-fn build_functions_translation_request(
-    function_and_global_decls: &[&clang_ast::Node<c_ast::Clang>],
+/// Helper function to build a translation request for a function/global declaration (Pass 2).
+fn build_function_global_translation_request(
+    decl: &clang_ast::Node<c_ast::Clang>,
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
 ) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
-    let mut decl_sources = Vec::new();
+    let source_text = if let Some(range) = decl.kind.range() {
+        read_source_at_range(range, raw_source)?
+    } else {
+        return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
+    };
 
-    for decl in function_and_global_decls {
-        let source_text = if let Some(range) = decl.kind.range() {
-            read_source_at_range(range, raw_source)?
-        } else {
-            return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
-        };
-        decl_sources.push(DeclarationInput {
-            source: source_text,
-        });
-    }
+    let decl_sources = vec![DeclarationInput {
+        source: source_text,
+    }];
 
     #[derive(Serialize)]
     struct RequestWithContext {
@@ -149,11 +156,36 @@ fn build_functions_translation_request(
         .collect();
 
     build_request(
-        "Please translate the following C function and global variable declarations to Rust. The type declarations have already been translated and are provided for context:",
+        "Please translate the following C function or global variable declaration to Rust. The type declarations have already been translated and are provided for context:",
         &RequestWithContext {
             project_kind: project_kind_str.to_string(),
             type_translations: type_code,
             declarations: decl_sources,
+        },
+    )
+}
+
+/// Helper function to build a Cargo.toml generation request.
+fn build_cargo_toml_request(
+    dependencies: Vec<String>,
+    project_kind: &ProjectKind,
+) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    #[derive(Serialize)]
+    struct RequestWithContext {
+        project_kind: String,
+        dependencies: Vec<String>,
+    }
+
+    let project_kind_str = match project_kind {
+        ProjectKind::Executable => "executable",
+        ProjectKind::Library => "library",
+    };
+
+    build_request(
+        "Please generate a Cargo.toml manifest based on the project kind and dependency list:",
+        &RequestWithContext {
+            project_kind: project_kind_str.to_string(),
+            dependencies,
         },
     )
 }
@@ -220,16 +252,16 @@ pub fn translate_types(
 /// Translates function and global variable declarations (Pass 2) to Rust using an LLM.
 ///
 /// This function translates FunctionDecl and VarDecl, with the type translations from
-/// Pass 1 provided as context. This pass also generates the Cargo.toml manifest.
+/// Pass 1 provided as context. Each declaration is translated in its own request.
 ///
-/// Returns the translated declarations and Cargo.toml.
+/// Returns the translated declarations.
 pub fn translate_functions(
     function_and_global_decls: &[&clang_ast::Node<c_ast::Clang>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
     config: &Config,
-) -> Result<TranslationResult, Box<dyn std::error::Error>> {
+) -> Result<Vec<RustDeclaration>, Box<dyn std::error::Error>> {
     debug!(
         "Starting Pass 2: translating {} function/global declarations",
         function_and_global_decls.len()
@@ -246,36 +278,71 @@ pub fn translate_functions(
         SYSTEM_PROMPT_FUNCTIONS,
     )?;
 
-    // Assemble the request with type context
-    let request = build_functions_translation_request(
-        function_and_global_decls,
-        raw_source,
-        project_kind,
-        type_translations,
-    )?;
+    let mut translations = Vec::new();
 
-    // Make the LLM call
-    trace!("Sending Pass 2 request to LLM: {:?}", &request);
-    let response = llm.invoke(&request)?;
-    trace!("Pass 2 LLM responded: {:?}", &response);
+    for decl in function_and_global_decls {
+        // Assemble the request with type context
+        let request = build_function_global_translation_request(
+            decl,
+            raw_source,
+            project_kind,
+            type_translations,
+        )?;
 
-    let translation_result: TranslationResult = serde_json::from_str(&response)?;
+        // Make the LLM call
+        trace!("Sending Pass 2 request to LLM: {:?}", &request);
+        let response = llm.invoke(&request)?;
+        trace!("Pass 2 LLM responded: {:?}", &response);
 
-    if translation_result.translations.len() != function_and_global_decls.len() {
-        return Err(format!(
-            "Pass 2: LLM returned {} translations but expected {}",
-            translation_result.translations.len(),
-            function_and_global_decls.len()
-        )
-        .into());
+        let translation_result: FunctionTranslationResult = serde_json::from_str(&response)?;
+
+        if translation_result.translations.len() != 1 {
+            return Err(format!(
+                "Pass 2: LLM returned {} translations but expected 1",
+                translation_result.translations.len()
+            )
+            .into());
+        }
+
+        translations.push(translation_result.translations.into_iter().next().unwrap());
     }
 
     info!(
         "Pass 2 complete: successfully translated {} function/global declarations",
-        translation_result.translations.len()
+        translations.len()
     );
 
-    Ok(translation_result)
+    Ok(translations)
+}
+
+/// Generates a Cargo.toml manifest using aggregated dependencies.
+fn generate_cargo_toml(
+    translations: &[RustDeclaration],
+    project_kind: &ProjectKind,
+    config: &Config,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut dependency_set = BTreeSet::new();
+    for translation in translations {
+        for dependency in &translation.dependencies {
+            dependency_set.insert(dependency.clone());
+        }
+    }
+
+    let dependencies: Vec<String> = dependency_set.into_iter().collect();
+
+    let llm = HarvestLLM::build(
+        &config.llm,
+        STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML,
+        SYSTEM_PROMPT_CARGO_TOML,
+    )?;
+
+    let request = build_cargo_toml_request(dependencies, project_kind)?;
+    trace!("Sending Cargo.toml request to LLM: {:?}", &request);
+    let response = llm.invoke(&request)?;
+    trace!("Cargo.toml LLM responded: {:?}", &response);
+
+    let cargo_result: CargoTomlResult = serde_json::from_str(&response)?;
+    Ok(cargo_result.cargo_toml)
 }
 
 /// Orchestrates the two-pass translation of Clang declarations to Rust using an LLM.
@@ -317,36 +384,33 @@ pub fn translate_decls(
         .copied()
         .collect();
 
-    if function_and_global_decls.is_empty() {
-        info!(
-            "No function or global declarations for Pass 2; returning type-only translation result"
-        );
-        return Ok(TranslationResult {
-            translations: type_result.translations,
-            cargo_toml: default_cargo_toml(),
-        });
-    }
-
     // Pass 2: Translate functions and globals with type context
-    let mut function_result = translate_functions(
-        &function_and_global_decls,
-        raw_source,
-        project_kind,
-        &type_result,
-        config,
-    )?;
+    let function_result = if function_and_global_decls.is_empty() {
+        info!("No function or global declarations for Pass 2");
+        Vec::new()
+    } else {
+        translate_functions(
+            &function_and_global_decls,
+            raw_source,
+            project_kind,
+            &type_result,
+            config,
+        )?
+    };
 
     // Combine results: types first, then functions/globals
     let mut combined_translations = type_result.translations;
-    combined_translations.append(&mut function_result.translations);
+    combined_translations.extend(function_result);
 
     info!(
         "Two-pass translation complete: {} total declarations translated",
         combined_translations.len()
     );
 
+    let cargo_toml = generate_cargo_toml(&combined_translations, project_kind, config)?;
+
     Ok(TranslationResult {
         translations: combined_translations,
-        cargo_toml: function_result.cargo_toml,
+        cargo_toml,
     })
 }

@@ -53,16 +53,18 @@ impl Tool for RawSourceToCargoLlm {
             ProjectKind::Executable => (config.prompt_executable, SYSTEM_PROMPT_EXECUTABLE),
             ProjectKind::Library => (config.prompt_library, SYSTEM_PROMPT_LIBRARY),
         };
-        let system_prompt_owned;
+        let system_prompt = config_prompt
+            .map(read_to_string)
+            .transpose()?
+            .unwrap_or_else(|| builtin_prompt.to_owned());
         let system_prompt = if config.header_light {
             const HEADER_LIGHT_HINT: &str = "Headers are provided only for reference. Translate the .c file; only translate header content actually used by the .c (inline functions, macros it depends on). Unused declarations without bodies do not need Rust equivalents.";
-            system_prompt_owned = format!(
+            format!(
                 "{HEADER_LIGHT_HINT}\n\n{base}",
-                base = base_prompt.trim_end()
-            );
-            &system_prompt_owned
+                base = system_prompt.trim_end()
+            )
         } else {
-            base_prompt
+            system_prompt
         };
 
         // Build LLM client using core/llm

@@ -29,11 +29,7 @@ walkdir = "2"
 tempfile = "3"
 full_source = { version = "0.1.0", path = "../tools/full_source" }
 c_ast.workspace = true 
-load_raw_source.workspace = true 
-identify_project_kind.workspace = true
 modular_translation_llm.workspace = true
-try_cargo_build.workspace = true
-raw_source_to_cargo_llm.workspace = true
 
 [lints]
 workspace = true

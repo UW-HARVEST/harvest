@@ -185,23 +185,6 @@ fn run_test_validation(
     (test_results, error_messages, passed_tests)
 }
 
-/// This function delegates to the harness::library module for the actual validation logic.
-fn run_library_validation(
-    program_name: &str,
-    input_dir: &Path,
-    output_dir: &Path,
-    test_cases: &[crate::harness::TestCase],
-    timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
-    harness::library::run_library_validation(
-        program_name,
-        input_dir,
-        output_dir,
-        test_cases,
-        timeout,
-    )
-}
-
 /// Run all benchmarks for a single program
 fn benchmark_single_program(
     program_dir: &Path,
@@ -303,7 +286,7 @@ fn benchmark_single_program(
 
     // Library and executable validation differ.
     let (test_results, error_messages, passed_tests) = if is_lib {
-        match run_library_validation(
+        match harness::library::run_library_validation(
             &program_name,
             program_dir,
             &output_dir,

@@ -338,9 +338,10 @@ fn configure_library_paths(output_dir: &Path, rust_artifacts_dir: &Path) -> Stri
 
     // Use std::env::join_paths to construct a platform-appropriate search path,
     // falling back to the previous behavior if joining fails for any reason.
-    let joined = std::env::join_paths(
-        [rust_artifacts_dir.as_os_str(), runner_release_dir.as_os_str()].into_iter(),
-    )
+    let joined = std::env::join_paths([
+        rust_artifacts_dir.as_os_str(),
+        runner_release_dir.as_os_str(),
+    ])
     .unwrap_or_else(|_| {
         std::ffi::OsString::from(format!(
             "{}:{}",

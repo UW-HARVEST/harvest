@@ -11,7 +11,6 @@ use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tracing::{debug, info, trace};
 
 use crate::Config;
@@ -48,16 +47,16 @@ struct DeclarationInput {
     source: String,
 }
 
-/// Result of the type translation (Pass 1) containing only type declarations mapped by C name
+/// Result of the type translation (Pass 1) containing only type declarations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeTranslationResult {
-    pub translations: HashMap<String, RustDeclaration>,
+    pub translations: Vec<RustDeclaration>,
 }
 
 /// Result of the translation containing both declarations and Cargo.toml
 #[derive(Debug, Deserialize)]
 pub struct TranslationResult {
-    pub translations: HashMap<String, RustDeclaration>,
+    pub translations: Vec<RustDeclaration>,
     pub cargo_toml: String,
 }
 
@@ -135,7 +134,7 @@ fn build_functions_translation_request(
     // Include the type translations as context
     let type_code: Vec<String> = type_translations
         .translations
-        .values()
+        .iter()
         .map(|t| t.rust_code.clone())
         .collect();
 
@@ -170,7 +169,7 @@ pub fn translate_types(
     if type_decls.is_empty() {
         // No types to translate, return empty result
         return Ok(TypeTranslationResult {
-            translations: HashMap::new(),
+            translations: Vec::new(),
         });
     }
 
@@ -313,7 +312,7 @@ pub fn translate_decls(
     }
 
     // Pass 2: Translate functions and globals with type context
-    let function_result = translate_functions(
+    let mut function_result = translate_functions(
         &function_and_global_decls,
         raw_source,
         project_kind,
@@ -321,9 +320,9 @@ pub fn translate_decls(
         config,
     )?;
 
-    // Combine results: merge type translations into function translations
+    // Combine results: types first, then functions/globals
     let mut combined_translations = type_result.translations;
-    combined_translations.extend(function_result.translations);
+    combined_translations.append(&mut function_result.translations);
 
     info!(
         "Two-pass translation complete: {} total declarations translated",

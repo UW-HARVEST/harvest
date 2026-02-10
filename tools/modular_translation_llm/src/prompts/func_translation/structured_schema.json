@@ -4,8 +4,8 @@
         "type": "object",
         "properties": {
             "translations": {
-                "type": "object",
-                "additionalProperties": {
+                "type": "array",
+                "items": {
                     "type": "object",
                     "properties": {
                         "rust_code": { "type": "string" },

@@ -6,8 +6,6 @@ For each type declaration you translate, you must provide:
 1. The translated Rust code
 2. A list of dependency module paths that should be imported (e.g., ["std::collections::HashMap", "std::ffi::CString"])
 
-The output should be a map where the keys are the C declaration names (for structs, enums, and typedefs) and the values are objects containing the rust_code and dependencies.
-
 Focus on:
 - Correct memory layout with #[repr(C)] where appropriate
 - Proper handling of padding and alignment
@@ -37,16 +35,16 @@ return as JSON
 You should return:
 
 ```
-{ "translations": {
-  "Point": {
-    "rust_code": "#[repr(C)]\npub struct Point {\n    pub x: i32,\n    pub y: i32,\n}",
-    "dependencies": []
-  },
-  "Color": {
-    "rust_code": "#[repr(C)]\npub enum Color {\n    Red = 0,\n    Green = 1,\n    Blue = 2,\n}",
-    "dependencies": []
-  }
+{ "translations": [
+{
+  "rust_code": "#[repr(C)]\npub struct Point {\n    pub x: i32,\n    pub y: i32,\n}",
+  "dependencies": []
+},
+{
+  "rust_code": "#[repr(C)]\npub enum Color {\n    Red = 0,\n    Green = 1,\n    Blue = 2,\n}",
+  "dependencies": []
 }
+]
 }
 ```
 

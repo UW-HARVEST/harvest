@@ -6,12 +6,6 @@ For each declaration you translate, you must provide:
 1. The translated Rust code
 2. A list of dependency module paths that should be imported (e.g., ["std::collections::HashMap", "std::io::Result"])
 
-The output should be a map where the keys are the C declaration names (function names or global variable names) and the values are objects containing the rust_code and dependencies.
-
-For each declaration you translate, you must provide:
-1. The translated Rust code
-2. A list of dependency module paths that should be imported (e.g., ["std::collections::HashMap", "std::io::Result"])
-
 Additionally, you must generate a Cargo.toml manifest for the entire project that:
 - Derives an appropriate package name from the code context (or uses a provided package name if given)
 - Uses edition "2021" unless there's a specific reason to use a different edition

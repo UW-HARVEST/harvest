@@ -26,7 +26,7 @@ pub fn recombine_decls(
 
     // Collect all unique dependencies from all declarations
     let mut all_dependencies: HashSet<String> = HashSet::new();
-    for decl in translation_result.translations.values() {
+    for decl in &translation_result.translations {
         for dep in &decl.dependencies {
             all_dependencies.insert(dep.clone());
         }
@@ -35,7 +35,7 @@ pub fn recombine_decls(
     // Concatenate all Rust code
     let rust_code = translation_result
         .translations
-        .into_values()
+        .into_iter()
         .map(|decl| decl.rust_code)
         .collect::<Vec<_>>()
         .join("\n\n");

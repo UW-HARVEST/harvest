@@ -7,6 +7,7 @@
 //! - No ordering constraints of function translations
 //! - Cargo.toml generated only in pass 2 (its not clear how well this works yet)
 
+// TODO: This may break if we have a project of only types. We could consider generating an empty Cargo.toml in that case, or allowing pass 1 to generate it if there are no functions/globals.
 use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;

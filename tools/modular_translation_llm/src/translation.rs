@@ -7,7 +7,6 @@
 //! - No ordering constraints of function translations
 //! - Cargo.toml generated only in pass 2 (its not clear how well this works yet)
 
-// TODO: This may break if we have a project of only types. We could consider generating an empty Cargo.toml in that case, or allowing pass 1 to generate it if there are no functions/globals.
 use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;
@@ -59,6 +58,16 @@ pub struct TypeTranslationResult {
 pub struct TranslationResult {
     pub translations: Vec<RustDeclaration>,
     pub cargo_toml: String,
+}
+
+fn default_cargo_toml() -> String {
+    "[package]
+name = \"translated_project\"
+version = \"0.1.0\"
+edition = \"2021\"
+[dependencies]
+"
+    .to_string()
 }
 
 /// Helper function to build a translation request for type declarations (Pass 1).
@@ -309,7 +318,13 @@ pub fn translate_decls(
         .collect();
 
     if function_and_global_decls.is_empty() {
-        return Err("No function or global declarations to translate in Pass 2".into());
+        info!(
+            "No function or global declarations for Pass 2; returning type-only translation result"
+        );
+        return Ok(TranslationResult {
+            translations: type_result.translations,
+            cargo_toml: default_cargo_toml(),
+        });
     }
 
     // Pass 2: Translate functions and globals with type context

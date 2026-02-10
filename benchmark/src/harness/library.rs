@@ -41,6 +41,11 @@ const CANDO2_RELATIVE_PATH: &str = "../translated_tools/cando2";
 const RUST_ARTIFACTS_ENV: &str = "RUST_ARTIFACTS";
 
 /// Environment variable for shared library search paths
+#[cfg(target_os = "macos")]
+const LD_LIBRARY_PATH_ENV: &str = "DYLD_LIBRARY_PATH";
+#[cfg(target_os = "windows")]
+const LD_LIBRARY_PATH_ENV: &str = "PATH";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const LD_LIBRARY_PATH_ENV: &str = "LD_LIBRARY_PATH";
 
 /// Supported shared library extensions
@@ -324,16 +329,27 @@ fn configure_runner_manifests(output_dir: &Path) -> HarvestResult<()> {
     Ok(())
 }
 
-/// Configures LD_LIBRARY_PATH for dynamic library loading.
+/// Configures the library search path for dynamic library loading.
 ///
-/// Returns a colon-separated string of directories to search for shared libraries.
+/// Returns a platform-specific string of directories to search for shared libraries.
 /// Includes both the copied artifact location and the original build location as a fallback.
 fn configure_library_paths(output_dir: &Path, rust_artifacts_dir: &Path) -> String {
-    format!(
-        "{}:{}",
-        rust_artifacts_dir.display(),
-        output_dir.join("target").join("release").display()
+    let runner_release_dir = output_dir.join("target").join("release");
+
+    // Use std::env::join_paths to construct a platform-appropriate search path,
+    // falling back to the previous behavior if joining fails for any reason.
+    let joined = std::env::join_paths(
+        [rust_artifacts_dir.as_os_str(), runner_release_dir.as_os_str()].into_iter(),
     )
+    .unwrap_or_else(|_| {
+        std::ffi::OsString::from(format!(
+            "{}:{}",
+            rust_artifacts_dir.display(),
+            runner_release_dir.display()
+        ))
+    });
+
+    joined.to_string_lossy().into_owned()
 }
 
 /// Builds the test runner binary.
@@ -499,20 +515,30 @@ pub fn run_test_suite(
 ///
 /// # Environment Variables
 /// - `RUST_ARTIFACTS=1`: Tells cando2 to load Rust-compiled libraries
-/// - `LD_LIBRARY_PATH`: Directories to search for shared libraries
+/// - Library search path variable (`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PATH` depending on platform)
 fn run_single_library_test(
     runner_bin: &Path,
     test_case: &TestCase,
     ld_library_path: &str,
     timeout: Duration,
 ) -> HarvestResult<Output> {
+    // Select the appropriate environment variable for shared library search paths
+    let library_path_env_var = if cfg!(target_os = "macos") {
+        "DYLD_LIBRARY_PATH"
+    } else if cfg!(target_os = "windows") {
+        "PATH"
+    } else {
+        // Default to the existing value (typically "LD_LIBRARY_PATH") on Unix-like systems
+        LD_LIBRARY_PATH_ENV
+    };
+
     let mut cmd = Command::new(runner_bin);
     cmd.arg("lib")
         .arg("-c")
         .arg(&test_case.filename)
         .current_dir(runner_bin.parent().unwrap())
         .env(RUST_ARTIFACTS_ENV, "1")
-        .env(LD_LIBRARY_PATH_ENV, ld_library_path)
+        .env(library_path_env_var, ld_library_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

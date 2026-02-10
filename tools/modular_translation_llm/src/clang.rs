@@ -8,12 +8,21 @@ use tracing::{debug, warn};
 use crate::utils::get_file_from_location;
 
 /// Container for categorizing declarations by their source.
+///
+/// Two-pass translation approach:
+/// - app_types: TypedefDecl, RecordDecl, EnumDecl (Pass 1 - data layout)
+/// - app_globals: VarDecl (Pass 2 - global variables)
+/// - app_functions: FunctionDecl (Pass 2 - function implementations)
 #[derive(Debug)]
 pub struct ClangDeclarations<'a> {
     /// Declarations imported from external sources (not in the project source files)
     pub imported: Vec<&'a Node<Clang>>,
-    /// Declarations from the project source files
-    pub app: Vec<&'a Node<Clang>>,
+    /// Type declarations from the project source files (TypedefDecl, RecordDecl, EnumDecl)
+    pub app_types: Vec<&'a Node<Clang>>,
+    /// Global variable declarations from the project source files (VarDecl)
+    pub app_globals: Vec<&'a Node<Clang>>,
+    /// Function declarations from the project source files (FunctionDecl)
+    pub app_functions: Vec<&'a Node<Clang>>,
 }
 
 /// Logs the declaration kind with appropriate log level.
@@ -73,10 +82,13 @@ pub fn extract_top_level_decls<'a>(
 
     let mut declarations = ClangDeclarations {
         imported: Vec::new(),
-        app: Vec::new(),
+        app_types: Vec::new(),
+        app_globals: Vec::new(),
+        app_functions: Vec::new(),
     };
 
     // Categorize declarations based on whether their file exists in source_files
+    // and by their kind (types vs globals vs functions)
     for node in &top_level_nodes {
         for child in &node.inner {
             log_decl_kind(&child.kind);
@@ -87,7 +99,24 @@ pub fn extract_top_level_decls<'a>(
                 .is_some_and(|file| source_files.dir.get_file(&file).is_ok());
 
             if is_source {
-                declarations.app.push(child);
+                // Categorize by declaration kind for two-pass translation
+                match &child.kind {
+                    Clang::TypedefDecl { .. }
+                    | Clang::RecordDecl { .. }
+                    | Clang::EnumDecl { .. } => {
+                        declarations.app_types.push(child);
+                    }
+                    Clang::VarDecl { .. } => {
+                        declarations.app_globals.push(child);
+                    }
+                    Clang::FunctionDecl { .. } => {
+                        declarations.app_functions.push(child);
+                    }
+                    _ => {
+                        // Other declaration types (like ParmVarDecl) are not expected at top level
+                        // but won't cause failure - they're just not translated
+                    }
+                }
             } else {
                 declarations.imported.push(child);
             }

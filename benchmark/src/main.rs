@@ -400,6 +400,40 @@ fn run(args: Args) -> HarvestResult<()> {
         }
     }
 
+    if let Some(exclude_pattern) = &args.exclude {
+        let regex = Regex::new(exclude_pattern)
+            .map_err(|e| format!("Invalid regex pattern '{}': {}", exclude_pattern, e))?;
+
+        let before = program_dirs.len();
+        let mut excluded_names = Vec::new();
+        program_dirs.retain(|path| {
+            let matches = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| regex.is_match(name))
+                .unwrap_or(false);
+
+            if matches {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    excluded_names.push(name.to_string());
+                }
+                return false;
+            }
+            true
+        });
+
+        let excluded = before.saturating_sub(program_dirs.len());
+        log::info!(
+            "Exclude '{}' applied: {} programs remaining, {} excluded",
+            exclude_pattern,
+            program_dirs.len(),
+            excluded
+        );
+        if !excluded_names.is_empty() {
+            log::info!("Excluded: {}", excluded_names.join(", "));
+        }
+    }
+
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs

@@ -76,4 +76,4 @@ Print config file location:
 cargo run --bin=translate -- --print-config-path
 ```
 
-You can find more information on configuration in [docs/Configuration.md].
+You can find more information on configuration in [doc/Configuration.md].

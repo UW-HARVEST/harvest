@@ -25,6 +25,16 @@ pub struct ClangDeclarations<'a> {
     pub app_functions: Vec<&'a Node<Clang>>,
 }
 
+impl<'a> ClangDeclarations<'a> {
+    /// Returns an iterator over function and global definitions (i.e., all the top-level definitions that we translate one-by-one).
+    pub fn app_functions_and_globals(&'a self) -> impl Iterator<Item = &'a Node<Clang>> {
+        self.app_globals
+            .iter()
+            .chain(self.app_functions.iter())
+            .copied()
+    }
+}
+
 /// Logs the declaration kind with appropriate log level.
 /// The role of this function is to alert the user when we encounter an unexpected declaration kind
 /// i.e., an AST node that should never be a top-level declaration.

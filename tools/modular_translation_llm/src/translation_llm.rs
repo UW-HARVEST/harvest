@@ -1,0 +1,230 @@
+//! LLM abstraction layer for modular translation.
+//! Abstracts away all the string management needed for building dynamically generated prompts and
+//! provides a clean well-typed interface for use by the rest of the transpiler.
+use full_source::RawSource;
+use harvest_core::llm::{HarvestLLM, build_request};
+use identify_project_kind::ProjectKind;
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::Config;
+use crate::translation::{RustDeclaration, TypeTranslationResult};
+use crate::utils::read_source_at_range;
+
+/// Structured output JSON schema for Pass 1 (types).
+const STRUCTURED_OUTPUT_SCHEMA_TYPES: &str =
+    include_str!("prompts/type_translation/structured_schema.json");
+
+/// Structured output JSON schema for Pass 2 (functions).
+const STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS: &str =
+    include_str!("prompts/func_translation/structured_schema.json");
+
+/// Structured output JSON schema for Cargo.toml generation.
+const STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML: &str =
+    include_str!("prompts/cargo_toml/structured_schema.json");
+
+/// System prompt for Pass 1 (types).
+const SYSTEM_PROMPT_TYPES: &str = include_str!("prompts/type_translation/system_prompt.txt");
+
+/// System prompt for Pass 2 (functions).
+const SYSTEM_PROMPT_FUNCTIONS: &str = include_str!("prompts/func_translation/system_prompt.txt");
+
+/// System prompt for Cargo.toml generation.
+const SYSTEM_PROMPT_CARGO_TOML: &str = include_str!("prompts/cargo_toml/system_prompt.txt");
+
+/// Result of Cargo.toml generation.
+#[derive(Debug, Deserialize)]
+struct CargoTomlResult {
+    pub cargo_toml: String,
+}
+
+/// Result of a single-pass function/global translation response.
+#[derive(Debug, Deserialize)]
+struct FunctionTranslationResult {
+    pub translations: Vec<RustDeclaration>,
+}
+
+/// LLM abstraction layer for modular translation.
+/// Has support for 3 different types of LLM calls with different system prompts and structured output schemas:
+/// - types_llm: for translating type declarations
+/// - functions_llm: for translating function and global variable declarations one-by-one
+/// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the translated code
+pub struct ModularTranslationLLM {
+    types_llm: HarvestLLM,
+    functions_llm: HarvestLLM,
+    cargo_toml_llm: HarvestLLM,
+}
+
+impl ModularTranslationLLM {
+    /// Initializes seperate HarvestLLM instances for each type of translation task with the appropriate system prompts and structured output schemas.
+    pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+        let types_llm = HarvestLLM::build(
+            &config.llm,
+            STRUCTURED_OUTPUT_SCHEMA_TYPES,
+            SYSTEM_PROMPT_TYPES,
+        )?;
+        let functions_llm = HarvestLLM::build(
+            &config.llm,
+            STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS,
+            SYSTEM_PROMPT_FUNCTIONS,
+        )?;
+        let cargo_toml_llm = HarvestLLM::build(
+            &config.llm,
+            STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML,
+            SYSTEM_PROMPT_CARGO_TOML,
+        )?;
+
+        Ok(Self {
+            types_llm,
+            functions_llm,
+            cargo_toml_llm,
+        })
+    }
+
+    /// Translates type declarations to Rust using the types_llm.
+    /// Arguments: - type_decls: list of Clang AST nodes corresponding to type declarations (TypedefDecl, RecordDecl, EnumDecl)
+    ///            - raw_source: the full source code of the project. Used to retrieve the source text corresponding to each declaration.
+    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
+    pub fn translate_types(
+        &self,
+        type_decls: &[&clang_ast::Node<c_ast::Clang>],
+        raw_source: &RawSource,
+        project_kind: &ProjectKind,
+    ) -> Result<TypeTranslationResult, Box<dyn std::error::Error>> {
+        let mut decl_sources = Vec::new();
+
+        for decl in type_decls {
+            let source_text = if let Some(range) = decl.kind.range() {
+                read_source_at_range(range, raw_source)?
+            } else {
+                return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
+            };
+            decl_sources.push(DeclarationInput {
+                source: source_text,
+            });
+        }
+
+        #[derive(Serialize)]
+        struct RequestWithContext {
+            project_kind: String,
+            declarations: Vec<DeclarationInput>,
+        }
+
+        let project_kind_str = match project_kind {
+            ProjectKind::Executable => "executable",
+            ProjectKind::Library => "library",
+        };
+
+        let request = build_request(
+            "Please translate the following C type declarations to Rust:",
+            &RequestWithContext {
+                project_kind: project_kind_str.to_string(),
+                declarations: decl_sources,
+            },
+        )?;
+
+        let response = self.types_llm.invoke(&request)?;
+        let translation_result: TypeTranslationResult = serde_json::from_str(&response)?;
+        Ok(translation_result)
+    }
+
+    /// Translates a single function or global variable declaration to Rust using the functions_llm, with the type translations provided as context.
+    /// Arguments: - decl: Clang AST node corresponding to either a FunctionDecl or VarDecl (global variable declaration)
+    ///            - raw_source: the full source code of the project. Used to retrieve the source text corresponding to the declaration.
+    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether we need to make these declarations C-compatible.
+    ///            - type_translations: the result of translating type declarations, used as context for translating functions and globals.
+    pub fn translate_function_global(
+        &self,
+        decl: &clang_ast::Node<c_ast::Clang>,
+        raw_source: &RawSource,
+        project_kind: &ProjectKind,
+        type_translations: &TypeTranslationResult,
+    ) -> Result<RustDeclaration, Box<dyn std::error::Error>> {
+        let source_text = if let Some(range) = decl.kind.range() {
+            read_source_at_range(range, raw_source)?
+        } else {
+            return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
+        };
+
+        let decl_sources = vec![DeclarationInput {
+            source: source_text,
+        }];
+
+        #[derive(Serialize)]
+        struct RequestWithContext {
+            project_kind: String,
+            type_translations: Vec<String>,
+            declarations: Vec<DeclarationInput>,
+        }
+
+        let project_kind_str = match project_kind {
+            ProjectKind::Executable => "executable",
+            ProjectKind::Library => "library",
+        };
+
+        let type_code: Vec<String> = type_translations
+            .translations
+            .iter()
+            .map(|t| t.rust_code.clone())
+            .collect();
+
+        let request = build_request(
+            "Please translate the following C function or global variable declaration to Rust. The type declarations have already been translated and are provided for context:",
+            &RequestWithContext {
+                project_kind: project_kind_str.to_string(),
+                type_translations: type_code,
+                declarations: decl_sources,
+            },
+        )?;
+
+        let response = self.functions_llm.invoke(&request)?;
+        let translation_result: FunctionTranslationResult = serde_json::from_str(&response)?;
+
+        if translation_result.translations.len() != 1 {
+            return Err(format!(
+                "Pass 2: LLM returned {} translations but expected 1",
+                translation_result.translations.len()
+            )
+            .into());
+        }
+
+        Ok(translation_result.translations.into_iter().next().unwrap())
+    }
+
+    /// Generates a Cargo.toml manifest based on the list of dependencies used in the translated code, using the cargo_toml_llm.
+    /// Arguments: - dependencies: list of dependency crate names used in the translated Rust code. Used as context for generating the Cargo.toml.
+    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether to generate a Cargo.toml for a binary or library project.
+    pub fn generate_cargo_toml(
+        &self,
+        dependencies: Vec<String>,
+        project_kind: &ProjectKind,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        #[derive(Serialize)]
+        struct RequestWithContext {
+            project_kind: String,
+            dependencies: Vec<String>,
+        }
+
+        let project_kind_str = match project_kind {
+            ProjectKind::Executable => "executable",
+            ProjectKind::Library => "library",
+        };
+
+        let request = build_request(
+            "Please generate a Cargo.toml manifest based on the project kind and dependency list:",
+            &RequestWithContext {
+                project_kind: project_kind_str.to_string(),
+                dependencies,
+            },
+        )?;
+
+        let response = self.cargo_toml_llm.invoke(&request)?;
+        let cargo_result: CargoTomlResult = serde_json::from_str(&response)?;
+        Ok(cargo_result.cargo_toml)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DeclarationInput {
+    source: String,
+}

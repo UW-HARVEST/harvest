@@ -19,12 +19,14 @@ use tracing::info;
 mod clang;
 mod recombine;
 mod translation;
+mod translation_llm;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
 pub use translation::{
     RustDeclaration, TranslationResult, TypeTranslationResult, translate_decls,
     translate_functions, translate_types,
 };
+pub use translation_llm::ModularTranslationLLM;
 
 /// Configuration for the modular translation tool.
 #[derive(Debug, Deserialize)]

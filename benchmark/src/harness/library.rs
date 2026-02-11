@@ -374,7 +374,7 @@ pub fn build_runner(output_dir: &Path) -> HarvestResult<PathBuf> {
         .canonicalize()
         .unwrap_or(runner_target_dir.clone());
 
-    //Build command
+    // Build command
     log::info!("Building test runner...");
     let output = Command::new("cargo")
         .arg("build")

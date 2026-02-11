@@ -102,7 +102,8 @@ pub fn translate_functions(
     );
 
     if function_and_global_decls.is_empty() {
-        return Err("No function or global declarations to translate".into());
+        // No functions/globals to translate, return empty result
+        return Ok(Vec::new());
     }
 
     let mut translations = Vec::new();
@@ -140,7 +141,7 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 ///
 /// First, translates type declarations (TypedefDecl, RecordDecl, EnumDecl)
 /// Then, translates functions and globals (FunctionDecl, VarDecl) with type context
-// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
+/// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
 pub fn translate_decls(

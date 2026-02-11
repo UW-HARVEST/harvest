@@ -1,4 +1,5 @@
 /config.toml
 /target/
 .vscode/
+.plume-scripts
 .plume-scripts/

@@ -40,7 +40,8 @@ You will need to have Ollama running to run harvest_translate.
 First, you'll need to provision an [OpenAI API key](https://platform.openai.com/api-keys).
 
 Then, you'll need to set up a custom Harvest config file:
-```toml 
+
+```toml
 [tools.raw_source_to_cargo_llm]
 backend = "openai"
 model = "gpt-4o"
@@ -48,15 +49,18 @@ api_key = "your_key_here" # Will be read from environment if empty
 address = ""  # Not needed for OpenAI
 max_tokens = 16384
 ```
+
 You should place this config at the OS-dependent harvest config location, which you can find by running:
+
 ```bash
 cargo run -- --print-config-path
-``` 
+```
 
 
 ## Running
 
 ### Translate C code to Rust
+
 ```bash
 cargo run --bin=translate --release -- /path/to/c/code -o /path/to/output
 # Example:
@@ -64,6 +68,7 @@ cargo run --bin=translate --release -- /path/to/c/code -o /path/to/output
 ```
 
 ### Running a set of TRACTOR benchmarks
+
 ```bash
 cargo run --bin=benchmark --release -- /path/to/input/dir /path/to/output/dir
 # Example: run all benchmarks
@@ -86,7 +91,9 @@ cargo run --bin=benchmark --release -- /path/to/input/dir /path/to/output/dir
 ```
 
 ### Configuration
+
 Print config file location:
+
 ```bash
 cargo run --bin=translate -- --print-config-path
 ```

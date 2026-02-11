@@ -17,7 +17,7 @@ use crate::utils::get_file_from_location;
 pub struct ClangDeclarations<'a> {
     /// Declarations imported from external sources (not in the project source files)
     pub imported: Vec<&'a Node<Clang>>,
-    /// Type declarations from the project source files (TypedefDecl, RecordDecl, EnumDecl)
+    /// Type declarations from the project source files (TypedefDecl) no RecordDecl, EnumDecl, as they are redundant with typedef
     pub app_types: Vec<&'a Node<Clang>>,
     /// Global variable declarations from the project source files (VarDecl)
     pub app_globals: Vec<&'a Node<Clang>>,
@@ -111,11 +111,13 @@ pub fn extract_top_level_decls<'a>(
             if is_source {
                 // Categorize by declaration kind for two-pass translation
                 match &child.kind {
-                    Clang::TypedefDecl { .. }
-                    | Clang::RecordDecl { .. }
-                    | Clang::EnumDecl { .. } => {
+                    Clang::TypedefDecl { .. } => {
                         declarations.app_types.push(child);
                     }
+                    // | Clang::RecordDecl { .. }
+                    // | Clang::EnumDecl { .. } => {
+                    //     declarations.app_types.push(child);
+                    // }
                     Clang::VarDecl { .. } => {
                         declarations.app_globals.push(child);
                     }

@@ -119,12 +119,22 @@ impl ModularTranslationLLM {
             "Please translate the following C type declarations to Rust:",
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
-                declarations: decl_sources,
+                declarations: decl_sources.clone(),
             },
         )?;
 
         let response = self.types_llm.invoke(&request)?;
         let translation_result: TypeTranslationResult = serde_json::from_str(&response)?;
+        for (decl, translation) in decl_sources
+            .iter()
+            .zip(translation_result.translations.iter())
+        {
+            crate::info!(
+                "Type Translation complete:\n {} \n==>\n {}",
+                decl.source,
+                translation.rust_code
+            );
+        }
         Ok(translation_result)
     }
 
@@ -146,15 +156,15 @@ impl ModularTranslationLLM {
             return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
         };
 
-        let decl_sources = vec![DeclarationInput {
+        let decl_source = DeclarationInput {
             source: source_text,
-        }];
+        };
 
         #[derive(Serialize)]
         struct RequestWithContext {
             project_kind: String,
             type_translations: Vec<String>,
-            declarations: Vec<DeclarationInput>,
+            declaration: DeclarationInput,
         }
 
         let project_kind_str = match project_kind {
@@ -173,7 +183,7 @@ impl ModularTranslationLLM {
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
                 type_translations: type_code,
-                declarations: decl_sources,
+                declaration: decl_source.clone(),
             },
         )?;
 
@@ -187,8 +197,13 @@ impl ModularTranslationLLM {
             )
             .into());
         }
-
-        Ok(translation_result.translations.into_iter().next().unwrap())
+        let translations = translation_result.translations.into_iter().next().unwrap();
+        crate::info!(
+            "Function/Global Translation complete:\n {} \n==>\n {}",
+            decl_source.source,
+            translations.rust_code
+        );
+        Ok(translations)
     }
 
     /// Generates a Cargo.toml manifest based on the list of dependencies used in the translated code, using the cargo_toml_llm.
@@ -214,17 +229,23 @@ impl ModularTranslationLLM {
             "Please generate a Cargo.toml manifest based on the project kind and dependency list:",
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
-                dependencies,
+                dependencies: dependencies.clone(),
             },
         )?;
 
         let response = self.cargo_toml_llm.invoke(&request)?;
         let cargo_result: CargoTomlResult = serde_json::from_str(&response)?;
+        crate::info!(
+            "Cargo.toml Generation complete:\n {}:{:?} \n==>\n {}",
+            project_kind_str,
+            dependencies,
+            cargo_result.cargo_toml
+        );
         Ok(cargo_result.cargo_toml)
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct DeclarationInput {
     source: String,
 }

@@ -48,8 +48,39 @@ impl Freezer {
 
     /// The implementation of [freeze]. The only difference is that this is not generic.
     fn freeze_inner(&mut self, path: &Path) -> io::Result<DirEntry> {
+        // freeze() starts at the root of the diagnostic directory and traverses through the path
+        // component-by-component. As it does so, it looks for several possible error conditions:
+        //
+        //   1. A `path` that might be outside the diagnostics directory. Paths that are absolute
+        //      (start with a drive prefix or the root directory), paths that contain `..`, and
+        //      paths that traverse symlinks might leave the diagnostics directory. For simplicity,
+        //      we disallow those path components, as well as `.` for consistency.
+        //   2. A `path` that tries to traverse through a file. That is: if names.txt is a normal
+        //      file, then names.txt/foo is an invalid path.
+        //
+        // As it does this scan, it checks `self.frozen` to see if we have already frozen this
+        // path. If so, `freeze_inner` can stop traversing path and use the already-frozen
+        // `DirEntry` to shortcut its operation. How it does so depends on the `DirEntry`:
+        //
+        //   3. If the DirEntry is a Dir, then we call `Dir::get_nofollow` on the remaining part of
+        //      `path`.
+        //   4. If the DirEntry is a File or Symlink, then we verify that `path` does not traverse
+        //      through the entry (if so, then we have one of the above two error conditions). If
+        //      not, then `path` points at that `DirEntry` and we can just return it.
+        //
+        // When `path` is exhausted (there are no components left to process), one of two
+        // conditions happens:
+        //
+        //   5. If `path` points to a directory, we call `self.build_dir` which recursively freezes
+        //      the directory and builds the Dir.
+        //   6. If `path` is a file or symlink, then we call `File::new`/`Symlink::new` to freeze
+        //      it and create the corresponding DirEntry.
+        //
+        // In both cases, the new DirEntry is cached (stored in self.frozen) and returned.
+
         use ErrorKind::{InvalidInput, NotADirectory, NotFound};
-        // The current path, both as an absolute path and relative to the diagnostics directory.
+        // The current path, both as an absolute path (for use with OS filesystem calls) and
+        // relative to the diagnostics directory (for lookups into self.frozen).
         let mut absolute = self.diagnostics_dir.path().to_path_buf();
         let mut relative = PathBuf::with_capacity(path.as_os_str().len());
         let mut components = path.components();
@@ -60,7 +91,9 @@ impl Freezer {
             absolute.push(name);
             relative.push(name);
             if let Some(entry) = self.frozen.get(&relative) {
+                // `path` has already been frozen. This is case 1, 2, 3, or 4.
                 if let DirEntry::Dir(dir) = entry {
+                    // This is not case 4. Dir::get_nofollow correctly handles cases 1-3.
                     return match dir.get_nofollow(components.as_path()) {
                         Ok(entry) => Ok(entry),
                         Err(GetNofollowError::LeavesDir) => Err(InvalidInput.into()),
@@ -68,9 +101,8 @@ impl Freezer {
                         Err(GetNofollowError::NotFound) => Err(NotFound.into()),
                     };
                 }
-                // We don't descend through symlinks (and cannot descend through files). If we
-                // encounter one, we check whether the remaining path is empty to determine whether
-                // to return an error or the entry.
+                // This is case 1, 2, or 4. We check whether there are any components left in
+                // `path` to determine whether this should error (cases 1 + 2) or succeed (case 4).
                 match components.next() {
                     None => return Ok(entry.clone()),
                     Some(_) => return Err(ErrorKind::NotADirectory.into()),
@@ -83,10 +115,11 @@ impl Freezer {
                 continue;
             }
             if components.next().is_some() {
+                // Case 1 or 2, return an error
                 return Err(NotADirectory.into());
             }
-            // `path` points to a file or symlink that has not already been frozen. Freeze it,
-            // store it, and return it.
+            // `path` points to a file or symlink that has not already been frozen (case 6). Freeze
+            // it, store it, and return it.
             let entry = match entry_type.is_symlink() {
                 false => DirEntry::File(File::new(
                     self.diagnostics_dir.clone(),
@@ -98,8 +131,8 @@ impl Freezer {
             self.frozen.insert(relative, entry.clone());
             return Ok(entry);
         }
-        // `path` points to a directory. Recursively freeze that directory, reusing (and removing)
-        // any cached sub-entries.
+        // `path` points to a directory (case 5). Recursively freeze that directory, reusing (and
+        // removing) any cached sub-entries.
         let entry = DirEntry::Dir(self.build_dir(&mut absolute, &mut relative)?);
         self.frozen.insert(relative.clone(), entry.clone());
         Ok(entry)

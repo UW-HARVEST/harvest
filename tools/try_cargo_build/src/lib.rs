@@ -187,13 +187,13 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
     })?;
 
     // Get [package] section and update the name field
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
-            // Only update if the name is different
-            if current_name != desired {
-                package.insert("name", toml_edit::Item::Value(Value::from(desired)));
-                fs::write(manifest, doc.to_string())?;
-            }
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut())
+        && let Some(current_name) = package.get("name").and_then(|n| n.as_str())
+    {
+        // Only update if the name is different
+        if current_name != desired {
+            package.insert("name", toml_edit::Item::Value(Value::from(desired)));
+            fs::write(manifest, doc.to_string())?;
         }
     }
 

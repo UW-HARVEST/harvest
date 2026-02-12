@@ -8,7 +8,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Config;
-use crate::translation::{RustDeclaration, TypeTranslationResult};
+use crate::translation::{
+    FunctionSignatureTranslationResult, RustDeclaration, TypeTranslationResult,
+};
 use crate::utils::read_source_at_range;
 
 /// Structured output JSON schema for Pass 1 (types).
@@ -59,9 +61,10 @@ struct FunctionSignatureResult {
 }
 
 /// LLM abstraction layer for modular translation.
-/// Has support for 3 different types of LLM calls with different system prompts
+/// Has support for 4 different types of LLM calls with different system prompts
 // and structured output schemas:
 /// - types_llm: for translating type declarations
+/// - signatures_llm: for translating function signatures in a single batch
 /// - functions_llm: for translating function and global variable declarations one-by-one
 /// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the
 //    translated code
@@ -181,6 +184,7 @@ impl ModularTranslationLLM {
         raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
+        signature_translations: &FunctionSignatureTranslationResult,
     ) -> Result<RustDeclaration, Box<dyn std::error::Error>> {
         let source_text = if let Some(range) = decl.kind.range() {
             read_source_at_range(range, raw_source)?
@@ -196,6 +200,7 @@ impl ModularTranslationLLM {
         struct RequestWithContext {
             project_kind: String,
             type_translations: Vec<String>,
+            signature_translations: Vec<String>,
             declaration: DeclarationInput,
         }
 
@@ -211,10 +216,11 @@ impl ModularTranslationLLM {
             .collect();
 
         let request = build_request(
-            "Please translate the following C function or global variable declaration to Rust. The type declarations have already been translated and are provided for context:",
+            "Please translate the following C function or global variable declaration to Rust. The type declarations and function signatures have already been translated and are provided for context:",
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
                 type_translations: type_code,
+                signature_translations: signature_translations.signatures.clone(),
                 declaration: decl_source.clone(),
             },
         )?;

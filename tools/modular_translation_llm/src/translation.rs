@@ -1,6 +1,7 @@
-//! Two-stage translation approach:
-//! Stage A: TypedefDecl, RecordDecl, EnumDecl - decides data layout
-//! Stage B: FunctionDecl, VarDecl - translates code operating over types
+//! Translation approach:
+//! - TypedefDecl, RecordDecl, EnumDecl: translate data layout
+//! - FunctionDecl signatures: translate callable interfaces
+//! - FunctionDecl, VarDecl: translate code semantics
 //! (Vardecls included here because they make call initializers)
 //!
 //! Design decisions to come back to:

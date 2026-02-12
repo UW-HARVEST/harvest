@@ -1,6 +1,7 @@
 //! Two-stage translation approach:
 //! Stage A: TypedefDecl, RecordDecl, EnumDecl - decides data layout
-//! Stage B: FunctionDecl, VarDecl - translates code operating over types (Vardecls included here because they make call initializers)
+//! Stage B: FunctionDecl, VarDecl - translates code operating over types
+//! (Vardecls included here because they make call initializers)
 //!
 //! Design decisions to come back to:
 //! - Type results included as context for function/global translation
@@ -128,13 +129,8 @@ pub fn translate_functions(
 }
 
 fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
-    let mut dependency_set = BTreeSet::new();
-    for translation in translations {
-        for dependency in &translation.dependencies {
-            dependency_set.insert(dependency.clone());
-        }
-    }
-    dependency_set.into_iter().collect()
+    let deps = translations.iter().flat_map(|t| t.dependencies.iter());
+    deps.collect::<BTreeSet<_>>().into_iter().cloned().collect()
 }
 
 /// Orchestrates the translation of Clang declarations to Rust using an LLM.

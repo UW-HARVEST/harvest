@@ -45,10 +45,12 @@ struct FunctionTranslationResult {
 }
 
 /// LLM abstraction layer for modular translation.
-/// Has support for 3 different types of LLM calls with different system prompts and structured output schemas:
+/// Has support for 3 different types of LLM calls with different system prompts
+// and structured output schemas:
 /// - types_llm: for translating type declarations
 /// - functions_llm: for translating function and global variable declarations one-by-one
-/// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the translated code
+/// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the
+//    translated code
 pub struct ModularTranslationLLM {
     types_llm: HarvestLLM,
     functions_llm: HarvestLLM,
@@ -56,7 +58,8 @@ pub struct ModularTranslationLLM {
 }
 
 impl ModularTranslationLLM {
-    /// Initializes seperate HarvestLLM instances for each type of translation task with the appropriate system prompts and structured output schemas.
+    /// Initializes seperate HarvestLLM instances for each type of translation task with the
+    // appropriate system prompts and structured output schemas.
     pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
         let types_llm = HarvestLLM::build(
             &config.llm,
@@ -82,9 +85,12 @@ impl ModularTranslationLLM {
     }
 
     /// Translates type declarations to Rust using the types_llm.
-    /// Arguments: - type_decls: list of Clang AST nodes corresponding to type declarations (TypedefDecl, RecordDecl, EnumDecl)
-    ///            - raw_source: the full source code of the project. Used to retrieve the source text corresponding to each declaration.
-    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
+    /// Arguments: - type_decls: list of Clang AST nodes corresponding to type declarations
+    //               (TypedefDecl)
+    ///            - raw_source: the full source code of the project.
+    //               Used to retrieve the source text corresponding to each declaration.
+    ///            - project_kind: the kind of project (executable or library) being translated.
+    //               Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
     pub fn translate_types(
         &self,
         type_decls: &[&clang_ast::Node<c_ast::Clang>],
@@ -138,11 +144,16 @@ impl ModularTranslationLLM {
         Ok(translation_result)
     }
 
-    /// Translates a single function or global variable declaration to Rust using the functions_llm, with the type translations provided as context.
-    /// Arguments: - decl: Clang AST node corresponding to either a FunctionDecl or VarDecl (global variable declaration)
-    ///            - raw_source: the full source code of the project. Used to retrieve the source text corresponding to the declaration.
-    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether we need to make these declarations C-compatible.
-    ///            - type_translations: the result of translating type declarations, used as context for translating functions and globals.
+    /// Translates a single function or global variable declaration to Rust using the
+    //  functions_llm, with the type translations provided as context.
+    /// Arguments: - decl: Clang AST node corresponding to either a FunctionDecl or VarDecl
+    //               (global variable declaration)
+    ///            - raw_source: the full source code of the project.
+    //               Used to retrieve the source text corresponding to the declaration.
+    ///            - project_kind: the kind of project (executable or library) being translated.
+    //               Used to decide whether we need to make these declarations C-compatible.
+    ///            - type_translations: the result of translating type declarations.
+    //              Used as context for translating functions and globals.
     pub fn translate_function_global(
         &self,
         decl: &clang_ast::Node<c_ast::Clang>,
@@ -206,9 +217,12 @@ impl ModularTranslationLLM {
         Ok(translations)
     }
 
-    /// Generates a Cargo.toml manifest based on the list of dependencies used in the translated code, using the cargo_toml_llm.
-    /// Arguments: - dependencies: list of dependency crate names used in the translated Rust code. Used as context for generating the Cargo.toml.
-    ///            - project_kind: the kind of project (executable or library) being translated. Used to decide whether to generate a Cargo.toml for a binary or library project.
+    /// Generates a Cargo.toml manifest based on the list of dependencies used in the
+    //  translated code, using the cargo_toml_llm.
+    /// Arguments: - dependencies: list of dependency crate names used in the translated Rust code.
+    //               Used as context for generating the Cargo.toml.
+    ///            - project_kind: the kind of project (executable or library) being translated.
+    //               Used to decide whether to generate a Cargo.toml for a binary or library project.
     pub fn generate_cargo_toml(
         &self,
         dependencies: Vec<String>,

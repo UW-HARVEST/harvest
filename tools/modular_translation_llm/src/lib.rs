@@ -1,4 +1,5 @@
-//! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules and translates them one-by-one using an LLM.
+//! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules
+//! and translates them one-by-one using an LLM.
 //!
 //! Uses a two-pass translation approach:
 //! - Pass 1: Translates type declarations (TypedefDecl, RecordDecl, EnumDecl) to establish data layout

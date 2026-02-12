@@ -1916,6 +1916,7 @@ dependencies = [
  "cargo_metadata",
  "full_source",
  "harvest_core",
+ "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
 ]
 

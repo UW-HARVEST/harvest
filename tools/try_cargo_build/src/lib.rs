@@ -6,6 +6,7 @@ use harvest_core::{Id, Representation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use toml_edit::{DocumentMut, Value};
 use tracing::info;
 
 pub struct TryCargoBuild;
@@ -192,36 +193,25 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
     }
 
     let contents = fs::read_to_string(manifest)?;
-    let mut lines = Vec::new();
-    let mut in_package = false;
-    let mut changed = false;
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_package = trimmed == "[package]";
-            lines.push(line.to_string());
-            continue;
+    let mut doc = contents.parse::<DocumentMut>().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse Cargo.toml: {}", e),
+        )
+    })?;
+
+    // Get [package] section and update the name field
+    #[allow(clippy::collapsible_if)]
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
+        if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
+            // Only update if the name is different
+            if current_name != desired {
+                package.insert("name", toml_edit::Item::Value(Value::from(desired)));
+                fs::write(manifest, doc.to_string())?;
+            }
         }
-        if in_package
-            && let Some((key, _rest)) = trimmed.split_once('=')
-            && key.trim() == "name"
-        {
-            // Preserve original indentation when rewriting the name field.
-            let leading_ws_len = line.len() - line.trim_start().len();
-            let indent = &line[..leading_ws_len];
-            lines.push(format!("{indent}name = \"{}\"", desired));
-            changed = true;
-            continue;
-        }
-        lines.push(line.to_string());
     }
-    if changed {
-        let mut updated = lines.join("\n");
-        if !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        fs::write(manifest, updated)?;
-    }
+
     Ok(())
 }
 

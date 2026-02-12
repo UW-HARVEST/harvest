@@ -150,9 +150,18 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     let contents = fs::read_to_string(manifest)?;
-    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+    
+    // Check each line to see if it contains a [workspace] section header
+    // This handles cases with leading whitespace and various formatting
+    let has_workspace = contents.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == "[workspace]"
+    });
+    
+    if has_workspace {
         return Ok(());
     }
+    
     let mut updated = contents;
     if !updated.ends_with('\n') {
         updated.push('\n');

@@ -523,23 +523,20 @@ fn run_single_library_test(
     ld_library_path: &str,
     timeout: Duration,
 ) -> HarvestResult<Output> {
-    // Select the appropriate environment variable for shared library search paths
-    let library_path_env_var = if cfg!(target_os = "macos") {
-        "DYLD_LIBRARY_PATH"
-    } else if cfg!(target_os = "windows") {
-        "PATH"
-    } else {
-        // Default to the existing value (typically "LD_LIBRARY_PATH") on Unix-like systems
-        LD_LIBRARY_PATH_ENV
-    };
+    let runner_dir = runner_bin.parent().ok_or_else(|| {
+        format!(
+            "Runner binary path has no parent directory: {}",
+            runner_bin.display()
+        )
+    })?;
 
     let mut cmd = Command::new(runner_bin);
     cmd.arg("lib")
         .arg("-c")
         .arg(&test_case.filename)
-        .current_dir(runner_bin.parent().unwrap())
+        .current_dir(runner_dir)
         .env(RUST_ARTIFACTS_ENV, "1")
-        .env(library_path_env_var, ld_library_path)
+        .env(LD_LIBRARY_PATH_ENV, ld_library_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

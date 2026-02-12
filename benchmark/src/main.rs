@@ -274,7 +274,7 @@ fn benchmark_single_program(
         return result;
     }
 
-    if !translation_result.rust_binary_path.exists() {
+    if !is_lib && !translation_result.rust_binary_path.exists() {
         let error = format!(
             "Rust build reported success, but expected output artifact was not found at {:?}",
             translation_result.rust_binary_path

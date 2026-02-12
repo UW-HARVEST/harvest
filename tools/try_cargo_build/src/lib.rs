@@ -175,6 +175,9 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
 
 /// Force the package name to match the output directory name (sanitized). This keeps the produced
 /// `lib<name>.so` aligned with the test runner's expected library stem and avoids Cargo name errors.
+///
+/// Updates both [package].name and [lib].name (if present) to ensure the library artifact
+/// filename matches expectations.
 fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Result<()> {
     if !manifest.exists() {
         return Ok(());
@@ -200,16 +203,39 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
         )
     })?;
 
-    // Get [package] section and update the name field
+    let mut changed = false;
+
+    // Update [package].name if needed
     #[allow(clippy::collapsible_if)]
     if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
         if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
-            // Only update if the name is different
             if current_name != desired {
-                package.insert("name", toml_edit::Item::Value(Value::from(desired)));
-                fs::write(manifest, doc.to_string())?;
+                package.insert("name", toml_edit::Item::Value(Value::from(&desired)));
+                changed = true;
             }
         }
+    }
+
+    // Update [lib].name if [lib] section exists
+    // This ensures the library artifact name matches the sanitized directory name
+    if let Some(lib) = doc.get_mut("lib").and_then(|l| l.as_table_mut()) {
+        let needs_update = if let Some(current_lib_name) = lib.get("name").and_then(|n| n.as_str())
+        {
+            current_lib_name != desired
+        } else {
+            // [lib] exists but has no name field - add it
+            true
+        };
+
+        if needs_update {
+            lib.insert("name", toml_edit::Item::Value(Value::from(&desired)));
+            changed = true;
+        }
+    }
+
+    // Write once if any changes were made
+    if changed {
+        fs::write(manifest, doc.to_string())?;
     }
 
     Ok(())

@@ -33,6 +33,12 @@ pub struct TypeTranslationResult {
     pub translations: Vec<RustDeclaration>,
 }
 
+/// Result of the function signature translation containing only signature lines
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionSignatureTranslationResult {
+    pub signatures: Vec<String>,
+}
+
 /// Result of the translation containing both declarations and Cargo.toml
 #[derive(Debug, Deserialize)]
 pub struct TranslationResult {
@@ -87,7 +93,7 @@ pub fn translate_types(
 /// Translates function and global variable declarations to Rust using an LLM.
 ///
 /// This function translates FunctionDecl and VarDecl, with the type translations
-/// provided as context. Each declaration is translated in its own request.
+/// and function signature translations provided as context. Each declaration is translated in its own request.
 ///
 /// Returns the translated declarations.
 pub fn translate_functions(
@@ -95,6 +101,7 @@ pub fn translate_functions(
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
+    signature_translations: &FunctionSignatureTranslationResult,
     modular_llm: &ModularTranslationLLM,
 ) -> Result<Vec<RustDeclaration>, Box<dyn std::error::Error>> {
     debug!(
@@ -115,6 +122,7 @@ pub fn translate_functions(
             raw_source,
             project_kind,
             type_translations,
+            signature_translations,
         )?;
 
         translations.push(translation);
@@ -128,6 +136,45 @@ pub fn translate_functions(
     Ok(translations)
 }
 
+/// Translates function declarations to Rust signature lines using an LLM.
+///
+/// This function translates FunctionDecl only, with the type translations
+/// provided as context. All functions are translated in a single batch.
+///
+/// Returns the translated signature lines.
+pub fn translate_function_signatures(
+    function_decls: &[&clang_ast::Node<c_ast::Clang>],
+    raw_source: &RawSource,
+    project_kind: &ProjectKind,
+    type_translations: &TypeTranslationResult,
+    modular_llm: &ModularTranslationLLM,
+) -> Result<FunctionSignatureTranslationResult, Box<dyn std::error::Error>> {
+    debug!(
+        "Starting function signature translation for {} declarations",
+        function_decls.len()
+    );
+
+    if function_decls.is_empty() {
+        return Ok(FunctionSignatureTranslationResult {
+            signatures: Vec::new(),
+        });
+    }
+
+    let signatures = modular_llm.translate_function_signatures(
+        function_decls,
+        raw_source,
+        project_kind,
+        type_translations,
+    )?;
+
+    info!(
+        "Function signature translation complete: successfully translated {} declarations",
+        signatures.len()
+    );
+
+    Ok(FunctionSignatureTranslationResult { signatures })
+}
+
 fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
     let deps = translations.iter().flat_map(|t| t.dependencies.iter());
     deps.collect::<BTreeSet<_>>().into_iter().cloned().collect()
@@ -136,7 +183,8 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 /// Orchestrates the translation of Clang declarations to Rust using an LLM.
 ///
 /// First, translates type declarations (TypedefDecl, RecordDecl, EnumDecl)
-/// Then, translates functions and globals (FunctionDecl, VarDecl) with type context
+/// Then, translates function signatures (FunctionDecl) with type context
+/// Then, translates functions and globals (FunctionDecl, VarDecl) with type and signature context
 /// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
@@ -172,6 +220,15 @@ pub fn translate_decls(
         &modular_llm,
     )?;
 
+    // Translate function signatures (functions only) with type context
+    let function_signature_result = translate_function_signatures(
+        &declarations.app_functions,
+        raw_source,
+        project_kind,
+        &type_result,
+        &modular_llm,
+    )?;
+
     // Combine globals and functions for function/global translation
     let function_and_global_decls: Vec<_> = declarations.app_functions_and_globals().collect();
 
@@ -185,6 +242,7 @@ pub fn translate_decls(
             raw_source,
             project_kind,
             &type_result,
+            &function_signature_result,
             &modular_llm,
         )?
     };

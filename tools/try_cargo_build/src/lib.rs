@@ -155,13 +155,9 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
     // This handles cases with leading whitespace, trailing whitespace, and inline comments
     let has_workspace = contents.lines().any(|line| {
         let trimmed = line.trim();
-        if trimmed.starts_with("[workspace]") {
-            let after = &trimmed["[workspace]".len()..];
-            // Valid if nothing follows or if it's a comment
-            after.is_empty() || after.trim_start().starts_with('#')
-        } else {
-            false
-        }
+        trimmed
+            .strip_prefix("[workspace]")
+            .map_or(false, |after| after.is_empty() || after.trim_start().starts_with('#'))
     });
     
     if has_workspace {

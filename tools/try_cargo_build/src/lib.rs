@@ -157,7 +157,7 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
         let trimmed = line.trim();
         trimmed
             .strip_prefix("[workspace]")
-            .map_or(false, |after| after.is_empty() || after.trim_start().starts_with('#'))
+            .is_some_and(|after| after.is_empty() || after.trim_start().starts_with('#'))
     });
     
     if has_workspace {

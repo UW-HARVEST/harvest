@@ -152,10 +152,16 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
     let contents = fs::read_to_string(manifest)?;
     
     // Check each line to see if it contains a [workspace] section header
-    // This handles cases with leading whitespace and various formatting
+    // This handles cases with leading whitespace, trailing whitespace, and inline comments
     let has_workspace = contents.lines().any(|line| {
         let trimmed = line.trim();
-        trimmed == "[workspace]"
+        if trimmed.starts_with("[workspace]") {
+            let after = &trimmed["[workspace]".len()..];
+            // Valid if nothing follows or if it's a comment
+            after.is_empty() || after.trim_start().starts_with('#')
+        } else {
+            false
+        }
     });
     
     if has_workspace {

@@ -18,6 +18,7 @@
 //! store the contents of files in memory.
 
 mod dir;
+mod file;
 mod freezer;
 
 use crate::utils::{EmptyDirError, empty_writable_dir};
@@ -33,12 +34,12 @@ use std::fs::set_permissions;
 use std::io;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
-use std::str::Utf8Error;
 use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 use thiserror::Error;
 
 pub use dir::{Dir, DirEntry, ResolvedEntry};
+pub use file::{File, TextFile};
 pub(crate) use freezer::Freezer;
 
 /// Utility to recursively delete a TempDir that contains read-only files and directories. Provided
@@ -132,87 +133,6 @@ pub enum DiagnosticsDirNewError {
     EmptyDir(#[from] EmptyDirError),
     #[error("I/O error")]
     IoError(#[from] io::Error),
-}
-
-// Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
-// of the file can be shared between the copies, because it is computed lazily.
-/// A frozen file. A file can be a valid UTF-8, in which case it is considered a text file, or not
-/// UTF-8, in which case it is not. A [File] can be converted into a [TextFile] using [TryFrom] if
-/// the file is valid UTF-8.
-#[derive(Clone, Debug)]
-pub struct File {
-    // TODO: Implement
-}
-
-impl File {
-    /// Freezes the given file and returns a new File object referring to it. Note that this is for
-    /// internal use by the diagnostics system; other code should use `Reporter::freeze` to create
-    /// a File.
-    fn new(
-        diagnostics_dir: Arc<DiagnosticsDir>,
-        path: PathBuf,
-        permissions: Permissions,
-    ) -> io::Result<File> {
-        let _ = diagnostics_dir; // TODO: Remove once File is implemented.
-        // Remove write permissions from user and all permissions from group + other. Leave execute
-        // permission for user as-is.
-        set_permissions(path, Permissions::from_mode(permissions.mode() & 0o500))?;
-        Ok(File {})
-    }
-
-    /// Returns this file's contents as a byte array.
-    pub fn bytes(&self) -> Arc<[u8]> {
-        todo!()
-    }
-
-    /// Returns true if this file is UTF-8 (in which case it can be converted into a TextFile),
-    /// false otherwise.
-    pub fn is_utf8(&self) -> bool {
-        todo!()
-    }
-
-    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        todo!()
-    }
-}
-
-impl From<TextFile> for File {
-    fn from(file: TextFile) -> File {
-        let _ = file;
-        todo!()
-    }
-}
-
-/// A frozen UTF-8 file.
-#[derive(Clone, Debug)]
-pub struct TextFile {
-    // TODO: Implement
-}
-
-impl TextFile {
-    /// Returns this file's contents as a byte array.
-    pub fn bytes(&self) -> Arc<[u8]> {
-        self.str().into()
-    }
-
-    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        todo!()
-    }
-
-    /// Returns this file's contents as a str.
-    pub fn str(&self) -> Arc<str> {
-        todo!()
-    }
-}
-
-impl TryFrom<File> for TextFile {
-    type Error = Utf8Error;
-    fn try_from(file: File) -> Result<TextFile, Utf8Error> {
-        let _ = file;
-        todo!()
-    }
 }
 
 /// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may

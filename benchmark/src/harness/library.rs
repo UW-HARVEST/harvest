@@ -501,7 +501,14 @@ pub fn run_test_suite(
                 log::info!("❌ Test case {} failed: {}", test_case.filename, error);
             }
             Err(e) => {
-                return Err(e);
+                // Treat runner errors as failed tests rather than aborting the entire suite
+                test_results.push(TestResult {
+                    filename: test_case.filename.clone(),
+                    passed: false,
+                });
+                let error = format!("Test case {} failed: {}", test_case.filename, e);
+                error_messages.push(error.clone());
+                log::info!("❌ {}", error);
             }
         }
     }

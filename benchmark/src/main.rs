@@ -41,9 +41,18 @@ impl TranspilationResult {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
             Ok(artifacts) => {
-                // Prefer the first artifact as the "binary" path for executable cases.
-                let first = artifacts.first().cloned().unwrap_or_default();
-                (true, first, None)
+                if artifacts.is_empty() {
+                    // Empty artifacts list indicates build succeeded but produced no output
+                    (
+                        false,
+                        PathBuf::new(),
+                        Some("Build succeeded but produced no artifacts".to_string()),
+                    )
+                } else {
+                    // Prefer the first artifact as the "binary" path for executable cases.
+                    let first = artifacts.first().cloned().unwrap();
+                    (true, first, None)
+                }
             }
             Err(err) => (false, PathBuf::new(), Some(err.clone())),
         };

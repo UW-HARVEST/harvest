@@ -2,8 +2,8 @@
 The `benchmark` tool is our custom integration-testing and benchmarking utility.
 It takes as input a directory of benchmark programs (using the format described below) and produces an output directory containing translated Rust code, debugging information, and summary statistics.  
 
-### Commandline Interface
-The commandline interface of `benchmark` is:
+### Command-line Interface
+The command-line interface of `benchmark` is:
 ```
 Usage: benchmark [OPTIONS] <INPUT_DIR> <OUTPUT_DIR>
 

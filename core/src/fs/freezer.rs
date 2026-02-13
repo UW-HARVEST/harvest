@@ -25,22 +25,32 @@ impl Freezer {
     }
 
     /// Makes a read-only copy of a filesystem object in the diagnostic directory. `path` must be
-    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    /// relative to the diagnostics directory, and cannot contain `..` or symlinks.
     pub fn copy_ro<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
-        let _ = (path, entry);
-        todo!()
+        use DirectVerified::Unfrozen;
+        let Unfrozen {
+            mut absolute,
+            relative,
+        } = self.verify_direct(path.as_ref())?
+        else {
+            return Err(ErrorKind::PermissionDenied.into());
+        };
+        entry.copy_ro(&mut absolute, &mut relative.clone())?;
+        let prev = self.frozen.insert(relative, entry);
+        debug_assert!(prev.is_none());
+        Ok(())
     }
 
     /// Makes a read-write copy of a filesystem object in the diagnostic directory. `path` must be
-    /// relative to the diagnostics directory, and cannot contain `.`, `..`, or symlinks.
+    /// relative to the diagnostics directory, and cannot contain `..` or symlinks.
     pub fn copy_rw<P: AsRef<Path>>(&mut self, path: P, entry: DirEntry) -> io::Result<()> {
         let _ = (path, entry);
         todo!()
     }
 
     /// Freezes the given path, returning an object referencing it. `path` must be relative to the
-    /// diagnostics directory, and cannot contain `.` or `..`. This will not follow symlinks (i.e.
-    /// `path` cannot have symlinks in its directory path, and if `path` points to a symlink then a
+    /// diagnostics directory, and cannot contain `..`. This will not follow symlinks (i.e. `path`
+    /// cannot have symlinks in its directory path, and if `path` points to a symlink then a
     /// Symlink will be returned).
     pub fn freeze<P: AsRef<Path>>(&mut self, path: P) -> io::Result<DirEntry> {
         self.freeze_inner(path.as_ref())
@@ -48,93 +58,45 @@ impl Freezer {
 
     /// The implementation of [freeze]. The only difference is that this is not generic.
     fn freeze_inner(&mut self, path: &Path) -> io::Result<DirEntry> {
-        // freeze() starts at the root of the diagnostic directory and traverses through the path
-        // component-by-component. As it does so, it looks for several possible error conditions:
-        //
-        //   1. A `path` that might be outside the diagnostics directory. Paths that are absolute
-        //      (start with a drive prefix or the root directory), paths that contain `..`, and
-        //      paths that traverse symlinks might leave the diagnostics directory. For simplicity,
-        //      we disallow those path components, as well as `.` for consistency.
-        //   2. A `path` that tries to traverse through a file. That is: if names.txt is a normal
-        //      file, then names.txt/foo is an invalid path.
-        //
-        // As it does this scan, it checks `self.frozen` to see if we have already frozen this
-        // path. If so, `freeze_inner` can stop traversing path and use the already-frozen
-        // `DirEntry` to shortcut its operation. How it does so depends on the `DirEntry`:
-        //
-        //   3. If the DirEntry is a Dir, then we call `Dir::get_nofollow` on the remaining part of
-        //      `path`.
-        //   4. If the DirEntry is a File or Symlink, then we verify that `path` does not traverse
-        //      through the entry (if so, then we have one of the above two error conditions). If
-        //      not, then `path` points at that `DirEntry` and we can just return it.
-        //
-        // When `path` is exhausted (there are no components left to process), one of two
-        // conditions happens:
-        //
-        //   5. If `path` points to a directory, we call `self.build_dir` which recursively freezes
-        //      the directory and builds the Dir.
-        //   6. If `path` is a file or symlink, then we call `File::new`/`Symlink::new` to freeze
-        //      it and create the corresponding DirEntry.
-        //
-        // In both cases, the new DirEntry is cached (stored in self.frozen) and returned.
-
-        use ErrorKind::{InvalidInput, NotADirectory, NotFound};
-        // The current path, both as an absolute path (for use with OS filesystem calls) and
-        // relative to the diagnostics directory (for lookups into self.frozen).
-        let mut absolute = self.diagnostics_dir.path().to_path_buf();
-        let mut relative = PathBuf::with_capacity(path.as_os_str().len());
-        let mut components = path.components();
-        while let Some(component) = components.next() {
-            let Component::Normal(name) = component else {
-                return Err(ErrorKind::InvalidInput.into());
-            };
-            absolute.push(name);
-            relative.push(name);
-            if let Some(entry) = self.frozen.get(&relative) {
-                // `path` has already been frozen. This is case 1, 2, 3, or 4.
-                if let DirEntry::Dir(dir) = entry {
-                    // This is not case 4. Dir::get_nofollow correctly handles cases 1-3.
-                    return match dir.get_nofollow(components.as_path()) {
-                        Ok(entry) => Ok(entry),
-                        Err(GetNofollowError::LeavesDir) => Err(InvalidInput.into()),
-                        Err(GetNofollowError::NotADirectory) => Err(NotADirectory.into()),
-                        Err(GetNofollowError::NotFound) => Err(NotFound.into()),
-                    };
-                }
-                // This is case 1, 2, or 4. We check whether there are any components left in
-                // `path` to determine whether this should error (cases 1 + 2) or succeed (case 4).
-                match components.next() {
-                    None => return Ok(entry.clone()),
-                    Some(_) => return Err(ErrorKind::NotADirectory.into()),
-                }
+        // We first call verify_direct, which does two things for us:
+        // 1. Check if the path is already frozen
+        // 2. Verify the path is direct, if it is not frozen.
+        let (mut absolute, mut relative) = match self.verify_direct(path)? {
+            // verify_direct returns early if `path` points into an already-frozen directory. In
+            // that case, call `Dir::get_nofollow` to finish the path traversal.
+            DirectVerified::Frozen {
+                dir_entry: DirEntry::Dir(dir),
+                remaining,
+            } => {
+                return match dir.get_nofollow(remaining) {
+                    Ok(entry) => Ok(entry),
+                    Err(GetNofollowError::LeavesDir) => Err(ErrorKind::InvalidInput.into()),
+                    Err(GetNofollowError::NotADirectory) => Err(ErrorKind::NotADirectory.into()),
+                    Err(GetNofollowError::NotFound) => Err(ErrorKind::NotFound.into()),
+                };
             }
-            // Verify that we are not traversing through a file or symlink.
-            let metadata = symlink_metadata(&absolute)?;
-            let entry_type = metadata.file_type();
-            if entry_type.is_dir() {
-                continue;
-            }
-            if components.next().is_some() {
-                // Case 1 or 2, return an error
-                return Err(NotADirectory.into());
-            }
-            // `path` points to a file or symlink that has not already been frozen (case 6). Freeze
-            // it, store it, and return it.
-            let entry = match entry_type.is_symlink() {
-                false => DirEntry::File(File::new(
-                    self.diagnostics_dir.clone(),
-                    absolute,
-                    metadata.permissions(),
-                )?),
-                true => DirEntry::Symlink(Symlink::new(absolute)?),
-            };
-            self.frozen.insert(relative, entry.clone());
-            return Ok(entry);
-        }
-        // `path` points to a directory (case 5). Recursively freeze that directory, reusing (and
-        // removing) any cached sub-entries.
-        let entry = DirEntry::Dir(self.build_dir(&mut absolute, &mut relative)?);
-        self.frozen.insert(relative.clone(), entry.clone());
+            // For frozen non-directory paths, dir_entry is exactly the entry at `path`.
+            DirectVerified::Frozen {
+                dir_entry,
+                remaining: _,
+            } => return Ok(dir_entry.clone()),
+            // If the path is not already frozen, continue below.
+            DirectVerified::Unfrozen { absolute, relative } => (absolute, relative),
+        };
+        // The path is not frozen yet. Determine whether it is a file, directory, or symlink, and
+        // call the appropriate function to freeze it.
+        let metadata = symlink_metadata(&absolute)?;
+        let entry = match metadata.file_type() {
+            file_type if file_type.is_file() => DirEntry::File(File::new(
+                self.diagnostics_dir.clone(),
+                absolute,
+                relative.clone(),
+                metadata.permissions(),
+            )?),
+            file_type if file_type.is_dir() => self.build_dir(&mut absolute, &mut relative)?.into(),
+            _ => DirEntry::Symlink(Symlink::new(&absolute)?),
+        };
+        self.frozen.insert(relative, entry.clone());
         Ok(entry)
     }
 
@@ -154,6 +116,7 @@ impl Freezer {
                     _ if file_type.is_file() => File::new(
                         self.diagnostics_dir.clone(),
                         absolute.clone(),
+                        relative.clone(),
                         entry.metadata()?.permissions(),
                     )?
                     .into(),
@@ -168,15 +131,164 @@ impl Freezer {
         }
         Dir::new(absolute, contents)
     }
+
+    /// Verifies the passed path is a direct path within the diagnostic directory (must be relative
+    /// and not contain `..` or symlinks). The passed path does not need to exist, but its parent
+    /// directory does.
+    ///
+    /// If the passed path is under a frozen directory, verification terminates early and the
+    /// directory and remaining path are returned. In this case, the portion of `path` pointing to
+    /// the frozen directory is verified to be a direct path, but the remaining `path` is not
+    /// verified. If you want to verify the remainder of the path, call `Dir::get_nofollow` on it.
+    /// This is done to avoid unnecessary lookups if the calling function is just going to error on
+    /// an already-frozen path (as e.g. copy_ro does).
+    fn verify_direct<'s, 'p>(&'s self, path: &'p Path) -> io::Result<DirectVerified<'s, 'p>> {
+        // It is conceivable that the diagnostic itself could be frozen, perhaps at the end of
+        // translate's execution. Since the first loop (below) won't check that case, we check for
+        // it up front.
+        if let Some(dir_entry) = self.frozen.get(AsRef::<Path>::as_ref("")) {
+            return Ok(DirectVerified::Frozen {
+                dir_entry,
+                remaining: path,
+            });
+        }
+        // This first loop performs all the checks we can perform in-memory.
+        // `relative` is the current path relative to the diagnostic directory.
+        let mut relative = PathBuf::with_capacity(path.as_os_str().len());
+        let mut components = path.components();
+        for component in &mut components {
+            // Any component type other than CurDir and Normal means that `path` is not direct.
+            // Ignore CurDir (because of Components' normalization, it can only refer to the
+            // diagnostic directory).
+            let name = match component {
+                Component::Normal(name) => name,
+                Component::CurDir => continue,
+                _ => return Err(ErrorKind::InvalidInput.into()),
+            };
+            relative.push(name);
+            let Some(dir_entry) = self.frozen.get(&relative) else {
+                continue;
+            };
+            // This path is already frozen. This can be an error or a success, depending on whether
+            // there are more path components remaining and on whether this is a directory.
+            let remaining = components.as_path();
+            if !dir_entry.is_dir() && !remaining.as_os_str().is_empty() {
+                // `path` tries to traverse through a file or symlink, which should error.
+                return Err(ErrorKind::NotADirectory.into());
+            }
+            // As described in the function documentation, we terminate early in this case (no need
+            // to check filesystem metadata, as the path being frozen means that its parents are
+            // not symlinks).
+            return Ok(DirectVerified::Frozen {
+                dir_entry,
+                remaining,
+            });
+        }
+        // This second loop verifies that path does not traverse through a directory or symlink.
+        // `absolute` is the current path as an absolute path (for filesystem operations).
+        let mut absolute = self.diagnostics_dir.path().to_path_buf();
+        let mut iter = path.iter();
+        // Drop the last component to make the loop skip `path` itself (we don't need to check if
+        // `path` exists or what type of filesystem object it is).
+        let last = iter.next_back();
+        for name in iter {
+            absolute.push(name);
+            // Verify that the filesystem object that `absolute` points to is a directory.
+            if !symlink_metadata(&absolute)?.file_type().is_dir() {
+                return Err(ErrorKind::NotADirectory.into());
+            }
+        }
+        // Append the previously-dropped last component to make `absolute` correct (if path is
+        // empty, then append nothing).
+        if let Some(last) = last {
+            absolute.push(last)
+        };
+        Ok(DirectVerified::Unfrozen { absolute, relative })
+    }
+}
+
+/// Return value from verify_direct
+#[derive(Debug)]
+enum DirectVerified<'s, 'p> {
+    /// The path being verified is already frozen.
+    Frozen {
+        /// The DirEntry of the frozen path. This may be an ancesor of the passed path.
+        dir_entry: &'s DirEntry,
+        /// The remainder of `path`. This has not been verified to be direct.
+        remaining: &'p Path,
+    },
+    /// The path is not frozen yet.
+    Unfrozen {
+        /// The input path, but as an absolute path for filesystem operations.
+        absolute: PathBuf,
+        /// The input path without `.` entries.
+        relative: PathBuf,
+    },
 }
 
 #[cfg(all(not(miri), test))]
 mod tests {
     use super::super::test_util::dir_has_entries;
     use super::*;
-    use std::fs::{create_dir, set_permissions, write};
+    use std::fs::{create_dir, create_dir_all, read_link, set_permissions, write};
     use std::os::unix::fs::symlink;
     use std::ptr;
+
+    impl<'s, 'p> DirectVerified<'s, 'p> {
+        fn get_frozen(&self) -> Option<(&'s DirEntry, &'p Path)> {
+            match self {
+                DirectVerified::Frozen {
+                    dir_entry,
+                    remaining,
+                } => Some((dir_entry, remaining)),
+                DirectVerified::Unfrozen { .. } => None,
+            }
+        }
+    }
+
+    #[test]
+    fn copy_ro() {
+        let diagnostics_dir = Arc::new(DiagnosticsDir::tempdir().unwrap());
+        let mut freezer = Freezer::new(diagnostics_dir.clone());
+        // Build the following filesystem structure:
+        //
+        // a/b/absolute  An absolute symlink to a/target
+        // a/b/c/file1   A file
+        // a/b/file2     A file
+        // a/b/relative  A relative symlink to a/target
+        // a/target      A file
+        let a_b_absolute = diagnostics_dir.to_absolute_path("a/b/absolute").unwrap();
+        let a_b_c_file1 = diagnostics_dir.to_absolute_path("a/b/c/file1").unwrap();
+        let a_b_file2 = diagnostics_dir.to_absolute_path("a/b/file2").unwrap();
+        let a_b_relative = diagnostics_dir.to_absolute_path("a/b/relative").unwrap();
+        let a_target = diagnostics_dir.to_absolute_path("a/target").unwrap();
+        create_dir_all(diagnostics_dir.to_absolute_path("a/b/c").unwrap()).unwrap();
+        symlink(&a_target, a_b_absolute).unwrap();
+        write(a_b_c_file1, "file1\n").unwrap();
+        write(a_b_file2, "file2\n").unwrap();
+        symlink("../target", a_b_relative).unwrap();
+        write(&a_target, "target\n").unwrap();
+        // Freeze a/b, then move it to a/new.
+        let a_b = freezer.freeze("a/b").unwrap();
+        freezer.copy_ro("a/new", a_b).unwrap();
+        let a_new = diagnostics_dir.to_absolute_path("a/new").unwrap();
+        let a_new_c = diagnostics_dir.to_absolute_path("a/new/c").unwrap();
+        let a_new_absolute = diagnostics_dir.to_absolute_path("a/new/absolute").unwrap();
+        let a_new_c_file1 = diagnostics_dir.to_absolute_path("a/new/c/file1").unwrap();
+        let a_new_file2 = diagnostics_dir.to_absolute_path("a/new/file2").unwrap();
+        let a_new_relative = diagnostics_dir.to_absolute_path("a/new/relative").unwrap();
+        // Verify the directories were created rather than being symlinked.
+        assert!(symlink_metadata(a_new).unwrap().is_dir());
+        assert!(symlink_metadata(a_new_c).unwrap().is_dir());
+        // Verify all the symlinks were moved correctly.
+        assert_eq!(read_link(a_new_absolute).unwrap(), a_target);
+        assert_eq!(
+            read_link(a_new_c_file1).unwrap().as_path(),
+            "../../b/c/file1"
+        );
+        assert_eq!(read_link(a_new_file2).unwrap().as_path(), "../b/file2");
+        assert_eq!(read_link(a_new_relative).unwrap().as_path(), "../target");
+    }
 
     #[test]
     fn freeze() {
@@ -210,7 +322,6 @@ mod tests {
         // Try freezing a few invalid paths first.
         let error = freezer.freeze("/absolute").unwrap_err();
         assert_eq!(error.kind(), InvalidInput);
-        assert_eq!(freezer.freeze("./a").unwrap_err().kind(), InvalidInput);
         let error = freezer.freeze("a/outer_file/c").unwrap_err();
         assert_eq!(error.kind(), NotADirectory);
         let error = freezer.freeze("a/b/dir_link/b").unwrap_err();
@@ -282,5 +393,100 @@ mod tests {
         // Verify that the nested frozen paths were removed.
         assert_eq!(freezer.frozen.len(), 1);
         assert_eq!(freezer.frozen.iter().next().map(|(n, _)| n).unwrap(), "a");
+    }
+
+    #[test]
+    fn verify_direct() {
+        let diagnostics_dir = Arc::new(DiagnosticsDir::tempdir().unwrap());
+        let mut freezer = Freezer::new(diagnostics_dir.clone());
+        // Build the following filesystem structure under the diagnostic directory:
+        //
+        // subdir/file  A text file.
+        // link         A symlink to `subdir`
+        let subdir = diagnostics_dir.to_absolute_path("subdir").unwrap();
+        let file = diagnostics_dir.to_absolute_path("subdir/file").unwrap();
+        let link = diagnostics_dir.to_absolute_path("link").unwrap();
+        create_dir(subdir).unwrap();
+        write(&file, "file contents").unwrap();
+        symlink("subdir", link).unwrap();
+        // Test with paths that should fail with inspection alone.
+        let result = freezer.verify_direct("/absolute_path".as_ref());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+        let result = freezer.verify_direct("subdir/../symlink".as_ref());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+        // Test paths that try to traverse through nonexistent directories, files, and symlinks.
+        let result = freezer.verify_direct("subdir/file/target".as_ref());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotADirectory);
+        let result = freezer.verify_direct("nonexistent/file".as_ref());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
+        let result = freezer.verify_direct("link/file".as_ref());
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotADirectory);
+        // Test a path pointing to a target that exists.
+        let result = freezer.verify_direct("subdir/file".as_ref());
+        let DirectVerified::Unfrozen { absolute, relative } = result.unwrap() else {
+            panic!("Unexpected Frozen return for subdir/file");
+        };
+        assert_eq!(absolute, file);
+        assert_eq!(relative.as_path(), "subdir/file");
+        // Test a path with some unnecessary `.` entries (verify the path returned removes them).
+        let result = freezer.verify_direct("./subdir/./file".as_ref());
+        let DirectVerified::Unfrozen { absolute, relative } = result.unwrap() else {
+            panic!("Unexpected Frozen return for ./subdir/./file");
+        };
+        assert_eq!(absolute, file);
+        assert_eq!(relative.as_path(), "subdir/file");
+        // Test a path pointing to a target that does not exist.
+        let result = freezer.verify_direct("subdir/nonexistent".as_ref());
+        let DirectVerified::Unfrozen { absolute, relative } = result.unwrap() else {
+            panic!("Unexpected Frozen return for subdir/nonexistent");
+        };
+        assert_eq!(
+            absolute,
+            diagnostics_dir
+                .to_absolute_path("subdir/nonexistent")
+                .unwrap()
+        );
+        assert_eq!(relative.as_path(), "subdir/nonexistent");
+        // Freeze subdir/file and link, verifying that looking up each directly return the correct
+        // DirEntry type.
+        freezer.freeze("subdir/file").unwrap();
+        let result = freezer.verify_direct("subdir/file".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.is_file());
+        assert_eq!(remaining, "");
+        freezer.freeze("link").unwrap();
+        let result = freezer.verify_direct("link".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.is_symlink());
+        assert_eq!(remaining, "");
+        // Freeze subdir, verify both that looking up subdir directly and looking up subdir/file
+        // find the frozen subdir.
+        freezer.freeze("subdir").unwrap();
+        let result = freezer.verify_direct("subdir".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.dir().unwrap().get_entry("file").is_some());
+        assert_eq!(remaining, "");
+        let result = freezer.verify_direct("subdir/file".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.dir().unwrap().get_entry("file").is_some());
+        assert_eq!(remaining, "file");
+        // A nonexistent file under subdir should still show as Frozen, as verify_direct()
+        // shouldn't traverse into the filesystem at all.
+        let result = freezer.verify_direct("subdir/nonexistent".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.dir().unwrap().get_entry("file").is_some());
+        assert_eq!(remaining, "nonexistent");
+        // Last: freeze the entire diagnostics directory, verify that it always returns Frozen.
+        freezer.freeze("").unwrap();
+        let result = freezer.verify_direct("link".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.dir().unwrap().get_entry("link").is_some());
+        assert_eq!(remaining, "link");
+        // Because "" is frozen, a nonexistent file should still return Frozen, because it
+        // shouldn't traverse the filesystem at all.
+        let result = freezer.verify_direct("nonexistent".as_ref());
+        let (dir_entry, remaining) = result.unwrap().get_frozen().unwrap();
+        assert!(dir_entry.dir().unwrap().get_entry("link").is_some());
+        assert_eq!(remaining, "nonexistent");
     }
 }

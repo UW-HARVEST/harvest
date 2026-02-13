@@ -4,8 +4,8 @@ mod tests;
 use super::DiagnosticsDir;
 use std::fs::{Permissions, read, read_to_string, set_permissions};
 use std::io;
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::PathBuf;
+use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::path::{Path, PathBuf};
 use std::str::{Utf8Error, from_utf8};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tracing::error;
@@ -26,16 +26,21 @@ impl File {
     /// a File.
     pub(super) fn new(
         diagnostics_dir: Arc<DiagnosticsDir>,
-        path: PathBuf,
+        absolute: PathBuf,
+        relative: PathBuf,
         permissions: Permissions,
     ) -> io::Result<File> {
         // Remove write permissions from user and all permissions from group + other. Leave execute
         // permission for user as-is.
-        set_permissions(&path, Permissions::from_mode(permissions.mode() & 0o500))?;
+        set_permissions(
+            &absolute,
+            Permissions::from_mode(permissions.mode() & 0o500),
+        )?;
         let shared = Arc::new(Shared {
             contents: Mutex::new(CachedContents::Unknown),
-            diagnostics_dir,
-            path,
+            _diagnostics_dir: diagnostics_dir,
+            absolute,
+            relative,
         });
         Ok(File { shared })
     }
@@ -55,8 +60,48 @@ impl File {
     }
 
     /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        self.shared.path()
+    pub fn path(&self) -> &Path {
+        &self.shared.absolute
+    }
+
+    /// Used by Freezer::copy_ro. Writes a read-only copy of this File into the given path. Note
+    /// that `relative` must consist only of Normal components and may not traverse symlinks.
+    pub(super) fn copy_ro(&self, absolute: &Path, relative: &Path) -> io::Result<()> {
+        // Compute the relative path from `relative` to `self.shared.relative`. This path will be
+        // the symlink's contents. For example, suppose that:
+        //
+        //   target = self.shared.relative = a/b/c/d/e
+        //   source = relative             = a/b/w/y
+        //
+        // First, you can strip off the leading components that are the same:
+        //
+        //   target = c/d/e
+        //   source = w/y
+        //
+        // You can then construct the symlink path as repeat(..)/target, where the number of ..'s
+        // is one fewer than the number of remaining components in `source`. Note that this assumes
+        // that all remaining components of `source` are Normal components, which the caller must
+        // guarantee.
+        let mut source_components = relative.components();
+        let mut target_components = self.shared.relative.components();
+        // Iterate until we find the first differing component between source and target.
+        let target_component = loop {
+            let target_component = target_components.next().expect("path traverses a file");
+            if source_components.next().expect("path is a dir") != target_component {
+                break target_component;
+            }
+        };
+        // At this point, we've iterated past all of the common components of source and target and
+        // have popped the first distinct components from each. Therefore the number of remaining
+        // components in source_components is one fewer than the number of distinct components from
+        // source, which matches the number of ..'s to push into the symlink path.
+        let mut symlink_path = PathBuf::new();
+        symlink_path.extend(source_components.map(|_| ".."));
+        // Add the target component we've already popped, and the remainder of target_components.
+        symlink_path.push(target_component);
+        symlink_path.push(target_components.as_path());
+        // Write the symlink into the filesystem.
+        symlink(symlink_path, absolute)
     }
 }
 
@@ -82,8 +127,8 @@ impl TextFile {
     }
 
     /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        self.shared.path()
+    pub fn path(&self) -> &Path {
+        &self.shared.absolute
     }
 
     /// Returns this file's contents as a str.
@@ -123,11 +168,14 @@ impl TryFrom<File> for TextFile {
 #[derive(Debug)]
 struct Shared {
     contents: Mutex<CachedContents>,
-    diagnostics_dir: Arc<DiagnosticsDir>,
-    // Path to a copy of this file in the filesystem. This path is relative to the diagnostic
-    // directory, and does not traverse any symlinks (i.e. if it is appended to
-    // diagnostics_dir.path, it creates a canonical path).
-    path: PathBuf,
+
+    // Absolute path to a copy of this file in the filesystem.
+    absolute: PathBuf,
+    // Direct path to a copy of this file in the filesystem, relative to the diagnostic directory.
+    relative: PathBuf,
+
+    // Handle to the DiagnosticsDir so the backing file is not deleted.
+    _diagnostics_dir: Arc<DiagnosticsDir>,
 }
 
 impl Shared {
@@ -141,7 +189,7 @@ impl Shared {
                 None => {
                     // We know that this file is valid UTF-8, but its contents have been forgotten
                     // (all Arc<>s dropped). Read it in again and re-cache its contents.
-                    let contents = read_to_string(self.path())
+                    let contents = read_to_string(&self.absolute)
                         .expect("read of frozen text file failed")
                         .into();
                     *guard = CachedContents::Utf8(Arc::downgrade(&contents));
@@ -156,7 +204,7 @@ impl Shared {
                 None => {
                     // We know that this file is not valid UTF-8, but its contents have been
                     // forgotten (all Arc<>s dropped). Read it in again and re-cache its contents.
-                    let contents = read(self.path())
+                    let contents = read(&self.absolute)
                         .expect("read of frozen file failed")
                         .into();
                     *guard = CachedContents::NotUtf8 {
@@ -172,7 +220,7 @@ impl Shared {
 
     /// Reads in the file contents, updating the cache and returning them.
     fn load(&self, mut guard: MutexGuard<CachedContents>) -> Contents {
-        let contents = read(self.path()).expect("read of frozen file failed");
+        let contents = read(&self.absolute).expect("read of frozen file failed");
         match from_utf8(&contents) {
             Ok(contents) => {
                 let contents = Arc::from(contents);
@@ -197,10 +245,6 @@ impl Shared {
             self.contents.clear_poison();
             e.into_inner()
         })
-    }
-
-    fn path(&self) -> PathBuf {
-        PathBuf::from_iter([&self.diagnostics_dir.path, &self.path])
     }
 }
 

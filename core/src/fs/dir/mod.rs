@@ -4,11 +4,10 @@ mod tests;
 use super::{File, Symlink};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::Permissions;
-use std::fs::set_permissions;
+use std::fs::{Permissions, create_dir, set_permissions};
 use std::io;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -21,6 +20,19 @@ pub enum DirEntry {
 }
 
 impl DirEntry {
+    /// Returns true if this is a [Dir], false otherwise.
+    pub fn is_dir(&self) -> bool {
+        matches!(self, DirEntry::Dir(_))
+    }
+    /// Returns true if this is a [File], false otherwise.
+    pub fn is_file(&self) -> bool {
+        matches!(self, DirEntry::File(_))
+    }
+    /// Returns true if this is a [Symlink], false otherwise.
+    pub fn is_symlink(&self) -> bool {
+        matches!(self, DirEntry::Symlink(_))
+    }
+
     /// Returns the contained [Dir] if this is a directory.
     pub fn dir(&self) -> Option<Dir> {
         match self {
@@ -42,6 +54,16 @@ impl DirEntry {
         match self {
             DirEntry::Symlink(symlink) => Some(symlink.clone()),
             _ => None,
+        }
+    }
+
+    /// Used by Freezer::copy_ro. Writes a read-only copy of this DirEntry into the given path.
+    /// Note that `relative` must consist only of Normal components and may not traverse symlinks.
+    pub(super) fn copy_ro(&self, absolute: &mut PathBuf, relative: &mut PathBuf) -> io::Result<()> {
+        match self {
+            DirEntry::Dir(dir) => dir.copy_ro(absolute, relative),
+            DirEntry::File(file) => file.copy_ro(absolute, relative),
+            DirEntry::Symlink(symlink) => symlink.copy_ro(absolute),
         }
     }
 }
@@ -173,6 +195,20 @@ impl Dir {
             }
         }
         Ok(DirEntry::Dir(cur_dir.clone()))
+    }
+
+    /// Used by Freezer::copy_ro. Writes a read-only copy of this DirEntry into the given path.
+    /// Note that `relative` must consist only of Normal components and may not traverse symlinks.
+    fn copy_ro(&self, absolute: &mut PathBuf, relative: &mut PathBuf) -> io::Result<()> {
+        create_dir(&absolute)?;
+        for (name, entry) in self.contents.iter() {
+            absolute.push(name);
+            relative.push(name);
+            entry.copy_ro(absolute, relative)?;
+            relative.pop();
+            absolute.pop();
+        }
+        Ok(())
     }
 }
 

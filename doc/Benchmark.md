@@ -2,8 +2,8 @@
 The `benchmark` tool is our custom integration-testing and benchmarking utility.
 It takes as input a directory of benchmark programs (using the format described below) and produces an output directory containing translated Rust code, debugging information, and summary statistics.  
 
-### Commandline Interface
-The commandline interface of `benchmark` is:
+### Command-line Interface
+The command-line interface of `benchmark` is:
 ```
 Usage: benchmark [OPTIONS] <INPUT_DIR> <OUTPUT_DIR>
 
@@ -15,6 +15,7 @@ Options:
   -c, --config <CONFIG>    Set a configuration value; format $NAME=$VALUE
       --timeout <TIMEOUT>  Timeout in seconds for running test cases [default: 10]
       --filter <FILTER>    Filter benchmarks by regex pattern on directory names (keeps matching directories)
+      --exclude <EXCLUDE>  Exclude benchmarks by regex pattern on directory names (removes matching directories)
   -h, --help               Print help
 ```
 
@@ -23,21 +24,36 @@ The most important detail is that `benchmark` inherits all translation settings 
 Only the input and output directories are determined by the command-line arguments.
 If you need to override a configuration value, you can use the `--config` flag, which behaves exactly the same way as in translate.
 
-#### Using the `--filter` option
-The `--filter` option takes a regular expression pattern and only runs benchmarks whose directory names match the pattern. Here are some common examples:
+#### Using the `--filter` and `--exclude` options
+The `--filter` option takes a regular expression pattern and only runs benchmarks whose directory names match the pattern.
+The `--exclude` option takes a regular expression pattern and excludes benchmarks whose directory names match the pattern.
+
+**Note:** The `--filter` and `--exclude` options are mutually exclusive and cannot be used together.
+
+**Filter examples:**
 
 ```bash
 # Run only library benchmarks (directories ending with _lib)
 benchmark Test-Corpus/Public-Tests/B01_synthetic output/ --filter=".*_lib$"
-
-# Run only executable benchmarks (exclude directories ending with _lib)
-benchmark Test-Corpus/Public-Tests/B01_synthetic output/ --filter="^(?!.*_lib$)"
 
 # Run only benchmarks starting with B01
 benchmark Test-Corpus/Public-Tests output/ --filter="^B01"
 
 # Run only benchmarks containing "example" in the name
 benchmark Test-Corpus/Public-Tests output/ --filter=".*example.*"
+```
+
+**Exclude examples:**
+
+```bash
+# Exclude library benchmarks (directories ending with _lib)
+benchmark Test-Corpus/Public-Tests/B01_synthetic output/ --exclude=".*_lib$"
+
+# Exclude benchmarks starting with test_
+benchmark Test-Corpus/Public-Tests output/ --exclude="^test_"
+
+# Exclude benchmarks containing "skip" in the name
+benchmark Test-Corpus/Public-Tests output/ --exclude=".*skip.*"
 ```
 
 

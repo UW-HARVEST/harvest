@@ -6,6 +6,7 @@ use harvest_core::{Id, Representation};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use toml_edit::{DocumentMut, Value};
 use tracing::info;
 
 pub struct TryCargoBuild;
@@ -150,9 +151,20 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     let contents = fs::read_to_string(manifest)?;
-    if contents.contains("\n[workspace]") || contents.trim_start().starts_with("[workspace]") {
+
+    // Check each line to see if it contains a [workspace] section header
+    // This handles cases with leading whitespace, trailing whitespace, and inline comments
+    let has_workspace = contents.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix("[workspace]")
+            .is_some_and(|after| after.is_empty() || after.trim_start().starts_with('#'))
+    });
+
+    if has_workspace {
         return Ok(());
     }
+
     let mut updated = contents;
     if !updated.ends_with('\n') {
         updated.push('\n');
@@ -163,6 +175,9 @@ fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
 
 /// Force the package name to match the output directory name (sanitized). This keeps the produced
 /// `lib<name>.so` aligned with the test runner's expected library stem and avoids Cargo name errors.
+///
+/// Updates both [package].name and [lib].name (if present) to ensure the library artifact
+/// filename matches expectations.
 fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Result<()> {
     if !manifest.exists() {
         return Ok(());
@@ -181,36 +196,48 @@ fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Resul
     }
 
     let contents = fs::read_to_string(manifest)?;
-    let mut lines = Vec::new();
-    let mut in_package = false;
+    let mut doc = contents.parse::<DocumentMut>().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse Cargo.toml: {}", e),
+        )
+    })?;
+
     let mut changed = false;
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_package = trimmed == "[package]";
-            lines.push(line.to_string());
-            continue;
+
+    // Update [package].name if needed
+    #[allow(clippy::collapsible_if)]
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
+        if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
+            if current_name != desired {
+                package.insert("name", toml_edit::Item::Value(Value::from(&desired)));
+                changed = true;
+            }
         }
-        if in_package
-            && let Some((key, _rest)) = trimmed.split_once('=')
-            && key.trim() == "name"
+    }
+
+    // Update [lib].name if [lib] section exists
+    // This ensures the library artifact name matches the sanitized directory name
+    if let Some(lib) = doc.get_mut("lib").and_then(|l| l.as_table_mut()) {
+        let needs_update = if let Some(current_lib_name) = lib.get("name").and_then(|n| n.as_str())
         {
-            // Preserve original indentation when rewriting the name field.
-            let leading_ws_len = line.len() - line.trim_start().len();
-            let indent = &line[..leading_ws_len];
-            lines.push(format!("{indent}name = \"{}\"", desired));
+            current_lib_name != desired
+        } else {
+            // [lib] exists but has no name field - add it
+            true
+        };
+
+        if needs_update {
+            lib.insert("name", toml_edit::Item::Value(Value::from(&desired)));
             changed = true;
-            continue;
         }
-        lines.push(line.to_string());
     }
+
+    // Write once if any changes were made
     if changed {
-        let mut updated = lines.join("\n");
-        if !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        fs::write(manifest, updated)?;
+        fs::write(manifest, doc.to_string())?;
     }
+
     Ok(())
 }
 

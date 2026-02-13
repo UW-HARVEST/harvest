@@ -41,6 +41,11 @@ const CANDO2_RELATIVE_PATH: &str = "../translated_tools/cando2";
 const RUST_ARTIFACTS_ENV: &str = "RUST_ARTIFACTS";
 
 /// Environment variable for shared library search paths
+#[cfg(target_os = "macos")]
+const LD_LIBRARY_PATH_ENV: &str = "DYLD_LIBRARY_PATH";
+#[cfg(target_os = "windows")]
+const LD_LIBRARY_PATH_ENV: &str = "PATH";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const LD_LIBRARY_PATH_ENV: &str = "LD_LIBRARY_PATH";
 
 /// Supported shared library extensions
@@ -324,16 +329,28 @@ fn configure_runner_manifests(output_dir: &Path) -> HarvestResult<()> {
     Ok(())
 }
 
-/// Configures LD_LIBRARY_PATH for dynamic library loading.
+/// Configures the library search path for dynamic library loading.
 ///
-/// Returns a colon-separated string of directories to search for shared libraries.
+/// Returns a platform-specific string of directories to search for shared libraries.
 /// Includes both the copied artifact location and the original build location as a fallback.
 fn configure_library_paths(output_dir: &Path, rust_artifacts_dir: &Path) -> String {
-    format!(
-        "{}:{}",
-        rust_artifacts_dir.display(),
-        output_dir.join("target").join("release").display()
-    )
+    let runner_release_dir = output_dir.join("target").join("release");
+
+    // Use std::env::join_paths to construct a platform-appropriate search path,
+    // falling back to the previous behavior if joining fails for any reason.
+    let joined = std::env::join_paths([
+        rust_artifacts_dir.as_os_str(),
+        runner_release_dir.as_os_str(),
+    ])
+    .unwrap_or_else(|_| {
+        std::ffi::OsString::from(format!(
+            "{}:{}",
+            rust_artifacts_dir.display(),
+            runner_release_dir.display()
+        ))
+    });
+
+    joined.to_string_lossy().into_owned()
 }
 
 /// Builds the test runner binary.
@@ -357,7 +374,7 @@ pub fn build_runner(output_dir: &Path) -> HarvestResult<PathBuf> {
         .canonicalize()
         .unwrap_or(runner_target_dir.clone());
 
-    //Build command
+    // Build command
     log::info!("Building test runner...");
     let output = Command::new("cargo")
         .arg("build")
@@ -484,7 +501,14 @@ pub fn run_test_suite(
                 log::info!("❌ Test case {} failed: {}", test_case.filename, error);
             }
             Err(e) => {
-                return Err(e);
+                // Treat runner errors as failed tests rather than aborting the entire suite
+                test_results.push(TestResult {
+                    filename: test_case.filename.clone(),
+                    passed: false,
+                });
+                let error = format!("Test case {} failed: {}", test_case.filename, e);
+                error_messages.push(error.clone());
+                log::info!("❌ {}", error);
             }
         }
     }
@@ -499,18 +523,25 @@ pub fn run_test_suite(
 ///
 /// # Environment Variables
 /// - `RUST_ARTIFACTS=1`: Tells cando2 to load Rust-compiled libraries
-/// - `LD_LIBRARY_PATH`: Directories to search for shared libraries
+/// - Library search path variable (`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PATH` depending on platform)
 fn run_single_library_test(
     runner_bin: &Path,
     test_case: &TestCase,
     ld_library_path: &str,
     timeout: Duration,
 ) -> HarvestResult<Output> {
+    let runner_dir = runner_bin.parent().ok_or_else(|| {
+        format!(
+            "Runner binary path has no parent directory: {}",
+            runner_bin.display()
+        )
+    })?;
+
     let mut cmd = Command::new(runner_bin);
     cmd.arg("lib")
         .arg("-c")
         .arg(&test_case.filename)
-        .current_dir(runner_bin.parent().unwrap())
+        .current_dir(runner_dir)
         .env(RUST_ARTIFACTS_ENV, "1")
         .env(LD_LIBRARY_PATH_ENV, ld_library_path)
         .stdin(Stdio::piped())

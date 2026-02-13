@@ -41,9 +41,18 @@ impl TranspilationResult {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
             Ok(artifacts) => {
-                // Prefer the first artifact as the "binary" path for executable cases.
-                let first = artifacts.first().cloned().unwrap_or_default();
-                (true, first, None)
+                if artifacts.is_empty() {
+                    // Empty artifacts list indicates build succeeded but produced no output
+                    (
+                        false,
+                        PathBuf::new(),
+                        Some("Build succeeded but produced no artifacts".to_string()),
+                    )
+                } else {
+                    // Prefer the first artifact as the "binary" path for executable cases.
+                    let first = artifacts.first().cloned().unwrap();
+                    (true, first, None)
+                }
             }
             Err(err) => (false, PathBuf::new(), Some(err.clone())),
         };
@@ -188,23 +197,6 @@ fn run_test_validation(
     (test_results, error_messages, passed_tests)
 }
 
-/// This function delegates to the harness::library module for the actual validation logic.
-fn run_library_validation(
-    program_name: &str,
-    input_dir: &Path,
-    output_dir: &Path,
-    test_cases: &[crate::harness::TestCase],
-    timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
-    harness::library::run_library_validation(
-        program_name,
-        input_dir,
-        output_dir,
-        test_cases,
-        timeout,
-    )
-}
-
 /// Run all benchmarks for a single program
 fn benchmark_single_program(
     program_dir: &Path,
@@ -294,7 +286,7 @@ fn benchmark_single_program(
         return result;
     }
 
-    if !translation_result.rust_binary_path.exists() {
+    if !is_lib && !translation_result.rust_binary_path.exists() {
         let error = format!(
             "Rust build reported success, but expected output artifact was not found at {:?}",
             translation_result.rust_binary_path
@@ -306,7 +298,7 @@ fn benchmark_single_program(
 
     // Library and executable validation differ.
     let (test_results, error_messages, passed_tests) = if is_lib {
-        match run_library_validation(
+        match harness::library::run_library_validation(
             &program_name,
             program_dir,
             &output_dir,
@@ -417,6 +409,40 @@ fn run(args: Args) -> HarvestResult<()> {
         );
         if !filtered_out_names.is_empty() {
             log::info!("Filtered out: {}", filtered_out_names.join(", "));
+        }
+    }
+
+    if let Some(exclude_pattern) = &args.exclude {
+        let regex = Regex::new(exclude_pattern)
+            .map_err(|e| format!("Invalid regex pattern '{}': {}", exclude_pattern, e))?;
+
+        let before = program_dirs.len();
+        let mut excluded_names = Vec::new();
+        program_dirs.retain(|path| {
+            let matches = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| regex.is_match(name))
+                .unwrap_or(false);
+
+            if matches {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    excluded_names.push(name.to_string());
+                }
+                return false;
+            }
+            true
+        });
+
+        let excluded = before.saturating_sub(program_dirs.len());
+        log::info!(
+            "Exclude '{}' applied: {} programs remaining, {} excluded",
+            exclude_pattern,
+            program_dirs.len(),
+            excluded
+        );
+        if !excluded_names.is_empty() {
+            log::info!("Excluded: {}", excluded_names.join(", "));
         }
     }
 

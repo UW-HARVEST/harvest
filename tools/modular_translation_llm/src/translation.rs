@@ -1,19 +1,22 @@
+//! Two-stage translation approach:
+//! Stage A: TypedefDecl, RecordDecl, EnumDecl - decides data layout
+//! Stage B: FunctionDecl, VarDecl - translates code operating over types
+//! (Vardecls included here because they make call initializers)
+//!
+//! Design decisions to come back to:
+//! - Type results included as context for function/global translation
+//! - No ordering constraints of function translations
+//! - Cargo.toml generated after function/global translation using aggregated dependencies
+
 use full_source::RawSource;
-use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace};
+use std::collections::BTreeSet;
+use tracing::{debug, info};
 
 use crate::Config;
 use crate::clang::ClangDeclarations;
-use crate::utils::read_source_at_range;
-use harvest_core::llm::ChatMessage;
-
-/// Structured output JSON schema for LLM.
-const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
-
-/// System prompt for translation.
-const SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
+use crate::translation_llm::ModularTranslationLLM;
 
 /// Represents a translated Rust declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,17 +27,11 @@ pub struct RustDeclaration {
     pub dependencies: Vec<String>,
 }
 
-/// Internal structure for batching declarations to the LLM.
-#[derive(Debug, Serialize)]
-struct DeclarationInput {
-    source: String,
+/// Result of the type translation containing only type declarations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeTranslationResult {
+    pub translations: Vec<RustDeclaration>,
 }
-
-// /// Internal structure for the batch request.
-// #[derive(Debug, Serialize)]
-// struct DeclarationsRequest {
-//     declarations: Vec<DeclarationInput>,
-// }
 
 /// Result of the translation containing both declarations and Cargo.toml
 #[derive(Debug, Deserialize)]
@@ -43,94 +40,169 @@ pub struct TranslationResult {
     pub cargo_toml: String,
 }
 
-/// Helper function to build a translation request for declarations.
-fn build_decls_translation_request(
-    declarations: &ClangDeclarations,
+/// Translates type declarations to Rust using an LLM.
+///
+/// This function translates TypedefDecl, RecordDecl, and EnumDecl to establish
+/// data layout for all types in the project. The results are then used as context
+/// for function and global variable translation.
+///
+/// Returns only the translated type declarations (no Cargo.toml).
+pub fn translate_types(
+    type_decls: &[&clang_ast::Node<c_ast::Clang>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
-) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
-    // Extract source text for all declarations
-    let mut decl_sources = Vec::new();
-    for decl in &declarations.app {
-        let source_text = if let Some(range) = decl.kind.range() {
-            read_source_at_range(range, raw_source)?
-        } else {
-            return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
-        };
-        decl_sources.push(DeclarationInput {
-            source: source_text,
+    modular_llm: &ModularTranslationLLM,
+) -> Result<TypeTranslationResult, Box<dyn std::error::Error>> {
+    debug!(
+        "Starting type translation for {} declarations",
+        type_decls.len()
+    );
+
+    if type_decls.is_empty() {
+        // No types to translate, return empty result
+        return Ok(TypeTranslationResult {
+            translations: Vec::new(),
         });
     }
 
-    #[derive(Serialize)]
-    struct RequestWithContext {
-        project_kind: String,
-        declarations: Vec<DeclarationInput>,
+    let translation_result = modular_llm.translate_types(type_decls, raw_source, project_kind)?;
+
+    if translation_result.translations.len() != type_decls.len() {
+        return Err(format!(
+            "Type translation: LLM returned {} translations but expected {}",
+            translation_result.translations.len(),
+            type_decls.len()
+        )
+        .into());
     }
 
-    let project_kind_str = match project_kind {
-        ProjectKind::Executable => "executable",
-        ProjectKind::Library => "library",
-    };
+    info!(
+        "Type translation complete: successfully translated {} declarations",
+        translation_result.translations.len()
+    );
 
-    build_request(
-        "Please translate the following C declarations to Rust:",
-        &RequestWithContext {
-            project_kind: project_kind_str.to_string(),
-            declarations: decl_sources,
-        },
-    )
+    Ok(translation_result)
 }
 
-/// Translates multiple Clang declarations to Rust using an LLM.
+/// Translates function and global variable declarations to Rust using an LLM.
 ///
-/// This function batches all declarations and sends them to the LLM in a single request,
-/// where each declaration is translated independently. It is batched in one request both to avoid
-/// having to reason about API rate limits and to provide context across declarations in cases where all the
-/// declarations fit in the context window.
+/// This function translates FunctionDecl and VarDecl, with the type translations
+/// provided as context. Each declaration is translated in its own request.
 ///
-/// Returns both the translated declarations and a generated Cargo.toml manifest.
+/// Returns the translated declarations.
+pub fn translate_functions(
+    function_and_global_decls: &[&clang_ast::Node<c_ast::Clang>],
+    raw_source: &RawSource,
+    project_kind: &ProjectKind,
+    type_translations: &TypeTranslationResult,
+    modular_llm: &ModularTranslationLLM,
+) -> Result<Vec<RustDeclaration>, Box<dyn std::error::Error>> {
+    debug!(
+        "Starting function/global translation for {} declarations",
+        function_and_global_decls.len()
+    );
+
+    if function_and_global_decls.is_empty() {
+        // No functions/globals to translate, return empty result
+        return Ok(Vec::new());
+    }
+
+    let mut translations = Vec::new();
+
+    for decl in function_and_global_decls {
+        let translation = modular_llm.translate_function_global(
+            decl,
+            raw_source,
+            project_kind,
+            type_translations,
+        )?;
+
+        translations.push(translation);
+    }
+
+    info!(
+        "Function/global translation complete: successfully translated {} declarations",
+        translations.len()
+    );
+
+    Ok(translations)
+}
+
+fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
+    let deps = translations.iter().flat_map(|t| t.dependencies.iter());
+    deps.collect::<BTreeSet<_>>().into_iter().cloned().collect()
+}
+
+/// Orchestrates the translation of Clang declarations to Rust using an LLM.
+///
+/// First, translates type declarations (TypedefDecl, RecordDecl, EnumDecl)
+/// Then, translates functions and globals (FunctionDecl, VarDecl) with type context
+/// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
+///
+/// Returns the combined translated declarations and a generated Cargo.toml manifest.
 pub fn translate_decls(
     declarations: &ClangDeclarations,
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     config: &Config,
 ) -> Result<TranslationResult, Box<dyn std::error::Error>> {
-    debug!(
-        "Starting translation of {} declarations",
-        declarations.app.len()
+    let total_decls = declarations.app_types.len()
+        + declarations.app_globals.len()
+        + declarations.app_functions.len();
+
+    info!(
+        "Starting translation of {} declarations ({} types, {} globals, {} functions)",
+        total_decls,
+        declarations.app_types.len(),
+        declarations.app_globals.len(),
+        declarations.app_functions.len()
     );
 
-    if declarations.app.is_empty() {
+    if total_decls == 0 {
         return Err("No declarations to translate".into());
     }
 
-    // Set up the LLM
-    let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, SYSTEM_PROMPT)?;
+    let modular_llm = ModularTranslationLLM::build(config)?;
 
-    // Assemble the request
-    let request = build_decls_translation_request(declarations, raw_source, project_kind)?;
+    // Translate types
+    let type_result = translate_types(
+        &declarations.app_types,
+        raw_source,
+        project_kind,
+        &modular_llm,
+    )?;
 
-    // Make the LLM call
-    trace!("Sending request to LLM: {:?}", &request);
-    let response = llm.invoke(&request)?;
-    trace!("LLM responded: {:?}", &response);
+    // Combine globals and functions for function/global translation
+    let function_and_global_decls: Vec<_> = declarations.app_functions_and_globals().collect();
 
-    let translation_result: TranslationResult = serde_json::from_str(&response)?;
+    // Translate functions and globals with type context
+    let function_result = if function_and_global_decls.is_empty() {
+        info!("No function or global declarations to translate");
+        Vec::new()
+    } else {
+        translate_functions(
+            &function_and_global_decls,
+            raw_source,
+            project_kind,
+            &type_result,
+            &modular_llm,
+        )?
+    };
 
-    if translation_result.translations.len() != declarations.app.len() {
-        return Err(format!(
-            "LLM returned {} translations but expected {}",
-            translation_result.translations.len(),
-            declarations.app.len()
-        )
-        .into());
-    }
+    // Combine results: types first, then functions/globals
+    let mut combined_translations = type_result.translations;
+    combined_translations.extend(function_result);
 
-    debug!(
-        "Successfully translated {} declarations",
-        translation_result.translations.len()
+    info!(
+        "Translation complete: {} total declarations translated",
+        combined_translations.len()
     );
 
-    Ok(translation_result)
+    let dependencies = collect_dependencies(&combined_translations);
+    let cargo_toml = modular_llm.generate_cargo_toml(dependencies, project_kind)?;
+
+    Ok(TranslationResult {
+        translations: combined_translations,
+        cargo_toml,
+    })
 }

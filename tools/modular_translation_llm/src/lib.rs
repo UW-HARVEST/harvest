@@ -1,4 +1,9 @@
-//! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules and translates them one-by-one using an LLM.
+//! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules
+//! and translates them one-by-one using an LLM.
+//!
+//! Uses a two-pass translation approach:
+//! - Pass 1: Translates type declarations (TypedefDecl, RecordDecl, EnumDecl) to establish data layout
+//! - Pass 2: Translates functions and globals (FunctionDecl, VarDecl) with type context from Pass 1
 
 use c_ast::ClangAst;
 use full_source::RawSource;
@@ -15,9 +20,14 @@ use tracing::info;
 mod clang;
 mod recombine;
 mod translation;
+mod translation_llm;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
-pub use translation::{RustDeclaration, TranslationResult, translate_decls};
+pub use translation::{
+    RustDeclaration, TranslationResult, TypeTranslationResult, translate_decls,
+    translate_functions, translate_types,
+};
+pub use translation_llm::ModularTranslationLLM;
 
 /// Configuration for the modular translation tool.
 #[derive(Debug, Deserialize)]
@@ -93,15 +103,25 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // Extract and categorize top-level declarations
+        // Extract and categorize top-level declarations into types, globals, and functions
         let declarations = extract_top_level_decls(clang_ast, raw_source);
 
-        // Translate all declarations (includes Cargo.toml generation)
+        info!(
+            "Extracted {} type declarations, {} global declarations, {} function declarations",
+            declarations.app_types.len(),
+            declarations.app_globals.len(),
+            declarations.app_functions.len()
+        );
+
+        // Perform two-pass translation:
+        // Pass 1: Types (TypedefDecl, RecordDecl, EnumDecl) - establishes data layout
+        // Pass 2: Functions and Globals (FunctionDecl, VarDecl) - with type context
         let translation_result =
-            translation::translate_decls(&declarations, raw_source, project_kind, &config)?;
+            translation::translate_decls(&declarations, raw_source, project_kind, &config)
+                .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
-            "Successfully translated {} declarations",
+            "Two-pass translation complete: {} total declarations translated",
             translation_result.translations.len()
         );
 

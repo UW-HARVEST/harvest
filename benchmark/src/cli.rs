@@ -30,7 +30,14 @@ pub struct Args {
     pub timeout: u64,
 
     /// Filter benchmarks by regex pattern on directory names (keeps matching directories).
-    /// Examples: ".*_lib$" (only libraries), "^example" (only examples), "^(?!.*_lib$)" (exclude libraries)
-    #[arg(long)]
+    /// Examples: ".*_lib$" (only libraries)
+    /// Cannot be used together with --exclude.
+    #[arg(long, conflicts_with = "exclude")]
     pub filter: Option<String>,
+
+    /// Exclude benchmarks by regex pattern on directory names (removes matching directories).
+    /// Examples: ".*_lib$" (exclude libraries)
+    /// Cannot be used together with --filter.
+    #[arg(long, conflicts_with = "filter")]
+    pub exclude: Option<String>,
 }

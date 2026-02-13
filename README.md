@@ -71,15 +71,20 @@ cargo run --bin=benchmark --release -- /path/to/input/dir /path/to/output/dir
 # Example: run all benchmarks
 # cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/
 
-# Optional: add --filter=<regex> to filter benchmarks by directory name (only matching directories will run)
+# Optional: add --filter=<regex> to keep only matching benchmarks (by directory name)
 # Example: run only library benchmarks (directories ending with _lib)
 # cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/ --filter=".*_lib$"
 
-# Example: run only executable benchmarks (exclude directories ending with _lib)
-# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/ --filter="^(?!.*_lib$)"
-
 # Example: run only benchmarks starting with B01
 # cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests example_output/ --filter="^B01"
+
+# Optional: add --exclude=<regex> to exclude matching benchmarks (by directory name)
+# Note: --filter and --exclude are mutually exclusive
+# Example: exclude library benchmarks (directories ending with _lib)
+# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/ --exclude=".*_lib$"
+
+# Example: exclude benchmarks starting with test_
+# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests example_output/ --exclude="^test_"
 ```
 
 ### Configuration
@@ -88,4 +93,4 @@ Print config file location:
 cargo run --bin=translate -- --print-config-path
 ```
 
-You can find more information on configuration in [docs/Configuration.md].
+You can find more information on configuration in [doc/Configuration.md].

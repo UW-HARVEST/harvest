@@ -12,7 +12,7 @@ use full_source::RawSource;
 use identify_project_kind::ProjectKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::Config;
 use crate::clang::ClangDeclarations;
@@ -74,12 +74,11 @@ pub fn translate_types(
     let translation_result = modular_llm.translate_types(type_decls, raw_source, project_kind)?;
 
     if translation_result.translations.len() != type_decls.len() {
-        return Err(format!(
+        error!(
             "Type translation: LLM returned {} translations but expected {}",
             translation_result.translations.len(),
             type_decls.len()
-        )
-        .into());
+        );
     }
 
     info!(

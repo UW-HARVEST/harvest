@@ -26,12 +26,10 @@ return as JSON
 You should return:
 
 ```
-{ "translations": [
-{
+{ "translation": {
   "rust_code": "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}",
   "dependencies": []
-}
-]}
+}}
 ```
 
 Here's another example with dependencies:
@@ -54,10 +52,8 @@ return as JSON
 You should return:
 
 ```
-{ "translations": [
-{
+{ "translation": {
   "rust_code": "fn read_file(path: &str) -> Result<String> {\n    read_to_string(path)\n}",
   "dependencies": ["std::fs::read_to_string", "std::io::Result"]
-}
-]}
+}}
 ```

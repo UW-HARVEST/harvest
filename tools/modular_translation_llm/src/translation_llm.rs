@@ -51,7 +51,7 @@ struct CargoTomlResult {
 /// Result of a single-pass function/global translation response.
 #[derive(Debug, Deserialize)]
 struct FunctionTranslationResult {
-    pub translations: Vec<RustDeclaration>,
+    pub translation: RustDeclaration,
 }
 
 /// Result of function signature pass response.
@@ -227,15 +227,7 @@ impl ModularTranslationLLM {
 
         let response = self.functions_llm.invoke(&request)?;
         let translation_result: FunctionTranslationResult = serde_json::from_str(&response)?;
-
-        if translation_result.translations.len() != 1 {
-            return Err(format!(
-                "Pass 2: LLM returned {} translations but expected 1",
-                translation_result.translations.len()
-            )
-            .into());
-        }
-        let translations = translation_result.translations.into_iter().next().unwrap();
+        let translations = translation_result.translation;
         crate::info!(
             "Function/Global Translation complete:\n {} \n==>\n {}",
             decl_source.source,

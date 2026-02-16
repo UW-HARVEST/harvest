@@ -7,6 +7,20 @@ use tracing::{debug, warn};
 
 use crate::utils::get_file_from_location;
 
+/// Returns true when the location originates from the original source (not from an include).
+pub fn is_original(location: &clang_ast::SourceLocation) -> bool {
+    let spelling_included_from = location
+        .spelling_loc
+        .as_ref()
+        .and_then(|loc| loc.included_from.as_ref());
+    let expansion_included_from = location
+        .expansion_loc
+        .as_ref()
+        .and_then(|loc| loc.included_from.as_ref());
+
+    spelling_included_from.is_none() && expansion_included_from.is_none()
+}
+
 /// Container for categorizing declarations by their source.
 ///
 /// Two-pass translation approach:
@@ -102,13 +116,15 @@ pub fn extract_top_level_decls<'a>(
     for node in &top_level_nodes {
         for child in &node.inner {
             log_decl_kind(&child.kind);
-            let is_source = child
-                .kind
-                .loc()
-                .and_then(|loc| get_file_from_location(&Some(loc.clone())))
+            let loc = child.kind.loc();
+            // Ensure this declaration is in our source code and not another imported library
+            let is_source = get_file_from_location(&loc.cloned())
                 .is_some_and(|file| source_files.dir.get_file(&file).is_ok());
 
-            if is_source {
+            // Ensure we don't double include functions that are imported in several files (within our source)
+            let is_original = loc.is_some_and(is_original);
+
+            if is_source && is_original {
                 // Categorize by declaration kind for two-pass translation
                 match &child.kind {
                     Clang::TypedefDecl { .. } => {

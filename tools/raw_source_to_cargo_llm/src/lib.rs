@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::read_to_string;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, info, trace};
 
 use identify_project_kind::ProjectKind;
@@ -57,18 +57,9 @@ impl Tool for RawSourceToCargoLlm {
             .map(read_to_string)
             .transpose()?
             .unwrap_or_else(|| builtin_prompt.to_owned());
-        let system_prompt = if config.header_light {
-            const HEADER_LIGHT_HINT: &str = "Headers are provided only for reference. Translate the .c file; only translate header content actually used by the .c (inline functions, macros it depends on). Unused declarations without bodies do not need Rust equivalents.";
-            format!(
-                "{HEADER_LIGHT_HINT}\n\n{base}",
-                base = system_prompt.trim_end()
-            )
-        } else {
-            system_prompt
-        };
 
         // Build LLM client using core/llm
-        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, &system_prompt)?;
+        let llm = HarvestLLM::build(&config.llm, Some(STRUCTURED_OUTPUT_SCHEMA), &system_prompt)?;
 
         // Assemble the LLM request.
         let files: Vec<OutputFile> = in_dir
@@ -104,49 +95,7 @@ impl Tool for RawSourceToCargoLlm {
         let files: OutputFiles = serde_json::from_str(&response)?;
         info!("LLM response contains {} files.", files.files.len());
         let mut out_dir = RawDir::default();
-        let filtered = if let Some(ref single_path) = config.single_out_path {
-            // Prefer file whose filename matches the target; else first non-TOML; else first.
-            let target_name = Path::new(single_path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string());
-            let mut name_match: Option<OutputFile> = None;
-            let mut non_toml: Option<OutputFile> = None;
-            let mut first: Option<OutputFile> = None;
-            for f in files.files {
-                if first.is_none() {
-                    first = Some(f.clone());
-                }
-                let is_toml = Path::new(&f.path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("toml"))
-                    .unwrap_or(false);
-                if !is_toml && non_toml.is_none() {
-                    non_toml = Some(f.clone());
-                }
-                if let Some(tn) = &target_name {
-                    if Path::new(&f.path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n == tn)
-                        .unwrap_or(false)
-                    {
-                        name_match = Some(f.clone());
-                        break;
-                    }
-                }
-            }
-            let mut chosen = name_match
-                .or(non_toml)
-                .or(first)
-                .ok_or("LLM returned no files")?;
-            chosen.path = single_path.clone().into();
-            vec![chosen]
-        } else {
-            files.files
-        };
-        for file in filtered {
+        for file in files.files {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
         Ok(Box::new(CargoPackage { dir: out_dir }))
@@ -166,14 +115,6 @@ pub struct Config {
     /// System prompt to use for library projects. If not specified, a built-in default prompt will
     /// be used.
     pub prompt_library: Option<PathBuf>,
-
-    /// If true, headers are reference-only: translate the .c file; include only used inline/macro parts.
-    #[serde(default)]
-    pub header_light: bool,
-
-    /// When set, keep only one output file and force its path to this value (used by compile_commands mode).
-    #[serde(default)]
-    pub single_out_path: Option<String>,
 
     #[serde(flatten)]
     unknown: HashMap<String, Value>,
@@ -196,8 +137,6 @@ impl Config {
             },
             prompt_executable: None,
             prompt_library: None,
-            header_light: false,
-            single_out_path: None,
             unknown: HashMap::new(),
         }
     }

@@ -45,13 +45,16 @@ pub struct HarvestLLM {
 
 impl HarvestLLM {
     /// Builds an LLM client from configuration.
+    ///
+    /// # Arguments
+    /// * `config` - LLM configuration (backend, model, etc.)
+    /// * `output_format_json` - Optional JSON schema for structured output. Pass `None` for plain text output.
+    /// * `system_prompt` - System prompt for the LLM
     pub fn build(
         config: &LLMConfig,
-        output_format_json: &str,
+        output_format_json: Option<&str>,
         system_prompt: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Parse the output format from JSON string
-        let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
         let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
 
         let mut llm_builder = LLMBuilder::new()
@@ -59,8 +62,13 @@ impl HarvestLLM {
             .model(&config.model)
             .max_tokens(config.max_tokens)
             .temperature(0.0)
-            .schema(output_format)
             .system(system_prompt);
+
+        // Only set schema if provided (for structured output)
+        if let Some(schema_json) = output_format_json {
+            let output_format: StructuredOutputFormat = serde_json::from_str(schema_json)?;
+            llm_builder = llm_builder.schema(output_format);
+        }
 
         if let Some(ref address) = config.address
             && !address.is_empty()
@@ -112,6 +120,21 @@ pub fn build_request<T: Serialize>(
         serde_json::to_string(body)?,
         "return as JSON".to_string(),
     ];
+
+    Ok(contents
+        .iter()
+        .map(|content| ChatMessage::user().content(content).build())
+        .collect())
+}
+
+/// Helper function to build a plain text request (without "return as JSON" instruction).
+///
+/// Use this for tools that expect plain text output instead of JSON.
+pub fn build_plain_request<T: Serialize>(
+    prompt: &str,
+    body: &T,
+) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
+    let contents = [prompt.to_string(), serde_json::to_string(body)?];
 
     Ok(contents
         .iter()

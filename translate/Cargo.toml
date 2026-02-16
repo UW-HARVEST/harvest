@@ -25,6 +25,7 @@ load_raw_source = { version = "0.1.0", path = "../tools/load_raw_source" }
 identify_project_kind = { version = "0.1.0", path = "../tools/identify_project_kind" }
 try_cargo_build = { version = "0.1.0", path = "../tools/try_cargo_build" }
 raw_source_to_cargo_llm = { version = "0.1.0", path = "../tools/raw_source_to_cargo_llm" }
+compilation_unit_to_rust_llm = { version = "0.1.0", path = "../tools/compilation_unit_to_rust_llm" }
 walkdir = "2"
 tempfile = "3"
 full_source = { version = "0.1.0", path = "../tools/full_source" }

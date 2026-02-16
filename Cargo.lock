@@ -243,6 +243,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "compilation_unit_to_rust_llm"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "config"
 version = "0.15.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -531,6 +544,7 @@ version = "0.1.0"
 dependencies = [
  "c_ast",
  "clap",
+ "compilation_unit_to_rust_llm",
  "config",
  "directories",
  "full_source",

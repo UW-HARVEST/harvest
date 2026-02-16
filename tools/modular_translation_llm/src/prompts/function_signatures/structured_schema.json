@@ -1,0 +1,13 @@
+{
+    "name": "signatures",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "signatures": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "required": ["signatures"]
+    }
+}

@@ -246,6 +246,11 @@ mod tests {
         }
     }
 
+    /// Returns true iff the object at this path is read-only.
+    fn is_readonly<P: AsRef<Path>>(path: P) -> bool {
+        symlink_metadata(path).unwrap().permissions().readonly()
+    }
+
     #[test]
     fn copy_ro() {
         let diagnostics_dir = Arc::new(DiagnosticsDir::tempdir().unwrap());
@@ -278,8 +283,11 @@ mod tests {
         let a_new_file2 = diagnostics_dir.to_absolute_path("a/new/file2").unwrap();
         let a_new_relative = diagnostics_dir.to_absolute_path("a/new/relative").unwrap();
         // Verify the directories were created rather than being symlinked.
-        assert!(symlink_metadata(a_new).unwrap().is_dir());
-        assert!(symlink_metadata(a_new_c).unwrap().is_dir());
+        assert!(symlink_metadata(&a_new).unwrap().is_dir());
+        assert!(symlink_metadata(&a_new_c).unwrap().is_dir());
+        // Verify the directories under a/new are read-only.
+        assert!(is_readonly(a_new));
+        assert!(is_readonly(a_new_c));
         // Verify all the symlinks were moved correctly.
         assert_eq!(read_link(a_new_absolute).unwrap(), a_target);
         assert_eq!(
@@ -330,7 +338,6 @@ mod tests {
         // Freeze a/b/inner_file
         let entry = freezer.freeze("a/b/inner_file").unwrap();
         assert!(entry.file().is_some());
-        let is_readonly = |path| symlink_metadata(path).unwrap().permissions().readonly();
         assert!(!is_readonly(&a_b));
         let mut inner_file_perms = symlink_metadata(&a_b_inner_file).unwrap().permissions();
         assert!(inner_file_perms.readonly());

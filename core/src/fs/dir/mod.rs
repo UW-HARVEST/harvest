@@ -208,6 +208,8 @@ impl Dir {
             relative.pop();
             absolute.pop();
         }
+        // Readable and executable (execute on a directory means you can traverse it)
+        set_permissions(&absolute, Permissions::from_mode(0o500))?;
         Ok(())
     }
 }

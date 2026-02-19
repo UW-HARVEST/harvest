@@ -161,7 +161,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 ```
 Here, `scheduler.run_all` will track the dependencies declared in `queue_after` and ensure that `MyNewTool` runs after `LoadRawSource`. The scheduler is smart enough to run tools that do not depend on one another (directly or transitively) in parallel, so there is no need to explicitly parallelize tools.
 
-To use the `RawSource` `Representation` inside run `run` you can call `context.ir_snapshot.get`: 
+To use the `RawSource` `Representation` inside the `run` method you can call `context.ir_snapshot.get`: 
 
 ```Rust
 pub struct MyNewTool {

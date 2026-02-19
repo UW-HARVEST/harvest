@@ -3,8 +3,8 @@
 //!
 //! Translation flow:
 //! - Type declarations (TypedefDecl, RecordDecl, EnumDecl) establish data layout
-//! - Function signatures (FunctionDecl) use type context
-//! - Functions and globals (FunctionDecl, VarDecl) use type/signature context
+//! - Interface (FunctionDecl and VarDecl signatures) use type context
+//! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
 use c_ast::ClangAst;
 use full_source::RawSource;
@@ -25,8 +25,8 @@ mod translation_llm;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
 pub use translation::{
-    FunctionSignatureTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
-    translate_decls, translate_function_signatures, translate_functions, translate_types,
+    InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
+    translate_decls, translate_functions, translate_interface, translate_types,
 };
 pub use translation_llm::ModularTranslationLLM;
 
@@ -116,8 +116,8 @@ impl Tool for ModularTranslationLlm {
 
         // Translation flow:
         // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
-        // Function signatures (FunctionDecl) - with type context
-        // Functions and Globals (FunctionDecl, VarDecl) - with type/signature context
+        // Interface (FunctionDecl and VarDecl signatures) - with type context
+        // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result =
             translation::translate_decls(&declarations, raw_source, project_kind, &config)
                 .map_err(|e| format!("Translation failed: {}", e))?;

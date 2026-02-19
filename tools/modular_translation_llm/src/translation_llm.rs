@@ -6,6 +6,7 @@ use harvest_core::llm::{HarvestLLM, build_request};
 use identify_project_kind::ProjectKind;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::warn;
 
 use crate::Config;
 use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
@@ -305,12 +306,11 @@ impl ModularTranslationLLM {
         let interface_result: InterfaceResult = serde_json::from_str(&response)?;
 
         if interface_result.signatures.len() != decl_sources.len() {
-            return Err(format!(
+            warn!(
                 "Interface pass: LLM returned {} signatures but expected {}",
                 interface_result.signatures.len(),
                 decl_sources.len()
-            )
-            .into());
+            );
         }
 
         for (decl, signature) in decl_sources.iter().zip(interface_result.signatures.iter()) {

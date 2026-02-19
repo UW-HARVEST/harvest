@@ -146,6 +146,22 @@ impl Clang {
             Clang::Other { .. } => None,
         }
     }
+
+    /// Returns the name of this declaration, if available.
+    ///
+    /// # Returns
+    /// - `Some(String)` if the declaration has a name field and it is populated
+    /// - `None` if the declaration doesn't have a name or if the name field is None
+    pub fn name(&self) -> Option<String> {
+        match self {
+            Clang::TypedefDecl { name, .. } => Some(name.clone()),
+            Clang::FunctionDecl { name, .. } => Some(name.clone()),
+            Clang::RecordDecl { name, .. } => name.clone(),
+            Clang::VarDecl { name, .. } => Some(name.clone()),
+            Clang::EnumDecl { name, .. } => name.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Our annotations for functions in the Clang AST.

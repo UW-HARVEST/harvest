@@ -1,10 +1,29 @@
-# How to add a new tool
-Harvest works by running a sequence of tools. These tools can really do anything (tools are used to implement translation passes, parse the C ast, build the project, and eventually we intend to have tools to test the project as well). Adding a new tool to run in Harvest's pipeline requires 4 steps: ...
+# Adding a New Tool
+
+Harvest executes a pipeline of tools.
+Each tool performs a single transformation or analysis step and produces an output called a **representation**. Examples include:
+
+* loading raw C source files
+* parsing a C AST
+* translation passes
+* running `cargo build` the generated project
+* (eventually) testing the translated project
+
+A tool can do anything, as long as it consumes existing representations and produces a new one.
+
+Adding a new tool to the Harvest pipeline consists of four steps:
+1. Add a crate for the tool
+2. Define the output `Representation`
+3. Implement the `Tool` logic
+4. Schedule the tool in the pipeline
+
+---
 
 ### Step 1: Add the tool to Cargo.toml
 
-Select a name for your new tool. This document's examples will use "my new
-tool". Add your tool as a new sub-create in the `tools/` directory with its own manifest at `tools/my_new_tool/Cargo.toml`: 
+Select a name for your new tool. 
+This document's examples will use `my_new_tool`. 
+Add your tool as a new sub-create in the `tools/` directory with its own manifest at `tools/my_new_tool/Cargo.toml`: 
 
 ```toml
 [package]
@@ -18,7 +37,8 @@ harvest_core.workspace = true
 [lints]
 workspace = true
 ```
-and include it in the project `Cargo.toml`:
+
+and include it in the base Harvest `Cargo.toml`:
 ```toml
 [workspace]
 // (1) Add tool as member of Harvest workspace
@@ -31,11 +51,24 @@ load_raw_source = { path = "tools/load_raw_source" }
 my_new_tool = { path = "tools/my_new_tool" }
 ```
 
-Next, implement `Representation` and `Tool`
+At this point the tool should build, but do nothing.
 
-### Step 2: Declare the type of output the tool produces --- its `Representation`
-The output of Tools in Harvest are representations. These representations could be anything from a C ast to a single bool that tells the user that building the translated project suceeded/failed. To implement a representation, we declare the data layout of the representation, give it a name, and give it a method to be written to disk.
-An example is described below:
+---
+
+### Step 2: Define the Tool’s Output (Representation)
+
+Every tool produces exactly one **representation**.
+A representation is simply structured data stored in Harvest’s IR.
+
+Representations may be large (e.g., a parsed AST) or tiny (e.g., a `bool` indicating build success).
+
+To define a representation:
+
+1. Define the data structure
+2. Implement the `Representation` trait which requires defining the `name` method, which is self-explanatory and the  `materialize` method, which stores this representation to .
+
+
+Here's how we implement `MyRepresentation`, the `Representation` for `my_new_tool`:
 
 ```rust
 pub struct MyRepresentation {
@@ -53,10 +86,13 @@ impl Representation for MyRepresentation {
     }
 }
 ```
-
-### Step 3: Implement the `Tool` trait to create your `Representation` 
+---
+### Step 3: Implement the `Tool` 
 Next, we write the actual tool logic by Implementing the `Tool` trait. 
-This mainly entails implementing the `run` method, which takes as input a vector of input identifiers, which allow us to retrieve data from other representations (see Step 4 and existing tool implementations for examples). The output of `Run` is the Representation, and Harvest's schedular will automatically persistently store the result of `run` and make it available to other Tools.
+This mainly entails implementing the `run` method, which takes as input a vector of input identifiers, which are handles to other previously computed representations (see Step 4 for how to retrieve representations). 
+The output of `run` is the Representation, and Harvest's scheduler will store the result of `run` and make it available to other Tools.
+
+Here is how we implement the `Tool` trait for `my_new_tool`:
 
 ```Rust
 pub struct MyNewTool {
@@ -77,7 +113,9 @@ impl Tool for LoadRawSource {
     }
 }
 ```
+At this point, we have a working tool, but we need to tell Harvest to schedule the tool to run during transpilation.
 
+---
 
 ### Step 4: Schedule your tool to run
 Finally, its time to actually run our tool.
@@ -123,7 +161,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 ```
 Here, `scheduler.run_all` will track the dependencies declared in `queue_after` and ensure that `MyNewTool` runs after `LoadRawSource`. The scheduler is smart enough to run tools that do not depend on one another (directly or transitively) in parallel, so there is no need to explicitly parallelize tools.
 
-And then in the implementation of `run`: 
+To use the `RawSource` `Representation` inside run `run` you can call `context.ir_snapshot.get`: 
 
 ```Rust
 pub struct MyNewTool {
@@ -149,4 +187,17 @@ impl Tool for LoadRawSource {
     }
 }
 ```
+---
 
+### Summary
+
+To add a tool:
+
+1. Create a crate in `tools/`
+2. Define a `Representation`
+3. Implement `Tool::run`
+4. Schedule it with `queue` or `queue_after`
+
+After that, Harvest automatically handles IR storage, dependency tracking, and parallel execution.
+
+---

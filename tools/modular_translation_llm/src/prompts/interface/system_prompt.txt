@@ -6,6 +6,6 @@ For function signatures: Prefer idiomatic Rust signatures over literal C transla
 
 For each function, output a Rust fn signature with a minimal skeleton body, including any necessary qualifiers (e.g., pub, unsafe, extern "C"). End each line with a body of `{ todo!() }`. Example: "pub unsafe extern \"C\" fn add(a: i32, b: i32) -> i32 { todo!() }". For the `main` function, do not include any arguments, and the return type must be either `()` (no return type) or `Result<..., ...>` (e.g., `Result<(), Box<dyn std::error::Error>>`); do not emit any other return type for `main`.
 
-For global variables: Output a Rust global/static declaration with type and mutability but with a placeholder value. Use `static` for immutable globals and `static mut` for mutable ones. Include appropriate qualifiers (e.g., pub, unsafe if needed). End each with `= todo!()`. Example: "pub static COUNTER: i32 = todo!();" or "pub static mut BUFFER: [u8; 1024] = todo!();".
+For global variables: Output a Rust global/static declaration with type and mutability but with a placeholder value. Use `static` for immutable globals. For mutable globals, wrap the type in `Mutex<T>` to ensure thread-safe access. Never use `static mut` as it can lead to undefined behavior. Include appropriate qualifiers (e.g., pub). End each with `= todo!()`. Examples: "pub static COUNTER: Mutex<i32> = todo!();" or "pub static BUFFER: Mutex<[u8; 1024]> = todo!();".
 
 Return a flat list of signature strings in the same order as the input declarations (functions first, then globals).

@@ -23,10 +23,10 @@ pub fn is_original(location: &clang_ast::SourceLocation) -> bool {
 
 /// Container for categorizing declarations by their source.
 ///
-/// Two-pass translation approach:
+/// Three-pass translation approach:
 /// - app_types: TypedefDecl, RecordDecl, EnumDecl (Pass 1 - data layout)
-/// - app_globals: VarDecl (Pass 2 - global variables)
-/// - app_functions: FunctionDecl (Pass 2 - function implementations)
+/// - app_functions + app_globals: FunctionDecl and VarDecl (Pass 2 - interface signatures)
+/// - app_functions + app_globals: FunctionDecl and VarDecl (Pass 3 - implementations)
 #[derive(Debug)]
 pub struct ClangDeclarations<'a> {
     /// Declarations imported from external sources (not in the project source files)

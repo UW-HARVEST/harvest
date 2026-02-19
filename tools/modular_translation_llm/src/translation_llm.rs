@@ -8,9 +8,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Config;
-use crate::translation::{
-    InterfaceTranslationResult, RustDeclaration, TypeTranslationResult,
-};
+use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
 use crate::utils::read_source_at_range;
 
 /// Structured output JSON schema for Pass 1 (types).
@@ -36,8 +34,7 @@ const SYSTEM_PROMPT_TYPES: &str = include_str!("prompts/type_translation/system_
 const SYSTEM_PROMPT_FUNCTIONS: &str = include_str!("prompts/func_translation/system_prompt.txt");
 
 /// System prompt for the interface pass.
-const SYSTEM_PROMPT_INTERFACE: &str =
-    include_str!("prompts/interface/system_prompt.txt");
+const SYSTEM_PROMPT_INTERFACE: &str = include_str!("prompts/interface/system_prompt.txt");
 
 /// System prompt for Cargo.toml generation.
 const SYSTEM_PROMPT_CARGO_TOML: &str = include_str!("prompts/cargo_toml/system_prompt.txt");

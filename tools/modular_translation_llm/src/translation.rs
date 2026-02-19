@@ -1,6 +1,6 @@
 //! Translation approach:
 //! - TypedefDecl, RecordDecl, EnumDecl: translate data layout
-//! - FunctionDecl signatures: translate callable interfaces
+//! - FunctionDecl and VarDecl signatures: translate interface (callable functions and global variables)
 //! - FunctionDecl, VarDecl: translate code semantics
 //!
 //! Design decisions to come back to:

@@ -97,11 +97,28 @@ impl HarvestLLM {
             .expect("no response text");
 
         // Parse the response - strip markdown code fences
-        let response = response.strip_prefix("```").unwrap_or(&response);
-        let response = response.strip_prefix("json").unwrap_or(response);
-        let response = response.strip_suffix("```").unwrap_or(response);
+        // Handle formats like ```rust\n, ```json\n, or just ```
+        let mut cleaned = response.as_str();
 
-        Ok(response.to_string())
+        // Strip leading code fence
+        if let Some(rest) = cleaned.strip_prefix("```") {
+            cleaned = rest;
+            // Strip optional language identifier (rust, json, etc.) and following whitespace
+            if let Some(rest) = cleaned.strip_prefix("rust") {
+                cleaned = rest;
+            } else if let Some(rest) = cleaned.strip_prefix("json") {
+                cleaned = rest;
+            }
+            // Strip newline after language identifier or opening fence
+            cleaned = cleaned.trim_start_matches('\n').trim_start_matches('\r');
+        }
+
+        // Strip trailing code fence
+        cleaned = cleaned.strip_suffix("```").unwrap_or(cleaned);
+        // Strip any trailing whitespace before the fence
+        cleaned = cleaned.trim_end();
+
+        Ok(cleaned.to_string())
     }
 }
 

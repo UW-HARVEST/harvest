@@ -66,6 +66,8 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         let translation_config = compilation_unit_to_rust_llm::TranslationConfig {
             llm_config: &llm_config,
             custom_prompt: custom_prompt.as_deref(),
+            parallel: config.parallel,
+            parallelism: config.parallelism,
         };
 
         // Process all compilation units

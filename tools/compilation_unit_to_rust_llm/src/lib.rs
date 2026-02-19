@@ -4,10 +4,12 @@
 //! each .c file is translated independently without JSON wrapper overhead.
 
 use harvest_core::llm::{HarvestLLM, LLMConfig};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tempfile::TempDir;
 use tracing::{debug, error, info, trace};
 use walkdir::WalkDir;
@@ -50,6 +52,8 @@ pub struct TranslationResult {
 pub struct TranslationConfig<'a> {
     pub llm_config: &'a LLMConfig,
     pub custom_prompt: Option<&'a Path>,
+    pub parallel: bool,
+    pub parallelism: usize,
 }
 
 /// Parse compile_commands.json file
@@ -270,43 +274,100 @@ pub fn process_compile_commands(
         cc_path.display()
     );
 
-    let mut results = Vec::new();
-    let mut errors = Vec::new();
+    if config.parallel {
+        info!("Processing in parallel (max {} threads)...", config.parallelism);
 
-    for (idx, entry) in entries.iter().enumerate() {
-        debug!(
-            "Processing {}/{}: {}",
-            idx + 1,
-            entries.len(),
-            entry.file
-        );
+        // Build thread pool with limited parallelism
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(config.parallelism)
+            .build()
+            .expect("Failed to build thread pool");
 
-        match translate_single_unit(entry, project_root, output_dir, config) {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                error!("Failed to translate {}: {}", entry.file, e);
-                errors.push((entry.file.clone(), e.to_string()));
+        let errors = Mutex::new(Vec::new());
+
+        let results: Vec<_> = pool.install(|| {
+            entries
+                .par_iter()
+                .enumerate()
+                .filter_map(|(idx, entry)| {
+                    debug!(
+                        "Processing {}/{}: {}",
+                        idx + 1,
+                        entries.len(),
+                        entry.file
+                    );
+
+                    match translate_single_unit(entry, project_root, output_dir, config) {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            error!("Failed to translate {}: {}", entry.file, e);
+                            errors.lock().unwrap().push((entry.file.clone(), e.to_string()));
+                            None
+                        }
+                    }
+                })
+                .collect()
+        });
+
+        let errors = errors.into_inner().unwrap();
+        if !errors.is_empty() {
+            error!(
+                "Translation completed with {} errors out of {} units",
+                errors.len(),
+                entries.len()
+            );
+            for (file, err) in &errors {
+                error!("  {}: {}", file, err);
+            }
+        } else {
+            info!(
+                "Successfully translated all {} compilation units",
+                entries.len()
+            );
+        }
+
+        Ok(results)
+    } else {
+        info!("Processing sequentially...");
+
+        let mut results = Vec::new();
+        let mut errors = Vec::new();
+
+        for (idx, entry) in entries.iter().enumerate() {
+            debug!(
+                "Processing {}/{}: {}",
+                idx + 1,
+                entries.len(),
+                entry.file
+            );
+
+            match translate_single_unit(entry, project_root, output_dir, config) {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    error!("Failed to translate {}: {}", entry.file, e);
+                    errors.push((entry.file.clone(), e.to_string()));
+                }
             }
         }
-    }
 
-    if !errors.is_empty() {
-        error!(
-            "Translation completed with {} errors out of {} units",
-            errors.len(),
-            entries.len()
-        );
-        for (file, err) in &errors {
-            error!("  {}: {}", file, err);
+        if !errors.is_empty() {
+            error!(
+                "Translation completed with {} errors out of {} units",
+                errors.len(),
+                entries.len()
+            );
+            for (file, err) in &errors {
+                error!("  {}: {}", file, err);
+            }
+        } else {
+            info!(
+                "Successfully translated all {} compilation units",
+                entries.len()
+            );
         }
-    } else {
-        info!(
-            "Successfully translated all {} compilation units",
-            entries.len()
-        );
-    }
 
-    Ok(results)
+        Ok(results)
+    }
 }
 
 // Legacy Tool implementation (kept for backward compatibility if needed)

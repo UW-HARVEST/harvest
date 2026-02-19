@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/compilation_unit_to_rust_llm" ]
+members = ["benchmark", "core", "tools/full_source", "tools/identify_project_kind", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/compilation_unit_to_rust_llm", "tools/auto_fix", "fix"]
 resolver = "3"
 
 [workspace.dependencies]

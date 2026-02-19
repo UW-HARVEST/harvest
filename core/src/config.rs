@@ -3,6 +3,14 @@ use std::{collections::HashMap, path::PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+fn default_parallel() -> bool {
+    true
+}
+
+fn default_parallelism() -> usize {
+    10
+}
+
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectKindOverride {
@@ -56,6 +64,14 @@ pub struct Config {
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
 
+    /// Enable parallel processing of compilation units (default: true)
+    #[serde(default = "default_parallel")]
+    pub parallel: bool,
+
+    /// Maximum number of parallel threads (default: 10)
+    #[serde(default = "default_parallelism")]
+    pub parallelism: usize,
+
     /// Sub-configuration for each tool.
     pub tools: HashMap<String, serde_json::Value>,
 
@@ -80,6 +96,8 @@ impl Config {
             force: false,
             modular: false,
             log_filter: "off".to_owned(),
+            parallel: true,
+            parallelism: 10,
             tools: Default::default(),
             unknown: Default::default(),
         }

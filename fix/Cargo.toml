@@ -1,0 +1,23 @@
+[package]
+name = "harvest-fix"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fix"
+path = "src/main.rs"
+
+[dependencies]
+auto_fix = { path = "../tools/auto_fix" }
+harvest_core.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+directories = "6.0.0"
+config = { default-features = false, features = ["toml"], version = "0.15.18" }
+
+[lints]
+workspace = true

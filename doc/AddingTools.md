@@ -23,7 +23,7 @@ Adding a new tool to the Harvest pipeline consists of four steps:
 
 Select a name for your new tool. 
 This document's examples will use `my_new_tool`. 
-Add your tool as a new sub-create in the `tools/` directory with its own manifest at `tools/my_new_tool/Cargo.toml`: 
+Add your tool as a new sub-crate in the `tools/` directory with its own manifest at `tools/my_new_tool/Cargo.toml`: 
 
 ```toml
 [package]
@@ -41,13 +41,13 @@ workspace = true
 and include it in the base Harvest `Cargo.toml`:
 ```toml
 [workspace]
-// (1) Add tool as member of Harvest workspace
+# (1) Add tool as member of Harvest workspace
 members = ["core", "tools/load_raw_source", "tools/my_new_tool"] 
 
 [workspace.dependencies]
 harvest_core = { path = "core" }
 load_raw_source = { path = "tools/load_raw_source" }
-// (2) Add new crate for the tool
+# (2) Add new crate for the tool
 my_new_tool = { path = "tools/my_new_tool" }
 ```
 
@@ -65,7 +65,7 @@ Representations may be large (e.g., a parsed AST) or tiny (e.g., a `bool` indica
 To define a representation:
 
 1. Define the data structure
-2. Implement the `Representation` trait which requires defining the `name` method, which is self-explanatory and the  `materialize` method, which stores this representation to .
+2. Implement the `Representation` trait which requires defining the `name` method, which is self-explanatory and the  `materialize` method, which stores this representation to disk.
 
 
 Here's how we implement `MyRepresentation`, the `Representation` for `my_new_tool`:
@@ -98,7 +98,7 @@ Here is how we implement the `Tool` trait for `my_new_tool`:
 pub struct MyNewTool {
 }
 
-impl Tool for LoadRawSource {
+impl Tool for MyNewTool {
     fn name(&self) -> &'static str {
         "my_new_tool"
     }
@@ -109,7 +109,7 @@ impl Tool for LoadRawSource {
         _inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
         // Actual Tool logic goes here..
-        Ok(Box::new(RawSource { result: "Hello World!".to_string() }))
+        Ok(Box::new(MyNewTool { result: "Hello World!".to_string() }))
     }
 }
 ```
@@ -118,7 +118,7 @@ At this point, we have a working tool, but we need to tell Harvest to schedule t
 ---
 
 ### Step 4: Schedule your tool to run
-Finally, its time to actually run our tool.
+Finally, it's time to actually run our tool.
 To do this, we add a new `queue` call to the main `transpile` function in `translate/src/lib.rs`
 
 ```rust
@@ -167,7 +167,7 @@ To use the `RawSource` `Representation` inside run `run` you can call `context.i
 pub struct MyNewTool {
 }
 
-impl Tool for LoadRawSource {
+impl Tool for MyNewTool {
     fn name(&self) -> &'static str {
         "my_new_tool"
     }
@@ -183,7 +183,7 @@ impl Tool for LoadRawSource {
             .get::<RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
 
-        Ok(Box::new(RawSource { result: "Hello World!".to_string() }))
+        Ok(Box::new(MyNewTool { result: "Hello World!".to_string() }))
     }
 }
 ```

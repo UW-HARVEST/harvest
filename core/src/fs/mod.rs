@@ -31,7 +31,7 @@ use std::fs::read_dir;
 use std::fs::read_link;
 use std::fs::remove_file;
 use std::fs::set_permissions;
-use std::io;
+use std::io::{self, ErrorKind};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -124,6 +124,16 @@ impl DiagnosticsDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Converts the given path, which must be relative to the diagnostic directory, into an
+    /// absolute path.
+    pub fn to_absolute_path<P: AsRef<Path>>(&self, relative: P) -> io::Result<PathBuf> {
+        let relative = relative.as_ref();
+        if !relative.is_relative() {
+            return Err(ErrorKind::InvalidInput.into());
+        }
+        Ok(PathBuf::from_iter([&self.path, relative]))
+    }
 }
 
 /// Error type returned by DiagnosticsDir::new.
@@ -162,6 +172,11 @@ impl Symlink {
     /// Writes this symlink into the filesystem at the given path.
     pub fn write_rw<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         symlink(&self.contents, path)
+    }
+
+    /// Used by Freezer::copy_ro. Writes a read-only copy of this Symlink into the given path.
+    fn copy_ro(&self, absolute: &Path) -> io::Result<()> {
+        symlink(&self.contents, absolute)
     }
 }
 
@@ -598,5 +613,27 @@ mod tests {
             ].into_iter().collect()))),
             ("file1.txt".into(), RawEntry::File(b"A".into())),
         ].into_iter().collect()));
+    }
+
+    #[test]
+    fn to_absolute_path() {
+        // Test with a hard-coded diagnostic directory path so that this test isn't just
+        // duplicating to_absolute_path's logic.
+        let diagnostics_dir = DiagnosticsDir {
+            path: "/diagnostics/directory/path".into(),
+            tempdir: None,
+        };
+        assert_eq!(
+            diagnostics_dir.to_absolute_path("a/b/c").unwrap().as_path(),
+            "/diagnostics/directory/path/a/b/c"
+        );
+        let diagnostics_dir = DiagnosticsDir::tempdir().unwrap();
+        let result = diagnostics_dir.to_absolute_path("/already/absolute");
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+        let result = diagnostics_dir.to_absolute_path("relative/path");
+        assert_eq!(
+            result.unwrap(),
+            PathBuf::from_iter([diagnostics_dir.path(), "relative/path".as_ref()])
+        );
     }
 }

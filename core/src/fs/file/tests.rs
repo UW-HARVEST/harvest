@@ -1,6 +1,32 @@
 use super::super::Freezer;
 use super::*;
-use std::fs::write;
+use std::fs::{create_dir, create_dir_all, read_link, write};
+
+#[test]
+fn copy_ro() {
+    let diagnostics_dir = Arc::new(DiagnosticsDir::tempdir().unwrap());
+    let mut freezer = Freezer::new(diagnostics_dir.clone());
+    // Create a file at relative path a/b/c/d
+    let a_b_c = diagnostics_dir.to_absolute_path("a/b/c").unwrap();
+    create_dir_all(a_b_c).unwrap();
+    let a_b_c_d = diagnostics_dir.to_absolute_path("a/b/c/d").unwrap();
+    write(a_b_c_d, "contents\n").unwrap();
+    let file = freezer.freeze("a/b/c/d").unwrap().file().unwrap();
+    // Copy the file to a/b/z
+    let a_b_z = diagnostics_dir.to_absolute_path("a/b/z").unwrap();
+    file.copy_ro(&a_b_z, "a/b/z".as_ref()).unwrap();
+    assert_eq!(&read_link(a_b_z).unwrap(), "c/d");
+    // Copy the file to a/b/y/z
+    create_dir(diagnostics_dir.to_absolute_path("a/b/y").unwrap()).unwrap();
+    let a_b_y_z = diagnostics_dir.to_absolute_path("a/b/y/z").unwrap();
+    file.copy_ro(&a_b_y_z, "a/b/y/z".as_ref()).unwrap();
+    assert_eq!(&read_link(a_b_y_z).unwrap(), "../c/d");
+    // Copy the file to a/b/c/w/y/z
+    create_dir_all(diagnostics_dir.to_absolute_path("a/b/c/w/y").unwrap()).unwrap();
+    let a_b_c_w_y_z = diagnostics_dir.to_absolute_path("a/b/c/w/y/z").unwrap();
+    file.copy_ro(&a_b_c_w_y_z, "a/b/c/w/y/z".as_ref()).unwrap();
+    assert_eq!(&read_link(a_b_c_w_y_z).unwrap(), "../../d");
+}
 
 /// Tests functions that retrieve file contents (File::bytes, TextFile::bytes, TextFile::str) under
 /// various conditions (uncached, cached but with all Arcs dropped, cached with Arcs still

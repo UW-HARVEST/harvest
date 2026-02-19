@@ -49,6 +49,8 @@ impl<'a> ClangDeclarations<'a> {
 /// Helper function to deduplicate a single category of declarations.
 /// Deduplicates declarations with the same name, preferring those without an included_from field in their spelling location.
 /// (If there is a seperate declaration in the header, this will prefer the implementation rather than the header).
+/// TODO: technically, this function collapses the namespaces of structs and typedefs. 
+/// This should be ok, but worth checking.
 fn deduplicate_category(declarations: &mut Vec<&Node<Clang>>) {
     use std::collections::HashMap;
 

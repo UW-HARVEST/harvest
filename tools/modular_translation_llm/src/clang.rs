@@ -3,23 +3,10 @@
 use c_ast::{Clang, ClangAst};
 use clang_ast::Node;
 use full_source::RawSource;
+use std::collections::HashSet;
 use tracing::{debug, warn};
 
 use crate::utils::get_file_from_location;
-
-/// Returns true when the location originates from the original source (not from an include).
-pub fn is_original(location: &clang_ast::SourceLocation) -> bool {
-    let spelling_included_from = location
-        .spelling_loc
-        .as_ref()
-        .and_then(|loc| loc.included_from.as_ref());
-    let expansion_included_from = location
-        .expansion_loc
-        .as_ref()
-        .and_then(|loc| loc.included_from.as_ref());
-
-    spelling_included_from.is_none() && expansion_included_from.is_none()
-}
 
 /// Container for categorizing declarations by their source.
 ///
@@ -47,6 +34,73 @@ impl<'a> ClangDeclarations<'a> {
             .chain(self.app_functions.iter())
             .copied()
     }
+
+    /// Deduplicates declarations within each category (app_types, app_globals, app_functions).
+    /// Declarations are considered duplicates if they have the same name.
+    /// When duplicates are found, the one with spelling_loc.included_from == None is preferred.
+    /// If multiple declarations meet this criteria, a warning is issued.
+    pub fn deduplicate(&mut self) {
+        deduplicate_category(&mut self.app_types);
+        deduplicate_category(&mut self.app_globals);
+        deduplicate_category(&mut self.app_functions);
+    }
+}
+
+/// Helper function to deduplicate a single category of declarations.
+/// Deduplicates declarations with the same name, preferring those without an included_from field in their spelling location.
+/// (If there is a seperate declaration in the header, this will prefer the implementation rather than the header).
+fn deduplicate_category(declarations: &mut Vec<&Node<Clang>>) {
+    use std::collections::HashMap;
+
+    let mut seen_names: HashMap<String, (usize, bool)> = HashMap::new(); // (index, has_no_included_from)
+    let mut to_remove = HashSet::new();
+
+    for (idx, node) in declarations.iter().enumerate() {
+        if let Some(name) = node.kind.name() {
+            let has_no_included_from = has_no_included_from_field(&node.kind);
+
+            match seen_names.get(&name) {
+                Some((existing_idx, existing_has_no_included_from)) => {
+                    // We've seen this name before
+                    if has_no_included_from && !existing_has_no_included_from {
+                        // Current is better (has no included_from, existing does)
+                        to_remove.insert(*existing_idx);
+                        seen_names.insert(name, (idx, has_no_included_from));
+                    } else if has_no_included_from && *existing_has_no_included_from {
+                        // Both have no included_from - issue a warning
+                        warn!(
+                            "Multiple declarations with name '{}' have no included_from. \
+                            Keeping the first one.",
+                            name
+                        );
+                        to_remove.insert(idx);
+                    } else {
+                        // Current has included_from or existing is better
+                        to_remove.insert(idx);
+                    }
+                }
+                None => {
+                    // First time seeing this name
+                    seen_names.insert(name, (idx, has_no_included_from));
+                }
+            }
+        }
+    }
+
+    // Remove duplicates in reverse order to maintain indices
+    let mut indices_to_remove: Vec<usize> = to_remove.into_iter().collect();
+    indices_to_remove.sort_by(|a, b| b.cmp(a)); // Reverse order
+    for idx in indices_to_remove {
+        declarations.remove(idx);
+    }
+}
+
+/// Checks if a declaration's spelling location has no included_from field.
+fn has_no_included_from_field(kind: &Clang) -> bool {
+    kind.loc()
+        .and_then(|loc| loc.spelling_loc.as_ref())
+        .map(|bare_loc| bare_loc.included_from.is_none())
+        .unwrap_or(false)
 }
 
 /// Logs the declaration kind with appropriate log level.
@@ -87,6 +141,8 @@ fn log_decl_kind(kind: &c_ast::Clang) {
 /// Extracts all top-level translation unit declarations from a ClangAst and categorizes them.
 /// This function assumes that the structure of the Clang AST is a list of TranslationUnitDecl nodes,
 /// whose children are the top-level declarations.
+/// The key invariants are that the app_* declarations are all in our source code,
+// and all correspond to unique spans.
 pub fn extract_top_level_decls<'a>(
     clang_ast: &'a ClangAst,
     source_files: &'a RawSource,
@@ -120,20 +176,14 @@ pub fn extract_top_level_decls<'a>(
             // Ensure this declaration is in our source code and not another imported library
             let is_source = get_file_from_location(&loc.cloned())
                 .is_some_and(|file| source_files.dir.get_file(&file).is_ok());
-
-            // Ensure we don't double include functions that are imported in several files (within our source)
-            let is_original = loc.is_some_and(is_original);
-
-            if is_source && is_original {
+            if is_source {
                 // Categorize by declaration kind for two-pass translation
                 match &child.kind {
-                    Clang::TypedefDecl { .. } => {
+                    Clang::TypedefDecl { .. }
+                    | Clang::RecordDecl { .. }
+                    | Clang::EnumDecl { .. } => {
                         declarations.app_types.push(child);
                     }
-                    // | Clang::RecordDecl { .. }
-                    // | Clang::EnumDecl { .. } => {
-                    //     declarations.app_types.push(child);
-                    // }
                     Clang::VarDecl { .. } => {
                         declarations.app_globals.push(child);
                     }
@@ -151,5 +201,6 @@ pub fn extract_top_level_decls<'a>(
         }
     }
 
+    declarations.deduplicate();
     declarations
 }

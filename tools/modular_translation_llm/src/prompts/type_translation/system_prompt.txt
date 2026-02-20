@@ -11,6 +11,8 @@ Focus on:
 - Proper handling of padding and alignment
 - Safe Rust representations where possible
 - C compatibility for structs that may be passed across FFI boundaries
+- Deriving Clone for all types when possible
+- Deriving Copy in addition to Clone for simple types that contain only Copy-compatible fields (primitives and other Copy types)
 
 For example, given the following prompt:
 
@@ -37,11 +39,11 @@ You should return:
 ```
 { "translations": [
 {
-  "rust_code": "#[repr(C)]\npub struct Point {\n    pub x: i32,\n    pub y: i32,\n}",
+  "rust_code": "#[repr(C)]\n#[derive(Clone, Copy)]\npub struct Point {\n    pub x: i32,\n    pub y: i32,\n}",
   "dependencies": []
 },
 {
-  "rust_code": "#[repr(C)]\npub enum Color {\n    Red = 0,\n    Green = 1,\n    Blue = 2,\n}",
+  "rust_code": "#[repr(C)]\n#[derive(Clone, Copy)]\npub enum Color {\n    Red = 0,\n    Green = 1,\n    Blue = 2,\n}",
   "dependencies": []
 }
 ]

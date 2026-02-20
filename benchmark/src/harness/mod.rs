@@ -1,6 +1,8 @@
 /// This module `harness` is intended to contain code that is specific to a particular set of benchmarks,
 /// for example, parsing code for benchmark-specific configs.
 /// Currently, that is just the MITLL tractor benchmarks.
+pub mod library;
+
 use crate::runner;
 use crate::stats::ProgramEvalStats;
 use crate::HarvestResult;
@@ -108,8 +110,10 @@ pub fn parse_test_case_json<P: AsRef<Path>>(file_path: P) -> HarvestResult<TestC
     Ok(test_case)
 }
 
-/// Validate that required benchmark subdirectories exist
-/// Returns paths to (input/test_case/src, input/test_vectors)
+/// Validate that required benchmark subdirectories exist.
+/// Returns (test_case_dir, test_vectors_dir). Note: we return the `test_case`
+/// root (not `test_case/src`) so downstream tools can see CMakeLists.txt if
+/// present.
 pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)> {
     if !input_dir.exists() {
         return Err(format!("Input directory does not exist: {}", input_dir.display()).into());
@@ -147,7 +151,9 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    Ok((test_case_src_dir, test_vectors_dir))
+    // Return the test_case root so downstream tools can find metadata files
+    // (e.g., CMakeLists.txt) while still containing the src/ subtree.
+    Ok((test_case_dir, test_vectors_dir))
 }
 
 /// Reads all files in a directory and parses them as TestCase JSON files
@@ -170,6 +176,16 @@ pub fn parse_test_vectors<P: AsRef<Path>>(directory_path: P) -> HarvestResult<Ve
             )
         })?;
         let file_path = entry.path();
+
+        // Only accept plain .json files (exclude backups like .json.bak, directories, etc.)
+        if file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext != "json")
+            .unwrap_or(true)
+        {
+            continue;
+        }
 
         // Try to parse the file as a test case JSON
         if let Ok(test_case) = parse_test_case_json(&file_path) {

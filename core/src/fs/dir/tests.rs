@@ -98,6 +98,7 @@ fn get_basic() -> io::Result<()> {
     assert_dir_contains(dir.get("subdir1"), ["a.txt"]);
     assert_file_contains(dir.get("subdir1/a.txt"), "a");
     assert_dir_contains(dir.get("subdir1/.."), root_names);
+    assert_file_contains(dir.get("symlink"), "b");
     assert_dir_contains(dir.get("subdir2/original_dir"), root_names);
     assert_dir_contains(dir.get("subdir2/original_dir/subdir1"), ["a.txt"]);
     assert_file_contains(dir.get("b.txt"), "b");

@@ -305,8 +305,8 @@ impl Dir {
                 DirEntry::Symlink(symlink) => symlink,
             };
             // This DirEntry is a symlink. Check the cache to see if we've already encountered it.
-            let link_path: PathBuf = current.iter().map(|p| p.name).chain(once(name)).collect();
-            match cache.entry(link_path.clone()) {
+            let mut link_path: PathBuf = current.iter().map(|p| p.name).chain(once(name)).collect();
+            match cache.entry(link_path) {
                 // We've encountered this symlink before.
                 Entry::Occupied(entry) => match entry.get() {
                     None => return Err(GetError::FilesystemLoop),
@@ -317,9 +317,10 @@ impl Dir {
                     }
                 },
                 Entry::Vacant(entry) => {
+                    link_path = entry.key().clone();
                     entry.insert(None);
                 }
-            }
+            };
             // This is the first time we've encountered this symlink. Add a step to update the
             // symlink cache, and copy the symlink's contents into `remaining` (reminder that
             // `remaining` is reversed).

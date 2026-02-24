@@ -358,9 +358,6 @@ fn configure_library_paths(output_dir: &Path, rust_artifacts_dir: &Path) -> Stri
 /// The runner is compiled to a separate target directory to avoid conflicts with
 /// the main project build.
 ///
-/// # Arguments
-/// * `output_dir` - Directory containing the project
-///
 /// # Returns
 /// Path to the compiled runner executable
 pub fn build_runner(output_dir: &Path) -> HarvestResult<PathBuf> {
@@ -620,9 +617,6 @@ fn find_cando2_source(start: &Path) -> Option<PathBuf> {
 /// This is a simple text-based parse, not a full AST parse. It assumes the runner
 /// follows standard cando2 conventions. Using a full parser (like syn) would add
 /// significant compile-time overhead for a rarely-needed feature.
-///
-/// # Arguments
-/// * `output_dir` - Directory containing the runner
 ///
 /// # Returns
 /// Library stem with "lib" prefix if found (e.g., "libhello"), or `None`

@@ -11,9 +11,6 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 /// Extracts the package name from a Cargo.toml file.
 ///
-/// # Arguments
-/// * `manifest` - Path to the Cargo.toml file
-///
 /// # Returns
 /// The package name if found, or `None` if parsing fails or the field doesn't exist.
 ///
@@ -48,9 +45,6 @@ pub fn read_package_name(manifest: &Path) -> Option<String> {
 /// - `crate-type = ["cdylib"]` -> no change
 /// - `crate-type = "rlib"` -> `crate-type = ["rlib", "cdylib"]`
 /// - No crate-type -> creates `crate-type = ["cdylib"]`
-///
-/// # Arguments
-/// * `manifest` - Path to the Cargo.toml file to modify
 ///
 /// # Errors
 /// Returns an error if the manifest doesn't exist or cannot be read/written.
@@ -122,10 +116,6 @@ pub fn ensure_cdylib(manifest: &Path) -> HarvestResult<()> {
 /// This function silently succeeds if the source directory doesn't exist, making it
 /// useful for copying optional directories.
 ///
-/// # Arguments
-/// * `src` - Source directory path
-/// * `dst` - Destination directory path
-///
 /// # Errors
 /// Returns an error if I/O operations fail during the copy process.
 pub fn copy_directory_recursive(src: &Path, dst: &Path) -> HarvestResult<()> {
@@ -156,9 +146,6 @@ pub fn copy_directory_recursive(src: &Path, dst: &Path) -> HarvestResult<()> {
 /// path dependencies. Adding an empty `[workspace]` section declares the crate
 /// as its own workspace root, stopping the upward search.
 ///
-/// # Arguments
-/// * `manifest` - Path to the Cargo.toml to modify
-///
 /// # Errors
 /// Returns an error if the manifest cannot be read or written.
 pub fn add_workspace_guard(manifest: &Path) -> HarvestResult<()> {
@@ -187,11 +174,6 @@ pub fn add_workspace_guard(manifest: &Path) -> HarvestResult<()> {
 ///
 /// This function updates the path for a dependency in the [dependencies] section.
 /// The dependency must be specified as an inline table with a path field.
-///
-/// # Arguments
-/// * `manifest` - Path to the Cargo.toml to modify
-/// * `dep_name` - Name of the dependency to update (e.g., "cando2")
-/// * `new_path` - New relative path for the dependency
 ///
 /// # Errors
 /// Returns an error if the manifest cannot be read or written, or if TOML parsing fails.

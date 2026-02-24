@@ -56,21 +56,63 @@ cargo run -- --print-config-path
 
 ## Running
 
+Some of the examples below assume you have a local copy of the TRACTOR
+Test-Corpus repository in `export TEST_CORPUS_PATH=/path/to/test-corpus`.
+
 ### Translate C code to Rust
 ```bash
 cargo run --bin=translate --release -- /path/to/c/code -o /path/to/output
-# Example:
-# cargo run --bin=translate --release -- Test-Corpus/Public-Tests/B01_synthetic/001_helloworld/test_case/ -o example_output/
+```
+
+#### Test-Corpus Example:
+
+```bash
+cargo run --bin=translate --release -- $TEST_CORPUS_PATH/Public-Tests/B01_synthetic/001_helloworld/test_case/ -o example_output/
 ```
 
 ### Running a set of TRACTOR benchmarks
+
 ```bash
 cargo run --bin=benchmark --release -- /path/to/input/dir /path/to/output/dir
-# Example:
-# cargo run --bin=benchmark --release -- Test-Corpus/Public-Tests/B01_synthetic example_output/
+```
+
+#### Example: run all benchmarks
+
+```bash
+cargo run --bin=benchmark --release -- $TEST_CORPUS_PATH/Public-Tests/B01_synthetic example_output/
+```
+
+_Optional: add --filter=<regex> to keep only matching benchmarks (by directory name)_
+
+#### Example: run only library benchmarks (directories ending with \_lib)
+
+```bash
+cargo run --bin=benchmark --release -- $TEST_CORPUS_PATH/Public-Tests/B01_synthetic example_output/ --filter=".*_lib$"
+```
+
+#### Example: run only benchmarks starting with B01
+
+```bash
+cargo run --bin=benchmark --release -- $TEST_CORPUS_PATH/Public-Tests example_output/ --filter="^B01"
+```
+
+_Optional: add --exclude=<regex> to exclude matching benchmarks (by directory name)_
+_Note: --filter and --exclude are mutually exclusive_
+
+### Example: exclude library benchmarks (directories ending with \_lib)
+
+```bash
+cargo run --bin=benchmark --release -- $TEST_CORPUS_PATH/Public-Tests/B01_synthetic example_output/ --exclude=".*_lib$"
+```
+
+#### Example: exclude benchmarks starting with test\_
+
+```
+cargo run --bin=benchmark --release -- $TEST_CORPUS_PATH/Public-Tests example_output/ --exclude="^test_"
 ```
 
 ### Configuration
+
 Print config file location:
 ```bash
 cargo run --bin=translate -- --print-config-path

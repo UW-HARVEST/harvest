@@ -1,6 +1,7 @@
 //! Checks if a generated Rust project builds by materializing
 //! it to a tempdir and running `cargo build --release`.
 use full_source::CargoPackage;
+use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use std::path::{Path, PathBuf};
@@ -51,6 +52,11 @@ fn parse_compiled_artifacts(stdout: &[u8]) -> Result<Vec<PathBuf>, Box<dyn std::
 /// - If there is an error running cargo, it returns Err.
 fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
+
+    // Prevent accidentally picking up a parent workspace by marking this project as its own root.
+    add_workspace_guard(&project_path.join("Cargo.toml"))?;
+    // Normalize the package name to match the output directory so shared library names align with runner expectations.
+    normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
 
     // Run cargo build in the project directory
     let output = Command::new("cargo")

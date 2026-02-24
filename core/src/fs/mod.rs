@@ -217,11 +217,6 @@ impl RawDir {
     /// Returns the [RawDir], number of directories and number of
     /// files, as a tuple.
     ///
-    /// # Arguments
-    ///
-    /// * `read_dir` - a [ReadDir] iterator over a file-system
-    ///   directory.
-    ///
     /// # Examples
     ///
     /// ```

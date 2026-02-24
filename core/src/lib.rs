@@ -14,4 +14,5 @@ pub mod test_util;
 pub use id::Id;
 pub use ir::{HarvestIR, Representation};
 
+pub mod cargo_utils;
 pub mod config;

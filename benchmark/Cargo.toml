@@ -5,6 +5,10 @@ edition = "2021"
 description = "Runs a set of benchmarks and provides useful output"
 license = "MIT"
 
+[lib]
+name = "harvest_benchmark"
+path = "src/lib.rs"
+
 [[bin]]
 name = "benchmark"
 path = "src/main.rs"
@@ -19,6 +23,10 @@ log = { workspace = true }
 regex = "1.12.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml_edit = { workspace = true }
 try_cargo_build = { version = "0.1.0", path = "../tools/try_cargo_build" }
 wait-timeout = "0.2"
 walkdir = "2.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }

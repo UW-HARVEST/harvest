@@ -21,6 +21,7 @@ use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
 use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
+use regex::Regex;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,8 +39,21 @@ impl TranspilationResult {
     pub fn from_ir(ir: &HarvestIR) -> Self {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
-            Ok(artifacts) => (true, artifacts[0].clone(), None), // should check that there is only 1 artifact
-            Err(err) => (false, PathBuf::new(), Some(err)),
+            Ok(artifacts) => {
+                if artifacts.is_empty() {
+                    // Empty artifacts list indicates build succeeded but produced no output
+                    (
+                        false,
+                        PathBuf::new(),
+                        Some("Build succeeded but produced no artifacts".to_string()),
+                    )
+                } else {
+                    // Prefer the first artifact as the "binary" path for executable cases.
+                    let first = artifacts.first().cloned().unwrap();
+                    (true, first, None)
+                }
+            }
+            Err(err) => (false, PathBuf::new(), Some(err.clone())),
         };
 
         Self {
@@ -197,13 +211,19 @@ fn benchmark_single_program(
 
     log::info!("Translating program: {}", program_name);
     log::info!("Input directory: {}", program_dir.display());
+    let is_lib = program_name.ends_with("_lib");
+    log::info!(
+        "Detected project type: {}",
+        if is_lib { "library" } else { "executable" }
+    );
 
     // Get program output directory
     let output_dir = output_root_dir.join(&program_name);
     log::info!("Output directory: {}", output_dir.display());
 
     // Check for required subdirectories & log error if we don't find them
-    let (test_case_src_dir, test_vectors_dir) = match parse_benchmark_dir(program_dir) {
+    // We use the test_case root (not src/) so translate can see CMakeLists.txt.
+    let (test_case_dir, test_vectors_dir) = match parse_benchmark_dir(program_dir) {
         Ok(dirs) => dirs,
         Err(e) => {
             result.error_message = Some(e.to_string());
@@ -229,7 +249,7 @@ fn benchmark_single_program(
 
     // Do the actual translation
     let translation_result = translate_c_directory_to_rust_project(
-        &test_case_src_dir,
+        &test_case_dir,
         &output_dir,
         config_overrides,
         modular,
@@ -262,15 +282,41 @@ fn benchmark_single_program(
         return result;
     }
 
-    assert!(translation_result.rust_binary_path.exists());
+    if !is_lib && !translation_result.rust_binary_path.exists() {
+        let error = format!(
+            "Rust build reported success, but expected output artifact was not found at {:?}",
+            translation_result.rust_binary_path
+        );
+        log::error!("{}", error);
+        result.error_message = Some(error);
+        return result;
+    }
 
-    // Run validation tests
-    let (test_results, error_messages, passed_tests) = run_test_validation(
-        &translation_result.rust_binary_path,
-        &test_cases,
-        timeout,
-        &output_dir,
-    );
+    // Library and executable validation differ.
+    let (test_results, error_messages, passed_tests) = if is_lib {
+        match harness::library::run_library_validation(
+            &program_name,
+            program_dir,
+            &output_dir,
+            &test_cases,
+            timeout,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("Library validation failed: {}", e);
+                log::error!("{}", error_msg);
+                result.error_message = Some(error_msg);
+                return result;
+            }
+        }
+    } else {
+        run_test_validation(
+            &translation_result.rust_binary_path,
+            &test_cases,
+            timeout,
+            &output_dir,
+        )
+    };
 
     result.test_results = test_results;
     result.passed_tests = passed_tests;
@@ -315,14 +361,68 @@ fn main() -> HarvestResult<()> {
     run(args)
 }
 
+fn apply_regex_filter(
+    program_dirs: &mut Vec<PathBuf>,
+    pattern: &str,
+    keep_matches: bool,
+    label: &str,
+) -> HarvestResult<()> {
+    let regex =
+        Regex::new(pattern).map_err(|e| format!("Invalid regex pattern '{}': {}", pattern, e))?;
+    let mut removed_names = Vec::new();
+    program_dirs.retain(|path| {
+        let matches = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| regex.is_match(name))
+            .unwrap_or(false);
+        let keep = if keep_matches { matches } else { !matches };
+        if !keep {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                removed_names.push(name.to_string());
+            }
+        }
+        keep
+    });
+    log::info!(
+        "{} '{}' applied: {} programs remaining, {} removed",
+        label,
+        pattern,
+        program_dirs.len(),
+        removed_names.len(),
+    );
+    if !removed_names.is_empty() {
+        let past_tense = match label {
+            "Filter" => "Filtered",
+            "Exclude" => "Excluded",
+            _ => label,
+        };
+        log::info!("{}: {}", past_tense, removed_names.join(", "));
+    }
+    Ok(())
+}
+
 fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
     log::info!("Input directory: {}", args.input_dir.display());
     log::info!("Output directory: {}", args.output_dir.display());
 
-    // Get the programs to evaluate
-    // Should be in directories that are immediate children of input_dir
-    let program_dirs = collect_program_dirs(&args.input_dir)?;
+    // Get the programs to evaluate.
+    // If the input itself is a single test case root, run just that; otherwise, run children.
+    let mut program_dirs = if parse_benchmark_dir(&args.input_dir).is_ok() {
+        vec![args.input_dir.clone()]
+    } else {
+        collect_program_dirs(&args.input_dir)?
+    };
+
+    if let Some(filter_pattern) = &args.filter {
+        apply_regex_filter(&mut program_dirs, filter_pattern, true, "Filter")?;
+    }
+
+    if let Some(exclude_pattern) = &args.exclude {
+        apply_regex_filter(&mut program_dirs, exclude_pattern, false, "Exclude")?;
+    }
+
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs

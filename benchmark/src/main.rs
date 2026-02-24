@@ -361,6 +361,42 @@ fn main() -> HarvestResult<()> {
     run(args)
 }
 
+fn apply_regex_filter(
+    program_dirs: &mut Vec<PathBuf>,
+    pattern: &str,
+    keep_matches: bool,
+    label: &str,
+) -> HarvestResult<()> {
+    let regex =
+        Regex::new(pattern).map_err(|e| format!("Invalid regex pattern '{}': {}", pattern, e))?;
+    let mut removed_names = Vec::new();
+    program_dirs.retain(|path| {
+        let matches = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| regex.is_match(name))
+            .unwrap_or(false);
+        let keep = if keep_matches { matches } else { !matches };
+        if !keep {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                removed_names.push(name.to_string());
+            }
+        }
+        keep
+    });
+    log::info!(
+        "{} '{}' applied: {} programs remaining, {} removed",
+        label,
+        pattern,
+        program_dirs.len(),
+        removed_names.len(),
+    );
+    if !removed_names.is_empty() {
+        log::info!("{}d: {}", label, removed_names.join(", "));
+    }
+    Ok(())
+}
+
 fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
     log::info!("Input directory: {}", args.input_dir.display());
@@ -375,71 +411,11 @@ fn run(args: Args) -> HarvestResult<()> {
     };
 
     if let Some(filter_pattern) = &args.filter {
-        let regex = Regex::new(filter_pattern)
-            .map_err(|e| format!("Invalid regex pattern '{}': {}", filter_pattern, e))?;
-
-        let before = program_dirs.len();
-        let mut filtered_out_names = Vec::new();
-        program_dirs.retain(|path| {
-            let matches = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| regex.is_match(name))
-                .unwrap_or(false);
-
-            if !matches {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    filtered_out_names.push(name.to_string());
-                }
-                return false;
-            }
-            true
-        });
-
-        let filtered_out = before.saturating_sub(program_dirs.len());
-        log::info!(
-            "Filter '{}' applied: {} programs match, {} filtered out",
-            filter_pattern,
-            program_dirs.len(),
-            filtered_out
-        );
-        if !filtered_out_names.is_empty() {
-            log::info!("Filtered out: {}", filtered_out_names.join(", "));
-        }
+        apply_regex_filter(&mut program_dirs, filter_pattern, true, "Filter")?;
     }
 
     if let Some(exclude_pattern) = &args.exclude {
-        let regex = Regex::new(exclude_pattern)
-            .map_err(|e| format!("Invalid regex pattern '{}': {}", exclude_pattern, e))?;
-
-        let before = program_dirs.len();
-        let mut excluded_names = Vec::new();
-        program_dirs.retain(|path| {
-            let matches = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| regex.is_match(name))
-                .unwrap_or(false);
-
-            if matches {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    excluded_names.push(name.to_string());
-                }
-                return false;
-            }
-            true
-        });
-
-        let excluded = before.saturating_sub(program_dirs.len());
-        log::info!(
-            "Exclude '{}' applied: {} programs remaining, {} excluded",
-            exclude_pattern,
-            program_dirs.len(),
-            excluded
-        );
-        if !excluded_names.is_empty() {
-            log::info!("Excluded: {}", excluded_names.join(", "));
-        }
+        apply_regex_filter(&mut program_dirs, exclude_pattern, false, "Exclude")?;
     }
 
     log_found_programs(&program_dirs, &args.input_dir)?;

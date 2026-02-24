@@ -6,7 +6,7 @@ description = "Runs a set of benchmarks and provides useful output"
 license = "MIT"
 
 [lib]
-name = "benchmark"
+name = "harvest_benchmark"
 path = "src/lib.rs"
 
 [[bin]]

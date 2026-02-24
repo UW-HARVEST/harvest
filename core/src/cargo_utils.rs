@@ -31,6 +31,12 @@ pub fn read_package_name(manifest: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn cdylib_array() -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    array.push("cdylib");
+    array
+}
+
 /// Ensures a Cargo.toml has `"cdylib"` in its `[lib]` section's `crate-type` array.
 ///
 /// This is required for library projects to generate dynamically loadable shared libraries
@@ -87,14 +93,10 @@ pub fn ensure_cdylib(manifest: &Path) -> Result<()> {
             array.push("cdylib");
             lib.insert("crate-type", Item::Value(Value::Array(array)));
         } else {
-            let mut array = toml_edit::Array::new();
-            array.push("cdylib");
-            lib.insert("crate-type", Item::Value(Value::Array(array)));
+            lib.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
         }
     } else {
-        let mut array = toml_edit::Array::new();
-        array.push("cdylib");
-        lib.insert("crate-type", Item::Value(Value::Array(array)));
+        lib.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
     }
 
     fs::write(manifest, doc.to_string())?;
@@ -116,12 +118,15 @@ pub fn copy_directory_recursive(src: &Path, dst: &Path) -> Result<()> {
         fs::create_dir_all(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
-            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
             let target = dst.join(entry.file_name());
-            if path.is_dir() {
-                recurse(&path, &target)?;
+            if file_type.is_dir() {
+                recurse(&entry.path(), &target)?;
             } else {
-                fs::copy(&path, &target)?;
+                fs::copy(entry.path(), &target)?;
             }
         }
         Ok(())
@@ -191,6 +196,11 @@ pub fn update_dependency_path(manifest: &Path, dep_name: &str, new_path: &str) -
         && dep_table.contains_key("path")
     {
         dep_table.insert("path", Value::from(new_path));
+        fs::write(manifest, doc.to_string())?;
+    } else if let Some(dep_table) = dep.as_table_mut()
+        && dep_table.contains_key("path")
+    {
+        dep_table.insert("path", Item::Value(Value::from(new_path)));
         fs::write(manifest, doc.to_string())?;
     }
 

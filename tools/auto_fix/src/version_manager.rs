@@ -23,7 +23,9 @@ pub fn save_iteration_snapshot(
     debug!("Saving iteration {} snapshot", iteration);
 
     // Create iteration directory
-    let iter_dir = working_dir.history_dir.join(format!("iteration_{}", iteration));
+    let iter_dir = working_dir
+        .history_dir
+        .join(format!("iteration_{}", iteration));
     fs::create_dir_all(&iter_dir)?;
 
     // Save build output
@@ -76,7 +78,8 @@ pub fn save_file_version(
     // Parse the file path to get directory and file name
     let file_path_buf = std::path::Path::new(file_path);
     let parent_dir = file_path_buf.parent();
-    let file_name = file_path_buf.file_name()
+    let file_name = file_path_buf
+        .file_name()
         .ok_or("Invalid file path")?
         .to_str()
         .ok_or("Invalid file name")?;
@@ -104,7 +107,11 @@ pub fn save_file_version(
     // Copy the file
     fs::copy(&source_path, &dest_path)?;
 
-    debug!("Saved file version: {} -> {}", file_path, dest_path.display());
+    debug!(
+        "Saved file version: {} -> {}",
+        file_path,
+        dest_path.display()
+    );
 
     Ok(())
 }
@@ -140,8 +147,7 @@ pub fn save_initial_versions(
                     if ext == "rs" {
                         // Get relative path from project root
                         let rel_path = path.strip_prefix(base_dir)?;
-                        let rel_path_str = rel_path.to_str()
-                            .ok_or("Invalid path")?;
+                        let rel_path_str = rel_path.to_str().ok_or("Invalid path")?;
 
                         // Save as version 0
                         save_file_version(working_dir, rel_path_str, 0)?;

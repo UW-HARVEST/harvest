@@ -33,8 +33,8 @@ pub fn compile_project(project_dir: &Path) -> Result<BuildResult, Box<dyn std::e
     trace!("Build output:\n{}", combined_output);
 
     // Count errors and warnings
-    let error_count = combined_output.matches("error:").count()
-        + combined_output.matches("error[").count();
+    let error_count =
+        combined_output.matches("error:").count() + combined_output.matches("error[").count();
     let warning_count = combined_output.matches("warning:").count();
 
     let success = output.status.success();

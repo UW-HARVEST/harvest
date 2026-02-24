@@ -8,7 +8,7 @@ pub mod util;
 
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
-use harvest_core::{diagnostics, HarvestIR};
+use harvest_core::{HarvestIR, diagnostics};
 use identify_project_kind::IdentifyProjectKind;
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
@@ -30,10 +30,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             .parent()
             .ok_or("compile_commands path has no parent")?
             .to_path_buf();
-        let project_root = config
-            .project_root
-            .as_ref()
-            .unwrap_or(&cc_dir);
+        let project_root = config.project_root.as_ref().unwrap_or(&cc_dir);
 
         // Get LLM config from tools.compilation_unit_to_rust_llm, or fallback to raw_source_to_cargo_llm
         let llm_config = {
@@ -45,7 +42,9 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
                 LLMConfig::deserialize(tool_cfg)?
             } else if let Some(tool_cfg) = config.tools.get("raw_source_to_cargo_llm") {
                 // Fallback to raw_source_to_cargo_llm config
-                info!("No compilation_unit_to_rust_llm config found, using raw_source_to_cargo_llm config");
+                info!(
+                    "No compilation_unit_to_rust_llm config found, using raw_source_to_cargo_llm config"
+                );
                 LLMConfig::deserialize(tool_cfg)?
             } else {
                 return Err(

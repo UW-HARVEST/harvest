@@ -28,7 +28,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tempfile::{TempDir, tempdir};
 use thiserror::Error;
 use tool_reporter::ToolId;
-use tracing::{dispatcher::DefaultGuard, error, info, subscriber::set_default};
+use tracing::{
+    dispatcher::DefaultGuard, error, info, subscriber::set_default, subscriber::set_global_default,
+};
 use tracing_subscriber::filter::ParseError;
 use tracing_subscriber::fmt::{MakeWriter, layer};
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -65,7 +67,7 @@ pub struct Collector {
 
     // Guards that clean up values on drop.
     _tempdir: Option<TempDir>,
-    _tracing_guard: DefaultGuard,
+    _tracing_guard: Option<DefaultGuard>,
 }
 
 impl Collector {
@@ -99,11 +101,23 @@ impl Collector {
             "messages".as_ref(),
         ]))?;
         let console_filter = EnvFilter::builder().parse(&config.log_filter)?;
-        let _tracing_guard = set_default(
-            Registry::default()
+        // Try to register a process-wide global subscriber so rayon worker threads (which do not
+        // inherit thread-local state) still emit log messages.  Falls back to a thread-local
+        // subscriber when the global default is already set (e.g. in test suites that call
+        // initialize() multiple times).
+        let _tracing_guard = {
+            let sub = Registry::default()
                 .with(layer().with_ansi(false).with_writer(messages_file.clone()))
-                .with(layer().with_filter(console_filter.clone())),
-        );
+                .with(layer().with_filter(console_filter.clone()));
+            if set_global_default(sub).is_ok() {
+                None
+            } else {
+                let sub2 = Registry::default()
+                    .with(layer().with_ansi(false).with_writer(messages_file.clone()))
+                    .with(layer().with_filter(console_filter.clone()));
+                Some(set_default(sub2))
+            }
+        };
         Ok(Collector {
             diagnostics_receiver,
             shared: Arc::new(Mutex::new(Shared {

@@ -19,10 +19,14 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-pub use compiler::{compile_project, BuildResult};
-pub use error_classifier::{classify_errors, ErrorClassification, FileErrorReport};
+pub use compiler::{BuildResult, compile_project};
+pub use error_classifier::{
+    DiagLevel, Diagnostic, ErrorClassification, FileErrorReport, classify_errors,
+};
 pub use file_fixer::fix_file;
-pub use version_manager::{save_file_version, save_initial_versions, save_iteration_snapshot, WorkingDirectory};
+pub use version_manager::{
+    WorkingDirectory, save_file_version, save_initial_versions, save_iteration_snapshot,
+};
 
 /// Configuration for the auto-fix tool
 #[derive(Debug, Clone)]
@@ -75,7 +79,7 @@ pub fn initialize_working_directory(
 
     // Copy contents of input directory to output
     let mut options = fs_extra::dir::CopyOptions::new();
-    options.content_only = true;  // Copy only the contents, not the directory itself
+    options.content_only = true; // Copy only the contents, not the directory itself
     options.overwrite = true;
     fs_extra::dir::copy(input_dir, output_dir, &options)?;
 
@@ -105,7 +109,9 @@ pub fn auto_fix_project(
     config: &FixConfig,
 ) -> Result<FixSummary, Box<dyn std::error::Error>> {
     let start_time = Utc::now();
-    let project_name = working_dir.root.file_name()
+    let project_name = working_dir
+        .root
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
@@ -136,61 +142,76 @@ pub fn auto_fix_project(
         });
     }
 
-    info!("Initial compilation: {} errors, {} warnings",
-          initial_result.error_count, initial_result.warning_count);
+    info!(
+        "Initial compilation: {} errors, {} warnings",
+        initial_result.error_count, initial_result.warning_count
+    );
 
     let mut iterations = Vec::new();
     let mut files_modified = Vec::new();
     let mut current_result = initial_result;
 
     for iteration in 0..config.max_iterations {
-        info!("\n=== Iteration {}/{} ===", iteration + 1, config.max_iterations);
+        info!(
+            "\n=== Iteration {}/{} ===",
+            iteration + 1,
+            config.max_iterations
+        );
 
         let errors_before = current_result.error_count;
 
         // If no errors (only warnings), stop iterating
         if errors_before == 0 {
-            info!("No errors remaining (only {} warnings), stopping", current_result.warning_count);
+            info!(
+                "No errors remaining (only {} warnings), stopping",
+                current_result.warning_count
+            );
             break;
         }
 
         // Save snapshot before fixing
         save_iteration_snapshot(&working_dir, iteration, &current_result)?;
 
-        // Classify errors
+        // Classify errors (local parse — no LLM call)
         info!("Classifying errors...");
-        let iteration_dir = working_dir.history_dir.join(format!("iteration_{}", iteration));
-        let classification = match classify_errors(&current_result, &config.llm_config, Some(&iteration_dir)) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Failed to classify errors: {}", e);
-                iterations.push(IterationRecord {
-                    iteration,
-                    errors_before,
-                    errors_after: current_result.error_count,
-                    files_fixed: vec![],
-                    classification_success: false,
-                });
-                continue;
-            }
-        };
+        let iteration_dir = working_dir
+            .history_dir
+            .join(format!("iteration_{}", iteration));
+        let classification = classify_errors(&current_result);
 
         if classification.files.is_empty() {
             warn!("No fixable errors identified");
             break;
         }
 
-        info!("=== Files to fix in this iteration: {} ===", classification.files.len());
-        info!("Summary: {}", classification.summary);
+        info!(
+            "=== Files to fix in this iteration: {} ({} total errors) ===",
+            classification.files.len(),
+            classification.total_errors
+        );
         for (idx, file) in classification.files.iter().enumerate() {
-            info!("  {}. {} (priority {}, {} errors)",
-                  idx + 1, file.file_path, file.priority, file.errors.len());
+            info!(
+                "  {}. {} ({} errors, {} warnings)",
+                idx + 1,
+                file.file_path,
+                file.error_count,
+                file.warning_count
+            );
         }
         info!("");
 
+        // Save classification as JSON for post-mortem inspection.
+        if let Ok(json) = serde_json::to_string_pretty(&classification) {
+            let _ = std::fs::create_dir_all(&iteration_dir);
+            let _ = std::fs::write(iteration_dir.join("classification.json"), json);
+        }
+
         // Fix files in priority order (parallel or sequential)
         let fix_results: Vec<(String, bool)> = if config.parallel {
-            info!("Fixing files in parallel (max {} threads)...", config.parallelism);
+            info!(
+                "Fixing files in parallel (max {} threads)...",
+                config.parallelism
+            );
 
             // Build thread pool with limited parallelism
             let pool = rayon::ThreadPoolBuilder::new()
@@ -199,18 +220,30 @@ pub fn auto_fix_project(
                 .expect("Failed to build thread pool");
 
             pool.install(|| {
-                classification.files
+                classification
+                    .files
                     .par_iter()
                     .map(|file_report| {
-                        info!("Fixing {} (priority {}, {} errors)",
-                              file_report.file_path, file_report.priority, file_report.errors.len());
+                        info!(
+                            "Fixing {} ({} errors)",
+                            file_report.file_path, file_report.error_count
+                        );
 
-                        let success = match fix_file(&working_dir.root, file_report, &config.llm_config) {
+                        let success = match fix_file(
+                            &working_dir.root,
+                            &file_report.file_path,
+                            &file_report.errors_text,
+                            &config.llm_config,
+                        ) {
                             Ok(_) => {
                                 info!("  ✓ Fixed {}", file_report.file_path);
 
                                 // Save versioned copy to iteration_all (use iteration+1 since 0 is the initial version)
-                                if let Err(e) = save_file_version(working_dir, &file_report.file_path, iteration + 1) {
+                                if let Err(e) = save_file_version(
+                                    working_dir,
+                                    &file_report.file_path,
+                                    iteration + 1,
+                                ) {
                                     warn!("  Failed to save file version: {}", e);
                                 }
 
@@ -228,18 +261,30 @@ pub fn auto_fix_project(
             })
         } else {
             info!("Fixing files sequentially...");
-            classification.files
+            classification
+                .files
                 .iter()
                 .map(|file_report| {
-                    info!("Fixing {} (priority {}, {} errors)",
-                          file_report.file_path, file_report.priority, file_report.errors.len());
+                    info!(
+                        "Fixing {} ({} errors)",
+                        file_report.file_path, file_report.error_count
+                    );
 
-                    let success = match fix_file(&working_dir.root, file_report, &config.llm_config) {
+                    let success = match fix_file(
+                        &working_dir.root,
+                        &file_report.file_path,
+                        &file_report.errors_text,
+                        &config.llm_config,
+                    ) {
                         Ok(_) => {
                             info!("  ✓ Fixed {}", file_report.file_path);
 
                             // Save versioned copy to iteration_all (use iteration+1 since 0 is the initial version)
-                            if let Err(e) = save_file_version(working_dir, &file_report.file_path, iteration + 1) {
+                            if let Err(e) = save_file_version(
+                                working_dir,
+                                &file_report.file_path,
+                                iteration + 1,
+                            ) {
                                 warn!("  Failed to save file version: {}", e);
                             }
 
@@ -297,8 +342,12 @@ pub fn auto_fix_project(
             break;
         }
 
-        info!("After iteration {}: {} errors, {} warnings",
-              iteration + 1, current_result.error_count, current_result.warning_count);
+        info!(
+            "After iteration {}: {} errors, {} warnings",
+            iteration + 1,
+            current_result.error_count,
+            current_result.warning_count
+        );
     }
 
     let end_time = Utc::now();

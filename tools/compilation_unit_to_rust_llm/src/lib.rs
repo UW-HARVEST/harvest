@@ -222,9 +222,9 @@ pub fn translate_single_unit(
     // Step 5: Make the LLM call
     trace!("Translating {}", bundle.main_source.0.display());
     trace!("Making LLM call with {} messages", request.len());
-    info!("Starting LLM translation for {}", entry.file);
+    debug!("LLM call start: {}", entry.file);
     let response = llm.invoke(&request)?;
-    info!("LLM translation completed for {}", entry.file);
+    debug!("LLM call done: {}", entry.file);
     trace!("LLM responded with {} bytes", response.len());
 
     // Step 6: Determine output path
@@ -238,8 +238,8 @@ pub fn translate_single_unit(
     }
     fs::write(&output_path, &response)?;
 
-    info!(
-        "Translated {} to {} ({} bytes)",
+    debug!(
+        "Wrote {} to {} ({} bytes)",
         entry.file,
         output_path.display(),
         response.len()
@@ -275,7 +275,10 @@ pub fn process_compile_commands(
     );
 
     if config.parallel {
-        info!("Processing in parallel (max {} threads)...", config.parallelism);
+        info!(
+            "Processing in parallel (max {} threads)...",
+            config.parallelism
+        );
 
         // Build thread pool with limited parallelism
         let pool = rayon::ThreadPoolBuilder::new()
@@ -284,24 +287,35 @@ pub fn process_compile_commands(
             .expect("Failed to build thread pool");
 
         let errors = Mutex::new(Vec::new());
+        let total = entries.len();
 
         let results: Vec<_> = pool.install(|| {
             entries
                 .par_iter()
                 .enumerate()
                 .filter_map(|(idx, entry)| {
-                    debug!(
-                        "Processing {}/{}: {}",
-                        idx + 1,
-                        entries.len(),
-                        entry.file
-                    );
+                    info!("[{}/{}] Starting: {}", idx + 1, total, entry.file);
 
-                    match translate_single_unit(entry, project_root, output_dir, config) {
-                        Ok(result) => Some(result),
+                    let outcome = translate_single_unit(entry, project_root, output_dir, config);
+
+                    match outcome {
+                        Ok(result) => {
+                            info!(
+                                "[{}/{}] Done: {} -> {} ({} bytes)",
+                                idx + 1,
+                                total,
+                                entry.file,
+                                result.output_file.display(),
+                                result.output_size
+                            );
+                            Some(result)
+                        }
                         Err(e) => {
-                            error!("Failed to translate {}: {}", entry.file, e);
-                            errors.lock().unwrap().push((entry.file.clone(), e.to_string()));
+                            error!("[{}/{}] Skip: {}: {}", idx + 1, total, entry.file, e);
+                            errors
+                                .lock()
+                                .unwrap()
+                                .push((entry.file.clone(), e.to_string()));
                             None
                         }
                     }
@@ -334,17 +348,28 @@ pub fn process_compile_commands(
         let mut errors = Vec::new();
 
         for (idx, entry) in entries.iter().enumerate() {
-            debug!(
-                "Processing {}/{}: {}",
-                idx + 1,
-                entries.len(),
-                entry.file
-            );
+            info!("[{}/{}] Starting: {}", idx + 1, entries.len(), entry.file);
 
             match translate_single_unit(entry, project_root, output_dir, config) {
-                Ok(result) => results.push(result),
+                Ok(result) => {
+                    info!(
+                        "[{}/{}] Done: {} -> {} ({} bytes)",
+                        idx + 1,
+                        entries.len(),
+                        entry.file,
+                        result.output_file.display(),
+                        result.output_size
+                    );
+                    results.push(result);
+                }
                 Err(e) => {
-                    error!("Failed to translate {}: {}", entry.file, e);
+                    error!(
+                        "[{}/{}] Skip: {}: {}",
+                        idx + 1,
+                        entries.len(),
+                        entry.file,
+                        e
+                    );
                     errors.push((entry.file.clone(), e.to_string()));
                 }
             }

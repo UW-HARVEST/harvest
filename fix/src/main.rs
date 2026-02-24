@@ -1,8 +1,6 @@
 mod cli;
 
-use auto_fix::{
-    auto_fix_project, compile_project, initialize_working_directory, FixConfig,
-};
+use auto_fix::{FixConfig, auto_fix_project, compile_project, initialize_working_directory};
 use clap::Parser;
 use cli::Cli;
 use harvest_core::llm::LLMConfig;
@@ -41,7 +39,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !cli.input.join("Cargo.toml").exists() {
-        return Err(format!("Input directory does not contain Cargo.toml: {}", cli.input.display()).into());
+        return Err(format!(
+            "Input directory does not contain Cargo.toml: {}",
+            cli.input.display()
+        )
+        .into());
     }
 
     // Load configuration
@@ -54,7 +56,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         if result.success {
             info!("✅ Project compiles successfully!");
         } else {
-            info!("Found {} errors, {} warnings", result.error_count, result.warning_count);
+            info!(
+                "Found {} errors, {} warnings",
+                result.error_count, result.warning_count
+            );
             info!("\nBuild output:\n{}", result.combined_output);
         }
         return Ok(());
@@ -63,8 +68,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize working directory
     let working_dir = initialize_working_directory(&cli.input, &cli.output)?;
 
-    info!("Working directory initialized at: {}", working_dir.root.display());
-    info!("History will be saved to: {}", working_dir.history_dir.display());
+    info!(
+        "Working directory initialized at: {}",
+        working_dir.root.display()
+    );
+    info!(
+        "History will be saved to: {}",
+        working_dir.history_dir.display()
+    );
 
     // Run auto-fix
     let fix_config = FixConfig {
@@ -84,16 +95,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     info!("Initial errors: {}", summary.initial_error_count);
     info!("Final errors: {}", summary.final_error_count);
     info!("Files modified: {}", summary.files_modified.len());
-    info!("Duration: {}", (summary.end_time - summary.start_time).num_seconds());
+    info!(
+        "Duration: {}",
+        (summary.end_time - summary.start_time).num_seconds()
+    );
 
     if summary.final_success {
         info!("✅ Build succeeded!");
     } else {
-        info!("⚠️  Build still has {} errors after {} iterations",
-              summary.final_error_count, summary.total_iterations);
+        info!(
+            "⚠️  Build still has {} errors after {} iterations",
+            summary.final_error_count, summary.total_iterations
+        );
     }
 
-    info!("\nDetailed summary saved to: {}", working_dir.history_dir.join("summary.json").display());
+    info!(
+        "\nDetailed summary saved to: {}",
+        working_dir.history_dir.join("summary.json").display()
+    );
 
     Ok(())
 }
@@ -134,7 +153,9 @@ fn load_llm_config(config_path: Option<&Path>) -> Result<LLMConfig, Box<dyn std:
         info!("Using raw_source_to_cargo_llm config for auto_fix");
         LLMConfig::deserialize(tool_cfg)?
     } else {
-        return Err("No LLM configuration found in config.toml. Please add [tools.auto_fix] section".into());
+        return Err(
+            "No LLM configuration found in config.toml. Please add [tools.auto_fix] section".into(),
+        );
     };
 
     Ok(llm_config)

@@ -392,7 +392,12 @@ fn apply_regex_filter(
         removed_names.len(),
     );
     if !removed_names.is_empty() {
-        log::info!("{}d: {}", label, removed_names.join(", "));
+        let past_tense = match label {
+            "Filter" => "Filtered",
+            "Exclude" => "Excluded",
+            _ => label,
+        };
+        log::info!("{}: {}", past_tense, removed_names.join(", "));
     }
     Ok(())
 }

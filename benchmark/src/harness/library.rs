@@ -16,10 +16,10 @@
 //! 2. Call exported C-ABI functions
 //! 3. Compare results against expected values from test vectors
 
-use crate::cargo_utils;
 use crate::error::HarvestResult;
 use crate::harness::TestCase;
 use crate::stats::TestResult;
+use harvest_core::cargo_utils;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

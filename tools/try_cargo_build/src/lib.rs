@@ -1,12 +1,11 @@
 //! Checks if a generated Rust project builds by materializing
 //! it to a tempdir and running `cargo build --release`.
 use full_source::CargoPackage;
+use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use toml_edit::{DocumentMut, Value};
 use tracing::info;
 
 pub struct TryCargoBuild;
@@ -55,7 +54,7 @@ fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::e
     info!("Validating that the generated Rust project builds...");
 
     // Prevent accidentally picking up a parent workspace by marking this project as its own root.
-    add_local_workspace_guard(&project_path.join("Cargo.toml"))?;
+    add_workspace_guard(&project_path.join("Cargo.toml"))?;
     // Normalize the package name to match the output directory so shared library names align with runner expectations.
     normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
 
@@ -141,119 +140,4 @@ impl Representation for CargoBuildResult {
     fn materialize(&self, _path: &Path) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-/// Add an empty `[workspace]` section to the manifest if one is not present, so that
-/// Cargo treats the generated project as a workspace root instead of trying to join
-/// any parent workspace (which would fail because this package is not listed).
-fn add_local_workspace_guard(manifest: &Path) -> std::io::Result<()> {
-    if !manifest.exists() {
-        return Ok(());
-    }
-    let contents = fs::read_to_string(manifest)?;
-
-    // Check each line to see if it contains a [workspace] section header
-    // This handles cases with leading whitespace, trailing whitespace, and inline comments
-    let has_workspace = contents.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed
-            .strip_prefix("[workspace]")
-            .is_some_and(|after| after.is_empty() || after.trim_start().starts_with('#'))
-    });
-
-    if has_workspace {
-        return Ok(());
-    }
-
-    let mut updated = contents;
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated.push_str("[workspace]\n");
-    fs::write(manifest, updated)
-}
-
-/// Force the package name to match the output directory name (sanitized). This keeps the produced
-/// `lib<name>.so` aligned with the test runner's expected library stem and avoids Cargo name errors.
-///
-/// Updates both [package].name and [lib].name (if present) to ensure the library artifact
-/// filename matches expectations.
-fn normalize_package_name(manifest: &Path, project_dir: &Path) -> std::io::Result<()> {
-    if !manifest.exists() {
-        return Ok(());
-    }
-    let desired_raw = project_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-    if desired_raw.is_empty() {
-        return Ok(());
-    }
-    let desired = sanitize_package_name(&desired_raw);
-    if desired.is_empty() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(manifest)?;
-    let mut doc = contents.parse::<DocumentMut>().map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Failed to parse Cargo.toml: {}", e),
-        )
-    })?;
-
-    let mut changed = false;
-
-    // Update [package].name if needed
-    #[allow(clippy::collapsible_if)]
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
-            if current_name != desired {
-                package.insert("name", toml_edit::Item::Value(Value::from(&desired)));
-                changed = true;
-            }
-        }
-    }
-
-    // Update [lib].name if [lib] section exists
-    // This ensures the library artifact name matches the sanitized directory name
-    if let Some(lib) = doc.get_mut("lib").and_then(|l| l.as_table_mut()) {
-        let needs_update = if let Some(current_lib_name) = lib.get("name").and_then(|n| n.as_str())
-        {
-            current_lib_name != desired
-        } else {
-            // [lib] exists but has no name field - add it
-            true
-        };
-
-        if needs_update {
-            lib.insert("name", toml_edit::Item::Value(Value::from(&desired)));
-            changed = true;
-        }
-    }
-
-    // Write once if any changes were made
-    if changed {
-        fs::write(manifest, doc.to_string())?;
-    }
-
-    Ok(())
-}
-
-/// Sanitize a package name so Cargo accepts it:
-/// - replace invalid chars with '_'
-/// - if it starts with a digit or '-', prefix with '_'
-fn sanitize_package_name(raw: &str) -> String {
-    let mut s: String = raw
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
-            _ => '_',
-        })
-        .collect();
-    if s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
-        s.insert(0, '_');
-    }
-    s
 }

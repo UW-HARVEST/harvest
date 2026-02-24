@@ -2,7 +2,6 @@
 //!
 //! This crate provides utilities for benchmarking C-to-Rust translation projects.
 
-pub mod cargo_utils;
 pub mod error;
 pub mod harness;
 pub mod runner;

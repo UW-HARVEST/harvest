@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+toml_edit = { workspace = true }
 serde_json.workspace = true
 thiserror = { workspace = true }
 tracing-subscriber = { features = ["env-filter"], version = "0.3.22" }

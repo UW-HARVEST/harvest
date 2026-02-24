@@ -17,237 +17,132 @@
 //! directory) must be left unchanged in the diagnostic directory. This is to avoid the need to
 //! store the contents of files in memory.
 
-use std::collections::{BTreeMap, HashMap, btree_map};
-use std::ffi::{OsStr, OsString};
+mod dir;
+mod file;
+mod freezer;
+
+use crate::utils::{EmptyDirError, empty_writable_dir};
+use std::collections::{BTreeMap, btree_map};
+use std::ffi::OsString;
+use std::fs::Permissions;
 use std::fs::ReadDir;
-use std::io;
-use std::os::unix::fs::symlink;
+use std::fs::canonicalize;
+use std::fs::read_dir;
+use std::fs::read_link;
+use std::fs::remove_file;
+use std::fs::set_permissions;
+use std::io::{self, ErrorKind};
+use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
-use std::str::Utf8Error;
 use std::sync::Arc;
+use tempfile::{TempDir, tempdir};
 use thiserror::Error;
 
-/// View of a frozen directory element.
-#[derive(Clone, Debug)]
-pub enum DirEntry {
-    Dir(Dir),
-    File(File),
-    Symlink(Symlink),
-}
+pub use dir::{Dir, DirEntry, ResolvedEntry};
+pub use file::{File, TextFile};
+pub(crate) use freezer::Freezer;
 
-impl DirEntry {
-    /// Returns the contained [Dir] if this is a directory.
-    pub fn dir(&self) -> Option<Dir> {
-        match self {
-            DirEntry::Dir(dir) => Some(dir.clone()),
-            _ => None,
+/// Utility to recursively delete a TempDir that contains read-only files and directories. Provided
+/// to make it easier to delete the diagnostics directory (note that [DiagnosticsDir] automatically
+/// deletes the diagnostic directory on drop if it is a TempDir).
+pub fn delete_ro_tempdir(tempdir: TempDir) -> io::Result<()> {
+    fn delete_contents(path: &mut PathBuf) -> io::Result<()> {
+        set_permissions(&path, Permissions::from_mode(0o700))?;
+        for entry in read_dir(&path)? {
+            let entry = entry?;
+            path.push(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                delete_contents(path)?;
+            } else {
+                if !file_type.is_symlink() {
+                    set_permissions(&path, Permissions::from_mode(0o200))?;
+                }
+                remove_file(&path)?;
+            }
+            path.pop();
         }
+        Ok(())
+    }
+    let mut path = tempdir.path().into();
+    delete_contents(&mut path)?;
+    tempdir.close()
+}
+
+/// Owns the diagnostics directory (if it is a temporary directory) and stores useful information
+/// about it.
+#[derive(Debug)]
+pub struct DiagnosticsDir {
+    path: PathBuf,
+    // Owns the directory if it is temporary, otherwise is None.
+    tempdir: Option<TempDir>,
+}
+
+impl Drop for DiagnosticsDir {
+    fn drop(&mut self) {
+        if let Some(tempdir) = self.tempdir.take() {
+            let path = tempdir.path().to_owned();
+            if let Err(error) = delete_ro_tempdir(tempdir) {
+                panic!(
+                    "Diagnostic directory cleanup failed. Path: {}. Error: {error}",
+                    path.display()
+                );
+            };
+        };
+    }
+}
+
+impl DiagnosticsDir {
+    /// Creates a new DiagnosticDir in a temporary directory.
+    #[cfg(all(not(miri), test))]
+    pub(crate) fn tempdir() -> Result<DiagnosticsDir, DiagnosticsDirNewError> {
+        DiagnosticsDir::new(None, false)
     }
 
-    /// Returns the contained [File] if this is a file.
-    pub fn file(&self) -> Option<File> {
-        match self {
-            DirEntry::File(file) => Some(file.clone()),
-            _ => None,
+    /// Creates the DiagnosticDir instance. `path` is diagnostic_dir from the configuration, and
+    /// `force` is force from the configuration.
+    pub(crate) fn new(
+        path: Option<&Path>,
+        force: bool,
+    ) -> Result<DiagnosticsDir, DiagnosticsDirNewError> {
+        // We canonicalize the diagnostics path because it will be used to construct paths that are
+        // passed as to external commands (as command-line arguments), and the canonicalized path
+        // is probably the most compatible representation.
+        let (path, tempdir) = match path {
+            None => {
+                let tempdir = tempdir()?;
+                (canonicalize(tempdir.path())?, Some(tempdir))
+            }
+            Some(path) => {
+                empty_writable_dir(path, force)?;
+                (canonicalize(path)?, None)
+            }
+        };
+        Ok(DiagnosticsDir { path, tempdir })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Converts the given path, which must be relative to the diagnostic directory, into an
+    /// absolute path.
+    pub fn to_absolute_path<P: AsRef<Path>>(&self, relative: P) -> io::Result<PathBuf> {
+        let relative = relative.as_ref();
+        if !relative.is_relative() {
+            return Err(ErrorKind::InvalidInput.into());
         }
-    }
-
-    /// Returns the contained [Symlink] if this is a symlink.
-    pub fn symlink(&self) -> Option<Symlink> {
-        match self {
-            DirEntry::Symlink(symlink) => Some(symlink.clone()),
-            _ => None,
-        }
+        Ok(PathBuf::from_iter([&self.path, relative]))
     }
 }
 
-impl From<Dir> for DirEntry {
-    fn from(dir: Dir) -> DirEntry {
-        DirEntry::Dir(dir)
-    }
-}
-
-impl From<File> for DirEntry {
-    fn from(file: File) -> DirEntry {
-        DirEntry::File(file)
-    }
-}
-
-impl From<ResolvedEntry> for DirEntry {
-    fn from(resolved: ResolvedEntry) -> DirEntry {
-        match resolved {
-            ResolvedEntry::Dir(dir) => DirEntry::Dir(dir),
-            ResolvedEntry::File(file) => DirEntry::File(file),
-        }
-    }
-}
-
-impl From<Symlink> for DirEntry {
-    fn from(symlink: Symlink) -> DirEntry {
-        DirEntry::Symlink(symlink)
-    }
-}
-
-/// A DirEntry after symlinks have been fully resolved.
-#[derive(Clone, Debug)]
-pub enum ResolvedEntry {
-    Dir(Dir),
-    File(File),
-}
-
-impl ResolvedEntry {
-    /// Returns the contained [Dir] if this is a directory.
-    pub fn dir(&self) -> Option<Dir> {
-        match self {
-            ResolvedEntry::Dir(dir) => Some(dir.clone()),
-            _ => None,
-        }
-    }
-
-    /// Returns the contained [File] if this is a file.
-    pub fn file(&self) -> Option<File> {
-        match self {
-            ResolvedEntry::File(file) => Some(file.clone()),
-            _ => None,
-        }
-    }
-}
-
-impl From<Dir> for ResolvedEntry {
-    fn from(dir: Dir) -> ResolvedEntry {
-        ResolvedEntry::Dir(dir)
-    }
-}
-
-impl From<File> for ResolvedEntry {
-    fn from(file: File) -> ResolvedEntry {
-        ResolvedEntry::File(file)
-    }
-}
-
-/// A frozen directory.
-#[derive(Clone, Debug)]
-pub struct Dir {
-    contents: Arc<HashMap<OsString, DirEntry>>,
-}
-
-impl Dir {
-    /// Iterates through the contents of this directory.
-    pub fn entries(&self) -> impl Iterator<Item = (OsString, DirEntry)> {
-        self.contents.iter().map(|(p, e)| (p.clone(), e.clone()))
-    }
-
-    /// Retrieves the entry at the specified location under this directory. This will resolve
-    /// symlinks, but only if they are relative and do not traverse outside this `Dir`.
-    pub fn get<P: AsRef<Path>>(&self, path: P) -> Result<ResolvedEntry, GetError> {
-        let _ = path;
-        todo!()
-    }
-
-    /// Retrieves the entry at the specified location. If you want a recursive lookup (traversing
-    /// into subdirectories), use [Dir::get] instead.
-    /// Returns `None` if there is no entry at `name`.
-    pub fn get_entry<N: AsRef<OsStr>>(&self, name: N) -> Option<DirEntry> {
-        self.contents.get(name.as_ref()).cloned()
-    }
-
-    /// Retrieves the entry at the specified location under this directory without following
-    /// symlinks or `.`/`..` entries. If an intermediate directory is a symlink (e.g. the path is
-    /// `a/b/c` where `a/b` is a symlink), this will return NotADirectory.
-    pub fn get_nofollow<P: AsRef<Path>>(&self, path: P) -> Result<DirEntry, GetNofollowError> {
-        let _ = path;
-        todo!()
-    }
-}
-
-/// An error returned from [Dir::get].
-#[derive(Debug, Error, Hash, Eq, PartialEq)]
-pub enum GetError {
-    #[error("symlink loop")]
-    FilesystemLoop,
-    #[error("path leaves the Dir")]
-    LeavesDir,
-    #[error("intermediate path component is a file")]
-    NotADirectory,
-    #[error("file or directory not found")]
-    NotFound,
-}
-
-/// An error returned from [Dir::get_nofollow].
-#[derive(Debug, Error, Hash, Eq, PartialEq)]
-pub enum GetNofollowError {
-    #[error("path leaves the Dir")]
-    LeavesDir,
-    #[error("intermediate path component is a file")]
-    NotADirectory,
-    #[error("file or directory not found")]
-    NotFound,
-}
-
-// Note: File and TextFile are internally Arc<> to a single shared type. That way, the UTF-8-ness
-// of the file can be shared between the copies, because it is computed lazily.
-/// A frozen file. A file can be a valid UTF-8, in which case it is considered a text file, or not
-/// UTF-8, in which case it is not. A [File] can be converted into a [TextFile] using [TryFrom] if
-/// the file is valid UTF-8.
-#[derive(Clone, Debug)]
-pub struct File {
-    // TODO: Implement
-}
-
-impl File {
-    /// Returns this file's contents as a byte array.
-    pub fn bytes(&self) -> Arc<[u8]> {
-        todo!()
-    }
-
-    /// Returns true if this file is UTF-8 (in which case it can be converted into a TextFile),
-    /// false otherwise.
-    pub fn is_utf8(&self) -> bool {
-        todo!()
-    }
-
-    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        todo!()
-    }
-}
-
-impl From<TextFile> for File {
-    fn from(file: TextFile) -> File {
-        let _ = file;
-        todo!()
-    }
-}
-
-/// A frozen UTF-8 file.
-#[derive(Clone, Debug)]
-pub struct TextFile {
-    // TODO: Implement
-}
-
-impl TextFile {
-    /// Returns this file's contents as a byte array.
-    pub fn bytes(&self) -> Arc<[u8]> {
-        self.str().into()
-    }
-
-    /// Returns the path to this file (or one instance thereof) in the diagnostic directory.
-    pub fn path(&self) -> PathBuf {
-        todo!()
-    }
-
-    /// Returns this file's contents as a str.
-    pub fn str(&self) -> Arc<str> {
-        todo!()
-    }
-}
-
-impl TryFrom<File> for TextFile {
-    type Error = Utf8Error;
-    fn try_from(file: File) -> Result<TextFile, Utf8Error> {
-        let _ = file;
-        todo!()
-    }
+/// Error type returned by DiagnosticsDir::new.
+#[derive(Debug, Error)]
+pub enum DiagnosticsDirNewError {
+    #[error("empty directory error")]
+    EmptyDir(#[from] EmptyDirError),
+    #[error("I/O error")]
+    IoError(#[from] io::Error),
 }
 
 /// A symlink that has been frozen. Note that the thing it points to is not frozen; in fact it may
@@ -259,6 +154,16 @@ pub struct Symlink {
 }
 
 impl Symlink {
+    /// Creates a new Symlink representing the file at the given path. This is for internal use by
+    /// the diagnostics system; tool code should use [Reporter::freeze] or Scratch::freeze to
+    /// create a symlink.
+    fn new<P: AsRef<Path>>(path: P) -> io::Result<Symlink> {
+        // Symlink permissions cannot be changed, so just create the Symlink object.
+        Ok(Symlink {
+            contents: read_link(path)?.into(),
+        })
+    }
+
     /// Returns this symlink's target path.
     pub fn contents(&self) -> &Path {
         &self.contents
@@ -267,6 +172,11 @@ impl Symlink {
     /// Writes this symlink into the filesystem at the given path.
     pub fn write_rw<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
         symlink(&self.contents, path)
+    }
+
+    /// Used by Freezer::copy_ro. Writes a read-only copy of this Symlink into the given path.
+    fn copy_ro(&self, absolute: &Path) -> io::Result<()> {
+        symlink(&self.contents, absolute)
     }
 }
 
@@ -570,9 +480,65 @@ pub enum GetFileError {
     DoesNotExist,
 }
 
-#[cfg(test)]
+#[cfg(all(not(miri), test))]
+mod test_util {
+    use super::Dir;
+    use std::collections::HashSet;
+
+    /// Checks whether a Dir has entries with the given names
+    pub fn dir_has_entries(dir: &Dir, names: &[&str]) -> bool {
+        let entries: Result<HashSet<_>, _> = dir.entries().map(|(n, _)| n.into_string()).collect();
+        let Ok(entries) = entries else { return false };
+        let expected: HashSet<_> = names.iter().map(|&n| ToOwned::to_owned(n)).collect();
+        entries == expected
+    }
+}
+
+#[cfg(all(not(miri), test))]
 mod tests {
     use super::*;
+    use std::fs::{create_dir, read, write};
+
+    /// Warning: If this test fails, check your /tmp. There's probably a bunch of leftover
+    /// temporary directories there that you will need to manually delete. Sorry.
+    #[test]
+    fn delete_ro_tempdir_test() {
+        let dir = tempdir().unwrap();
+        // To verify that delete_ro_tempdir does not follow symlinks out of the directory it is
+        // deleting, we create a *second* temporary directory and create symlinks into it.
+        let other_dir = tempdir().unwrap();
+        let other_file = PathBuf::from_iter([other_dir.path(), "other_file".as_ref()]);
+        let other_subdir = PathBuf::from_iter([other_dir.path(), "other_subdir".as_ref()]);
+        let other_symlink = PathBuf::from_iter([other_dir.path(), "other_symlink".as_ref()]);
+        write(&other_file, "other_file_contents").unwrap();
+        create_dir(&other_subdir).unwrap();
+        symlink("other_file", &other_symlink).unwrap();
+        // Populate dir/
+        let subdir = PathBuf::from_iter([dir.path(), "subdir".as_ref()]);
+        let subdir_file = PathBuf::from_iter([dir.path(), "subdir_file".as_ref()]);
+        let subdir_symlink = PathBuf::from_iter([dir.path(), "subdir_symlink".as_ref()]);
+        let file_symlink = PathBuf::from_iter([dir.path(), "file_symlink".as_ref()]);
+        let dir_symlink = PathBuf::from_iter([dir.path(), "dir_symlink".as_ref()]);
+        create_dir(&subdir).unwrap();
+        write(&subdir_file, "subdir_file_contents").unwrap();
+        symlink(other_symlink.canonicalize().unwrap(), &subdir_symlink).unwrap();
+        symlink(other_file.canonicalize().unwrap(), &file_symlink).unwrap();
+        symlink(other_subdir.canonicalize().unwrap(), &dir_symlink).unwrap();
+        // Wipe out the permissions of everything under dir/ (except the symlinks, as changing the
+        // permissions of a symlink changes its target's permissions).
+        set_permissions(subdir_file, Permissions::from_mode(0o000)).unwrap();
+        set_permissions(subdir, Permissions::from_mode(0o000)).unwrap();
+        set_permissions(&dir, Permissions::from_mode(0o000)).unwrap();
+        // Perform the deletion.
+        delete_ro_tempdir(dir).unwrap();
+        // Verify other_dir was unchanged.
+        assert_eq!(read(other_file).unwrap(), b"other_file_contents");
+        assert_eq!(read_dir(other_subdir).unwrap().count(), 0);
+        assert_eq!(
+            read_link(other_symlink).unwrap(),
+            AsRef::<Path>::as_ref("other_file")
+        );
+    }
 
     #[test]
     fn files_recursive() {
@@ -647,5 +613,27 @@ mod tests {
             ].into_iter().collect()))),
             ("file1.txt".into(), RawEntry::File(b"A".into())),
         ].into_iter().collect()));
+    }
+
+    #[test]
+    fn to_absolute_path() {
+        // Test with a hard-coded diagnostic directory path so that this test isn't just
+        // duplicating to_absolute_path's logic.
+        let diagnostics_dir = DiagnosticsDir {
+            path: "/diagnostics/directory/path".into(),
+            tempdir: None,
+        };
+        assert_eq!(
+            diagnostics_dir.to_absolute_path("a/b/c").unwrap().as_path(),
+            "/diagnostics/directory/path/a/b/c"
+        );
+        let diagnostics_dir = DiagnosticsDir::tempdir().unwrap();
+        let result = diagnostics_dir.to_absolute_path("/already/absolute");
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+        let result = diagnostics_dir.to_absolute_path("relative/path");
+        assert_eq!(
+            result.unwrap(),
+            PathBuf::from_iter([diagnostics_dir.path(), "relative/path".as_ref()])
+        );
     }
 }

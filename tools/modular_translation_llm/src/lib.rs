@@ -1,9 +1,10 @@
 //! Modular translation for C->Rust. Decomposes a C project AST into its top-level modules
 //! and translates them one-by-one using an LLM.
 //!
-//! Uses a two-pass translation approach:
-//! - Pass 1: Translates type declarations (TypedefDecl, RecordDecl, EnumDecl) to establish data layout
-//! - Pass 2: Translates functions and globals (FunctionDecl, VarDecl) with type context from Pass 1
+//! Translation flow:
+//! - Type declarations (TypedefDecl, RecordDecl, EnumDecl) establish data layout
+//! - Interface (FunctionDecl and VarDecl signatures) use type context
+//! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
 use c_ast::ClangAst;
 use full_source::RawSource;
@@ -24,8 +25,8 @@ mod translation_llm;
 mod utils;
 pub use clang::{ClangDeclarations, extract_top_level_decls};
 pub use translation::{
-    RustDeclaration, TranslationResult, TypeTranslationResult, translate_decls,
-    translate_functions, translate_types,
+    InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
+    translate_decls, translate_functions, translate_interface, translate_types,
 };
 pub use translation_llm::ModularTranslationLLM;
 
@@ -113,15 +114,16 @@ impl Tool for ModularTranslationLlm {
             declarations.app_functions.len()
         );
 
-        // Perform two-pass translation:
-        // Pass 1: Types (TypedefDecl, RecordDecl, EnumDecl) - establishes data layout
-        // Pass 2: Functions and Globals (FunctionDecl, VarDecl) - with type context
+        // Translation flow:
+        // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
+        // Interface (FunctionDecl and VarDecl signatures) - with type context
+        // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result =
             translation::translate_decls(&declarations, raw_source, project_kind, &config)
                 .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
-            "Two-pass translation complete: {} total declarations translated",
+            "Translation complete: {} total declarations translated",
             translation_result.translations.len()
         );
 

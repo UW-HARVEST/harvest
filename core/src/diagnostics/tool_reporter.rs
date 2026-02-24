@@ -51,7 +51,7 @@ impl ToolReporter {
             _private: (),
         };
         let tool_run_dir = PathBuf::from_iter([
-            guard.diagnostics_dir.as_path(),
+            guard.diagnostics_dir.path(),
             "steps".as_ref(),
             tool_run.to_string().as_ref(),
         ]);

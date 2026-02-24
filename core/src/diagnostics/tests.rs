@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_util::MockTool;
+use crate::test_util::{MockTool, tempdir};
 use std::{fs::read_to_string, sync::mpsc::channel, thread::spawn};
 
 /// Verifies that tracing messages are written into the correct files.

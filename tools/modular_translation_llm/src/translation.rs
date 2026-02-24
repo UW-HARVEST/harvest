@@ -1,7 +1,7 @@
-//! Two-stage translation approach:
-//! Stage A: TypedefDecl, RecordDecl, EnumDecl - decides data layout
-//! Stage B: FunctionDecl, VarDecl - translates code operating over types
-//! (Vardecls included here because they make call initializers)
+//! Translation approach:
+//! - TypedefDecl, RecordDecl, EnumDecl: translate data layout
+//! - FunctionDecl and VarDecl signatures: translate interface (callable functions and global variables)
+//! - FunctionDecl, VarDecl: translate code semantics
 //!
 //! Design decisions to come back to:
 //! - Type results included as context for function/global translation
@@ -12,7 +12,7 @@ use full_source::RawSource;
 use identify_project_kind::ProjectKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::Config;
 use crate::clang::ClangDeclarations;
@@ -31,6 +31,12 @@ pub struct RustDeclaration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeTranslationResult {
     pub translations: Vec<RustDeclaration>,
+}
+
+/// Result of the interface translation containing function and global variable signature lines
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceTranslationResult {
+    pub signatures: Vec<String>,
 }
 
 /// Result of the translation containing both declarations and Cargo.toml
@@ -68,12 +74,11 @@ pub fn translate_types(
     let translation_result = modular_llm.translate_types(type_decls, raw_source, project_kind)?;
 
     if translation_result.translations.len() != type_decls.len() {
-        return Err(format!(
+        error!(
             "Type translation: LLM returned {} translations but expected {}",
             translation_result.translations.len(),
             type_decls.len()
-        )
-        .into());
+        );
     }
 
     info!(
@@ -87,7 +92,7 @@ pub fn translate_types(
 /// Translates function and global variable declarations to Rust using an LLM.
 ///
 /// This function translates FunctionDecl and VarDecl, with the type translations
-/// provided as context. Each declaration is translated in its own request.
+/// and interface translations provided as context. Each declaration is translated in its own request.
 ///
 /// Returns the translated declarations.
 pub fn translate_functions(
@@ -95,6 +100,7 @@ pub fn translate_functions(
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
+    interface_translations: &InterfaceTranslationResult,
     modular_llm: &ModularTranslationLLM,
 ) -> Result<Vec<RustDeclaration>, Box<dyn std::error::Error>> {
     debug!(
@@ -115,6 +121,7 @@ pub fn translate_functions(
             raw_source,
             project_kind,
             type_translations,
+            interface_translations,
         )?;
 
         translations.push(translation);
@@ -128,6 +135,48 @@ pub fn translate_functions(
     Ok(translations)
 }
 
+/// Translates function and global variable declarations to Rust signature lines using an LLM.
+///
+/// This function translates FunctionDecl and VarDecl, with the type translations
+/// provided as context. All declarations are translated in a single batch.
+///
+/// Returns the translated signature lines.
+pub fn translate_interface(
+    function_decls: &[&clang_ast::Node<c_ast::Clang>],
+    global_decls: &[&clang_ast::Node<c_ast::Clang>],
+    raw_source: &RawSource,
+    project_kind: &ProjectKind,
+    type_translations: &TypeTranslationResult,
+    modular_llm: &ModularTranslationLLM,
+) -> Result<InterfaceTranslationResult, Box<dyn std::error::Error>> {
+    debug!(
+        "Starting interface translation for {} function and {} global declarations",
+        function_decls.len(),
+        global_decls.len()
+    );
+
+    if function_decls.is_empty() && global_decls.is_empty() {
+        return Ok(InterfaceTranslationResult {
+            signatures: Vec::new(),
+        });
+    }
+
+    let signatures = modular_llm.translate_interface(
+        function_decls,
+        global_decls,
+        raw_source,
+        project_kind,
+        type_translations,
+    )?;
+
+    info!(
+        "Interface translation complete: successfully translated {} declarations",
+        signatures.len()
+    );
+
+    Ok(InterfaceTranslationResult { signatures })
+}
+
 fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
     let deps = translations.iter().flat_map(|t| t.dependencies.iter());
     deps.collect::<BTreeSet<_>>().into_iter().cloned().collect()
@@ -136,7 +185,8 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 /// Orchestrates the translation of Clang declarations to Rust using an LLM.
 ///
 /// First, translates type declarations (TypedefDecl, RecordDecl, EnumDecl)
-/// Then, translates functions and globals (FunctionDecl, VarDecl) with type context
+/// Then, translates interface (FunctionDecl and VarDecl signatures) with type context
+/// Then, translates functions and globals (FunctionDecl, VarDecl) with type and interface context
 /// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
@@ -172,6 +222,16 @@ pub fn translate_decls(
         &modular_llm,
     )?;
 
+    // Translate interface (function and global signatures) with type context
+    let interface_result = translate_interface(
+        &declarations.app_functions,
+        &declarations.app_globals,
+        raw_source,
+        project_kind,
+        &type_result,
+        &modular_llm,
+    )?;
+
     // Combine globals and functions for function/global translation
     let function_and_global_decls: Vec<_> = declarations.app_functions_and_globals().collect();
 
@@ -185,6 +245,7 @@ pub fn translate_decls(
             raw_source,
             project_kind,
             &type_result,
+            &interface_result,
             &modular_llm,
         )?
     };

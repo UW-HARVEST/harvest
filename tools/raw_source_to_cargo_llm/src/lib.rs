@@ -59,7 +59,7 @@ impl Tool for RawSourceToCargoLlm {
             .unwrap_or_else(|| builtin_prompt.to_owned());
 
         // Build LLM client using core/llm
-        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, &system_prompt)?;
+        let llm = HarvestLLM::build(&config.llm, Some(STRUCTURED_OUTPUT_SCHEMA), &system_prompt)?;
 
         // Assemble the LLM request.
         let files: Vec<OutputFile> = in_dir
@@ -134,6 +134,8 @@ impl Config {
                 backend: "mock_llm".into(),
                 model: "mock_model".into(),
                 max_tokens: 1000,
+                retry_count: None,
+                retry_delay_secs: None,
             },
             prompt_executable: None,
             prompt_library: None,

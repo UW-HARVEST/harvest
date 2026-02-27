@@ -54,6 +54,8 @@ impl Config {
                 backend: "mock_llm".into(),
                 model: "mock_model".into(),
                 max_tokens: 4000,
+                retry_count: None,
+                retry_delay_secs: None,
             },
             unknown: HashMap::new(),
         }

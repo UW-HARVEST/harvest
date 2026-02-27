@@ -79,22 +79,22 @@ impl ModularTranslationLLM {
     pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
         let types_llm = HarvestLLM::build(
             &config.llm,
-            STRUCTURED_OUTPUT_SCHEMA_TYPES,
+            Some(STRUCTURED_OUTPUT_SCHEMA_TYPES),
             SYSTEM_PROMPT_TYPES,
         )?;
         let functions_llm = HarvestLLM::build(
             &config.llm,
-            STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS,
+            Some(STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS),
             SYSTEM_PROMPT_FUNCTIONS,
         )?;
         let interface_llm = HarvestLLM::build(
             &config.llm,
-            STRUCTURED_OUTPUT_SCHEMA_INTERFACE,
+            Some(STRUCTURED_OUTPUT_SCHEMA_INTERFACE),
             SYSTEM_PROMPT_INTERFACE,
         )?;
         let cargo_toml_llm = HarvestLLM::build(
             &config.llm,
-            STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML,
+            Some(STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML),
             SYSTEM_PROMPT_CARGO_TOML,
         )?;
 

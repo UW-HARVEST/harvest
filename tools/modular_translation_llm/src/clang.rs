@@ -17,11 +17,15 @@ use crate::utils::get_file_from_location;
 #[derive(Debug, Clone)]
 pub struct ClangNode<'a> {
     node: &'a Node<Clang>,
+    pub visibility: Option<bool>,
 }
 
 impl<'a> ClangNode<'a> {
     pub fn new(node: &'a Node<Clang>) -> Self {
-        Self { node }
+        Self {
+            node,
+            visibility: None,
+        }
     }
 
     pub fn as_node(&self) -> &Node<Clang> {
@@ -57,7 +61,7 @@ impl<'a> ClangDeclarations<'a> {
     pub fn deduplicate(&mut self) {
         deduplicate_decls(&mut self.app_types);
         deduplicate_decls(&mut self.app_globals);
-        deduplicate_decls(&mut self.app_functions);
+        deduplicate_function_decls(&mut self.app_functions);
     }
 }
 
@@ -111,6 +115,74 @@ fn deduplicate_decls(declarations: &mut Vec<ClangNode<'_>>) {
     for idx in indices_to_remove {
         declarations.remove(idx);
     }
+}
+
+/// Deduplicates function declarations with the same behavior as `deduplicate_decls`,
+/// and additionally marks retained declarations as public when any declaration with
+/// the same symbol name is found in a `.h` file.
+fn deduplicate_function_decls(declarations: &mut Vec<ClangNode<'_>>) {
+    use std::collections::HashMap;
+
+    let mut seen_names: HashMap<String, (usize, bool)> = HashMap::new(); // (index, has_no_included_from)
+    let mut to_remove = HashSet::new();
+    let mut names_seen_in_header = HashSet::new();
+
+    for (idx, declaration) in declarations.iter().enumerate() {
+        let node = declaration.as_node();
+        if let Some(name) = node.kind.name() {
+            let has_no_included_from = has_no_included_from_field(&node.kind);
+
+            if is_header_decl(node) {
+                names_seen_in_header.insert(name.clone());
+            }
+
+            match seen_names.get(&name) {
+                Some((existing_idx, existing_has_no_included_from)) => {
+                    // We've seen this name before
+                    if has_no_included_from && !existing_has_no_included_from {
+                        // Current is better (has no included_from, existing does)
+                        to_remove.insert(*existing_idx);
+                        seen_names.insert(name, (idx, has_no_included_from));
+                    } else if has_no_included_from && *existing_has_no_included_from {
+                        // Both have no included_from - issue a warning
+                        warn!(
+                            "Multiple declarations with name '{}' have no included_from. \
+                            Keeping the first one.",
+                            name
+                        );
+                        to_remove.insert(idx);
+                    } else {
+                        // Current has included_from or existing is better
+                        to_remove.insert(idx);
+                    }
+                }
+                None => {
+                    // First time seeing this name
+                    seen_names.insert(name, (idx, has_no_included_from));
+                }
+            }
+        }
+    }
+
+    // Remove duplicates in reverse order to maintain indices
+    let mut indices_to_remove: Vec<usize> = to_remove.into_iter().collect();
+    indices_to_remove.sort_by(|a, b| b.cmp(a)); // Reverse order
+    for idx in indices_to_remove {
+        declarations.remove(idx);
+    }
+
+    // Set visibility for deduplicated declarations: Some(true) when symbol appears in any header.
+    for declaration in declarations.iter_mut() {
+        if let Some(name) = declaration.as_node().kind.name()
+            && names_seen_in_header.contains(&name)
+        {
+            declaration.visibility = Some(true);
+        }
+    }
+}
+
+fn is_header_decl(node: &Node<Clang>) -> bool {
+    get_file_from_location(&node.kind.loc().cloned()).is_some_and(|file| file.ends_with(".h"))
 }
 
 /// Checks if a declaration's spelling location has no included_from field.

@@ -162,12 +162,9 @@ pub fn translate_interface(
         });
     }
 
-    let function_nodes: Vec<_> = function_decls.iter().map(|decl| decl.as_node()).collect();
-    let global_nodes: Vec<_> = global_decls.iter().map(|decl| decl.as_node()).collect();
-
     let signatures = modular_llm.translate_interface(
-        &function_nodes,
-        &global_nodes,
+        function_decls,
+        global_decls,
         raw_source,
         project_kind,
         type_translations,

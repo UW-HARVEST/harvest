@@ -9,6 +9,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::Config;
+use crate::clang::ClangNode;
 use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
 use crate::utils::read_source_at_range;
 
@@ -243,8 +244,8 @@ impl ModularTranslationLLM {
     ///              Used as context for translating signatures.
     pub fn translate_interface(
         &self,
-        function_decls: &[&clang_ast::Node<c_ast::Clang>],
-        global_decls: &[&clang_ast::Node<c_ast::Clang>],
+        function_decls: &[ClangNode<'_>],
+        global_decls: &[ClangNode<'_>],
         raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
@@ -253,25 +254,30 @@ impl ModularTranslationLLM {
 
         // Add function declarations first
         for decl in function_decls {
-            let source_text = if let Some(range) = decl.kind.range() {
+            let node = decl.as_node();
+            let source_text = if let Some(range) = node.kind.range() {
                 read_source_at_range(range, raw_source)?
             } else {
-                return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
+                return Err(format!("Declaration has no source range: {:?}", node.kind).into());
             };
-            decl_sources.push(DeclarationInput {
+            decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
+                enforce_ffi_interface: matches!(project_kind, ProjectKind::Library)
+                    && decl.visibility == Some(true),
             });
         }
 
         // Add global declarations
         for decl in global_decls {
-            let source_text = if let Some(range) = decl.kind.range() {
+            let node = decl.as_node();
+            let source_text = if let Some(range) = node.kind.range() {
                 read_source_at_range(range, raw_source)?
             } else {
-                return Err(format!("Declaration has no source range: {:?}", decl.kind).into());
+                return Err(format!("Declaration has no source range: {:?}", node.kind).into());
             };
-            decl_sources.push(DeclarationInput {
+            decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
+                enforce_ffi_interface: false,
             });
         }
 
@@ -279,7 +285,7 @@ impl ModularTranslationLLM {
         struct RequestWithContext {
             project_kind: String,
             type_translations: Vec<String>,
-            declarations: Vec<DeclarationInput>,
+            declarations: Vec<InterfaceDeclarationInput>,
         }
 
         let project_kind_str = match project_kind {
@@ -369,4 +375,10 @@ impl ModularTranslationLLM {
 #[derive(Debug, Serialize, Clone)]
 struct DeclarationInput {
     source: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct InterfaceDeclarationInput {
+    source: String,
+    enforce_ffi_interface: bool,
 }

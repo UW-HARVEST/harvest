@@ -14,25 +14,40 @@ use crate::utils::get_file_from_location;
 /// - app_types: TypedefDecl, RecordDecl, EnumDecl (Pass 1 - data layout)
 /// - app_functions + app_globals: FunctionDecl and VarDecl (Pass 2 - interface signatures)
 /// - app_functions + app_globals: FunctionDecl and VarDecl (Pass 3 - implementations)
+#[derive(Debug, Clone)]
+pub struct ClangNode<'a> {
+    node: &'a Node<Clang>,
+}
+
+impl<'a> ClangNode<'a> {
+    pub fn new(node: &'a Node<Clang>) -> Self {
+        Self { node }
+    }
+
+    pub fn as_node(&self) -> &Node<Clang> {
+        self.node
+    }
+}
+
 #[derive(Debug)]
 pub struct ClangDeclarations<'a> {
     /// Declarations imported from external sources (not in the project source files)
-    pub imported: Vec<&'a Node<Clang>>,
+    pub imported: Vec<ClangNode<'a>>,
     /// Type declarations from the project source files (TypedefDecl) no RecordDecl, EnumDecl, as they are redundant with typedef
-    pub app_types: Vec<&'a Node<Clang>>,
+    pub app_types: Vec<ClangNode<'a>>,
     /// Global variable declarations from the project source files (VarDecl)
-    pub app_globals: Vec<&'a Node<Clang>>,
+    pub app_globals: Vec<ClangNode<'a>>,
     /// Function declarations from the project source files (FunctionDecl)
-    pub app_functions: Vec<&'a Node<Clang>>,
+    pub app_functions: Vec<ClangNode<'a>>,
 }
 
 impl<'a> ClangDeclarations<'a> {
     /// Returns an iterator over function and global definitions (i.e., all the top-level definitions that we translate one-by-one).
-    pub fn app_functions_and_globals(&'a self) -> impl Iterator<Item = &'a Node<Clang>> {
+    pub fn app_functions_and_globals(&self) -> impl Iterator<Item = ClangNode<'a>> + '_ {
         self.app_globals
             .iter()
-            .chain(self.app_functions.iter())
-            .copied()
+            .cloned()
+            .chain(self.app_functions.iter().cloned())
     }
 
     /// Deduplicates declarations within each category (app_types, app_globals, app_functions).
@@ -40,9 +55,9 @@ impl<'a> ClangDeclarations<'a> {
     /// When duplicates are found, the one with spelling_loc.included_from == None is preferred.
     /// If multiple declarations meet this criteria, a warning is issued.
     pub fn deduplicate(&mut self) {
-        deduplicate_category(&mut self.app_types);
-        deduplicate_category(&mut self.app_globals);
-        deduplicate_category(&mut self.app_functions);
+        deduplicate_decls(&mut self.app_types);
+        deduplicate_decls(&mut self.app_globals);
+        deduplicate_decls(&mut self.app_functions);
     }
 }
 
@@ -51,13 +66,14 @@ impl<'a> ClangDeclarations<'a> {
 /// (If there is a seperate declaration in the header, this will prefer the implementation rather than the header).
 /// TODO: technically, this function collapses the namespaces of structs and typedefs.
 /// This should be ok, but worth checking.
-fn deduplicate_category(declarations: &mut Vec<&Node<Clang>>) {
+fn deduplicate_decls(declarations: &mut Vec<ClangNode<'_>>) {
     use std::collections::HashMap;
 
     let mut seen_names: HashMap<String, (usize, bool)> = HashMap::new(); // (index, has_no_included_from)
     let mut to_remove = HashSet::new();
 
-    for (idx, node) in declarations.iter().enumerate() {
+    for (idx, declaration) in declarations.iter().enumerate() {
+        let node = declaration.as_node();
         if let Some(name) = node.kind.name() {
             let has_no_included_from = has_no_included_from_field(&node.kind);
 
@@ -184,13 +200,13 @@ pub fn extract_top_level_decls<'a>(
                     Clang::TypedefDecl { .. }
                     | Clang::RecordDecl { .. }
                     | Clang::EnumDecl { .. } => {
-                        declarations.app_types.push(child);
+                        declarations.app_types.push(ClangNode::new(child));
                     }
                     Clang::VarDecl { .. } => {
-                        declarations.app_globals.push(child);
+                        declarations.app_globals.push(ClangNode::new(child));
                     }
                     Clang::FunctionDecl { .. } => {
-                        declarations.app_functions.push(child);
+                        declarations.app_functions.push(ClangNode::new(child));
                     }
                     _ => {
                         // Other declaration types (like ParmVarDecl) are not expected at top level
@@ -198,7 +214,7 @@ pub fn extract_top_level_decls<'a>(
                     }
                 }
             } else {
-                declarations.imported.push(child);
+                declarations.imported.push(ClangNode::new(child));
             }
         }
     }

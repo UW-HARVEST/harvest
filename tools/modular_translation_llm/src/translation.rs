@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use tracing::{debug, error, info};
 
 use crate::Config;
-use crate::clang::ClangDeclarations;
+use crate::clang::{ClangDeclarations, ClangNode};
 use crate::translation_llm::ModularTranslationLLM;
 
 /// Represents a translated Rust declaration.
@@ -54,7 +54,7 @@ pub struct TranslationResult {
 ///
 /// Returns only the translated type declarations (no Cargo.toml).
 pub fn translate_types(
-    type_decls: &[&clang_ast::Node<c_ast::Clang>],
+    type_decls: &[ClangNode<'_>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     modular_llm: &ModularTranslationLLM,
@@ -71,7 +71,8 @@ pub fn translate_types(
         });
     }
 
-    let translation_result = modular_llm.translate_types(type_decls, raw_source, project_kind)?;
+    let type_nodes: Vec<_> = type_decls.iter().map(|decl| decl.as_node()).collect();
+    let translation_result = modular_llm.translate_types(&type_nodes, raw_source, project_kind)?;
 
     if translation_result.translations.len() != type_decls.len() {
         error!(
@@ -96,7 +97,7 @@ pub fn translate_types(
 ///
 /// Returns the translated declarations.
 pub fn translate_functions(
-    function_and_global_decls: &[&clang_ast::Node<c_ast::Clang>],
+    function_and_global_decls: &[ClangNode<'_>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
@@ -117,7 +118,7 @@ pub fn translate_functions(
 
     for decl in function_and_global_decls {
         let translation = modular_llm.translate_function_global(
-            decl,
+            decl.as_node(),
             raw_source,
             project_kind,
             type_translations,
@@ -142,8 +143,8 @@ pub fn translate_functions(
 ///
 /// Returns the translated signature lines.
 pub fn translate_interface(
-    function_decls: &[&clang_ast::Node<c_ast::Clang>],
-    global_decls: &[&clang_ast::Node<c_ast::Clang>],
+    function_decls: &[ClangNode<'_>],
+    global_decls: &[ClangNode<'_>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     type_translations: &TypeTranslationResult,
@@ -161,9 +162,12 @@ pub fn translate_interface(
         });
     }
 
+    let function_nodes: Vec<_> = function_decls.iter().map(|decl| decl.as_node()).collect();
+    let global_nodes: Vec<_> = global_decls.iter().map(|decl| decl.as_node()).collect();
+
     let signatures = modular_llm.translate_interface(
-        function_decls,
-        global_decls,
+        &function_nodes,
+        &global_nodes,
         raw_source,
         project_kind,
         type_translations,
@@ -191,7 +195,7 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
 pub fn translate_decls(
-    declarations: &ClangDeclarations,
+    declarations: &ClangDeclarations<'_>,
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     config: &Config,

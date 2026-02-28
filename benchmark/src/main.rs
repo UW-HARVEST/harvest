@@ -96,10 +96,13 @@ pub fn translate_c_directory_to_rust_project(
         tool_config.max_tokens
     );*/
     let ir_result = transpile(config.into());
-    let raw_c_source = raw_source(ir_result.as_ref().unwrap()).unwrap();
-    raw_c_source
-        .materialize(output_dir.join("c_src"))
-        .expect("Failed to materialize C source");
+    if let Ok(ir) = ir_result.as_ref() {
+        if let Ok(raw_c_source) = raw_source(ir) {
+            raw_c_source
+                .materialize(output_dir.join("c_src"))
+                .expect("Failed to materialize C source");
+        }
+    }
 
     match ir_result {
         Ok(ir) => TranspilationResult::from_ir(&ir),

@@ -8,4 +8,4 @@ For each function, output a Rust fn signature with a minimal skeleton body, incl
 
 For global variables: Output a Rust global/static declaration with type and mutability but with a placeholder value. Use `static` for immutable globals. For mutable globals, wrap the type in `Mutex<T>` to ensure thread-safe access. Never use `static mut` as it can lead to undefined behavior. Include appropriate qualifiers (e.g., pub). End each with `= todo!()`. Examples: "pub static COUNTER: Mutex<i32> = todo!();" or "pub static BUFFER: Mutex<[u8; 1024]> = todo!();".
 
-Return a flat list of signature strings in the same order as the input declarations (functions first, then globals).
+Return a flat list of signature strings in the same order as the input declarations (functions first, then globals). The `signatures` field in your JSON response MUST always be a JSON array (e.g., `["sig1", "sig2"]`), even if there is only one declaration — never return it as a plain string. A single declaration must still be wrapped in an array: `["sig1"]`.

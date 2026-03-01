@@ -8,6 +8,7 @@ use try_cargo_build::CargoBuildResult;
 
 /// Extract a single CargoPackage representation from the IR.
 /// Returns an error if there are 0 or multiple CargoPackage representations.
+#[allow(dead_code)]
 pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
     let cargo_packages: Vec<&RawDir> = ir
         .get_by_representation::<CargoPackage>()
@@ -22,6 +23,18 @@ pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
             n
         )
         .into()),
+    }
+}
+
+/// Extract the most recently produced CargoPackage from the IR.
+/// When multiple exist (e.g. `ModularTranslationLlm` followed by `ModularFixLlm`), returns the
+/// one with the highest ID, which reflects the latest refinement pass.
+/// Returns an error only if no CargoPackage is present at all.
+pub fn latest_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
+    // BTreeMap iterates in ascending ID order, so `.last()` is the most recently added entry.
+    match ir.get_by_representation::<CargoPackage>().last() {
+        None => Err("No CargoPackage representation found in IR".into()),
+        Some((_, r)) => Ok(&r.dir),
     }
 }
 

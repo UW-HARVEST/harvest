@@ -1,0 +1,10 @@
+REFERENCE CONTEXT (previous iteration, for context only -- all function bodies are stubbed):
+{context}
+
+The following Rust declaration has compilation errors. Fix it so it compiles correctly.
+
+COMPILATION ERRORS:
+{errors}
+
+DECLARATION TO FIX:
+{declaration}

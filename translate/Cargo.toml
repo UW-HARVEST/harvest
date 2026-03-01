@@ -25,6 +25,7 @@ c_ast.workspace = true
 load_raw_source.workspace = true 
 identify_project_kind.workspace = true
 modular_translation_llm.workspace = true
+modular_fix_llm.workspace = true
 try_cargo_build.workspace = true
 raw_source_to_cargo_llm.workspace = true
 

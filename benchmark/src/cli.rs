@@ -21,6 +21,10 @@ pub struct Args {
     #[arg(long)]
     pub modular: bool,
 
+    /// Run iterative LLM-based error repair after modular translation (requires --modular).
+    #[arg(long, requires = "modular")]
+    pub fix: bool,
+
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,

@@ -72,6 +72,8 @@ impl<'a> ClangDeclarations<'a> {
 /// the same symbol name is found in a `.h` file.
 /// TODO: technically, this function collapses the namespaces of structs and typedefs.
 /// This should be ok, but worth checking.
+/// TODO: we should use the full symbol context instead of function names to deduplicate.
+/// This may accidentally deduplicate functions in different files with the same name.
 fn deduplicate_decls(declarations: &mut Vec<ClangNode<'_>>) {
     use std::collections::HashMap;
 
@@ -138,6 +140,7 @@ fn deduplicate_decls(declarations: &mut Vec<ClangNode<'_>>) {
     }
 }
 
+// Looks for files that end with ".h" (C naming standard for headers).
 fn is_header_decl(node: &Node<Clang>) -> bool {
     get_file_from_location(&node.kind.loc().cloned()).is_some_and(|file| file.ends_with(".h"))
 }

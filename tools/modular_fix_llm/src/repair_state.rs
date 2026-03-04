@@ -3,7 +3,7 @@
 //! `RepairState` holds the current set of declarations and the Cargo.toml,
 //! and knows how to assemble them into a `CargoPackage` for each build attempt.
 
-use crate::splitter::{ParsedDeclaration, split_source};
+use crate::splitter::{ParsedDeclaration, split_source, unparse_item};
 use full_source::CargoPackage;
 use harvest_core::fs::RawDir;
 use tracing::debug;
@@ -157,15 +157,16 @@ fn stub_declaration(source: &str) -> String {
     let Ok(file) = syn::parse_file(source) else {
         return source.trim_end_matches('\n').to_string();
     };
-    let stubbed_items: Vec<syn::Item> = file.items.into_iter().map(stub_item).collect();
-    let stub_file = syn::File {
-        shebang: None,
-        attrs: vec![],
-        items: stubbed_items,
-    };
-    prettyplease::unparse(&stub_file)
-        .trim_end_matches('\n')
-        .to_string()
+    file.items
+        .into_iter()
+        .map(|item| {
+            let stubbed = stub_item(item);
+            unparse_item(&stubbed)
+                .trim_end_matches('\n')
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Replace the body of a function (or the methods inside an `impl` block) with `{ todo!() }`.

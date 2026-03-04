@@ -34,16 +34,28 @@ fn try_split(source: &str) -> Result<Vec<ParsedDeclaration>, syn::Error> {
 
     for item in &file.items {
         // Re-serialise via prettyplease for clean formatting.
-        let single_file = syn::File {
-            shebang: None,
-            attrs: vec![],
-            items: vec![item.clone()],
-        };
-        let formatted = prettyplease::unparse(&single_file);
+        let formatted = unparse_item(item);
         decls.push(ParsedDeclaration {
             source: formatted.trim_end_matches('\n').to_string(),
         });
     }
 
     Ok(decls)
+}
+
+/// Format a single top-level item as a source string.
+///
+/// `prettyplease` panics on `Item::Verbatim` (e.g. bare function prototypes ending with `;`
+/// that `syn` cannot represent as a full `ItemFn`).  For those, we fall back to the raw
+/// token-stream representation which is syntactically correct even if not pretty-printed.
+pub fn unparse_item(item: &syn::Item) -> String {
+    if let syn::Item::Verbatim(ts) = item {
+        return ts.to_string();
+    }
+    let single_file = syn::File {
+        shebang: None,
+        attrs: vec![],
+        items: vec![item.clone()],
+    };
+    prettyplease::unparse(&single_file)
 }

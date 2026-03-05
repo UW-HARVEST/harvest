@@ -4,7 +4,7 @@
 use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
-use harvest_core::llm::{HarvestLLM, LLMConfig, build_request};
+use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use serde::{Deserialize, Serialize};
@@ -84,7 +84,9 @@ impl Tool for RawSourceToCargoLlm {
 
         // Make the LLM call.
         trace!("Making LLM call with {:?}", request);
-        let response = llm.invoke(&request)?;
+        let mut usage_totals = LLMUsageTotals::default();
+        let (response, usage) = llm.invoke(&request)?;
+        usage_totals.add_usage(usage.as_ref());
 
         // Parse the response, convert it into a CargoPackage representation.
         #[derive(Deserialize)]
@@ -98,6 +100,12 @@ impl Tool for RawSourceToCargoLlm {
         for file in files.files {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
+
+        info!(
+            "Token usage [total] - prompt: {}, output: {}, total: {}",
+            usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
+        );
+
         Ok(Box::new(CargoPackage { dir: out_dir }))
     }
 }

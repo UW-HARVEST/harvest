@@ -52,26 +52,14 @@ impl HarvestLLM {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
 
-        // Bedrock backend doesn't support tool use, so we embed the JSON schema
-        // in the system prompt instead of using `.schema()`.
         let mut llm_builder = LLMBuilder::new()
-            .backend(backend.clone())
+            .backend(backend)
             .model(&config.model)
             .max_tokens(config.max_tokens)
             .temperature(0.0);
 
-        if backend == LLMBackend::AwsBedrock {
-            // Keep parity with non-Bedrock: fail fast on invalid schema JSON.
-            let schema_value: serde_json::Value = serde_json::from_str(output_format_json)?;
-            let schema_pretty = serde_json::to_string_pretty(&schema_value)?;
-            let augmented_prompt = format!(
-                "{system_prompt}\n\nYou MUST respond with valid JSON matching this schema:\n```json\n{schema_pretty}\n```\n\nRespond ONLY with the JSON object, no other text."
-            );
-            llm_builder = llm_builder.system(&augmented_prompt);
-        } else {
-            let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
-            llm_builder = llm_builder.schema(output_format).system(system_prompt);
-        }
+        let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
+        llm_builder = llm_builder.schema(output_format).system(system_prompt);
 
         if let Some(ref address) = config.address
             && !address.is_empty()

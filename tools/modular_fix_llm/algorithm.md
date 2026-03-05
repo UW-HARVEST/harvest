@@ -10,8 +10,10 @@ The tool is not specific to modular translation. It operates on any `CargoPackag
 
 ## Input and Output
 
-- Input: a `CargoPackage` in the pipeline IR, containing `Cargo.toml` and either `src/main.rs` or `src/lib.rs`
-- Output: either the same `CargoPackage` with its source replaced by a version that compiles, or the last attempted state if the iteration limit is reached without success
+Because this is a pipeline pass, its input and output have the same format:  a `CargoPackage` in the pipeline IR, containing `Cargo.toml` and either `src/main.rs` or `src/lib.rs`.
+
+The output is either the same `CargoPackage` with its source replaced by a version that compiles, or the last attempted state if the iteration limit is reached without success.
+
 - Configuration (under `[tools.modular_fix_llm]` in the pipeline config):
     - `max_iterations`: maximum number of repair attempts before giving up (default 10)
     - LLM settings forwarded to the underlying `HarvestLLM` client
@@ -30,12 +32,12 @@ function ModularFixLlm(pkg: CargoPackage) -> CargoPackage:
         source = join(declarations, "\n\n")
         save_snapshot(iter, source)                  // <history_dir>/iter_<N>/
 
-        result = cargo_build(source, cargo_toml)     // cargo build --release --message-format=json
+        compilation_result = cargo_build(source, cargo_toml)     // cargo build --release --message-format=json
 
-        if result.success:
+        if compilation_result.success:
             return assemble(declarations, cargo_toml)
 
-        errors = classify(result.output)             // keep error-level diagnostics only
+        errors = classify(compilation_result.output) // keep error-level diagnostics only
                                                      // warnings are included in error text for LLM context
                                                      // but do not lead to repair attempts
 

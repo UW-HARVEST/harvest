@@ -4,6 +4,8 @@
 
 ModularFixLlm is a post-translation repair pass that takes a Rust package produced by an earlier pipeline stage, attempts to compile it, and iteratively asks an LLM to fix any compilation errors declaration by declaration, until the package builds cleanly or a configured iteration limit is reached.
 
+Each declaration is analyzed independently.  No changes to declaration signatures are permitted.  (This limitation should be lifted in the future.)
+
 The tool is not specific to modular translation. It operates on any `CargoPackage` from the IR.
 
 ## Input and Output

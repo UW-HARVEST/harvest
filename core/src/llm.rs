@@ -69,17 +69,34 @@ impl HarvestLLM {
         output_format_json: &str,
         system_prompt: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Parse the output format from JSON string
-        let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
         let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
+
+        // The llm crate's Bedrock backend supports tool use but has an incomplete
+        // hardcoded model capability list. Override it to enable tool use for all
+        // models, since HARVEST requires structured output via tool use.
+        if backend == LLMBackend::AwsBedrock {
+            // SAFETY: Although this runs within a tool thread, it is safe because
+            // only one translation tool executes per run, and all HarvestLLM::build()
+            // calls within that tool use the same model config, making writes idempotent.
+            unsafe {
+                std::env::set_var(
+                    "LLM_BEDROCK_MODEL_CAPABILITIES",
+                    format!(
+                        r#"{{"models":{{"{}":{{"tool_use":true,"chat":true}}}}}}"#,
+                        config.model
+                    ),
+                );
+            }
+        }
 
         let mut llm_builder = LLMBuilder::new()
             .backend(backend)
             .model(&config.model)
             .max_tokens(config.max_tokens)
-            .temperature(0.0)
-            .schema(output_format)
-            .system(system_prompt);
+            .temperature(0.0);
+
+        let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
+        llm_builder = llm_builder.schema(output_format).system(system_prompt);
 
         if let Some(ref address) = config.address
             && !address.is_empty()

@@ -57,11 +57,6 @@ const DEFAULT_RETRY_DELAY_SECS: u64 = 31;
 
 impl HarvestLLM {
     /// Builds an LLM client from configuration.
-    ///
-    /// # Arguments
-    /// * `config` - LLM configuration (backend, model, etc.)
-    /// * `output_format_json` - Optional JSON schema for structured output. Pass `None` for plain text output.
-    /// * `system_prompt` - System prompt for the LLM
     pub fn build(
         config: &LLMConfig,
         output_format_json: Option<&str>,
@@ -164,14 +159,12 @@ impl HarvestLLM {
         }
 
         warn!(
-            "Attempt {}/{} failed: {}",
-            self.retry_count,
+            "All {} attempts failed: {}",
             self.retry_count,
             last_err.as_ref().unwrap()
         );
         Err(format!(
-            "LLM call failed after {}/{} attempts: {}",
-            self.retry_count,
+            "LLM call failed after {} attempts: {}",
             self.retry_count,
             last_err.unwrap()
         )
@@ -194,21 +187,6 @@ pub fn build_request<T: Serialize>(
         serde_json::to_string(body)?,
         "return as JSON".to_string(),
     ];
-
-    Ok(contents
-        .iter()
-        .map(|content| ChatMessage::user().content(content).build())
-        .collect())
-}
-
-/// Helper function to build a plain text request (without "return as JSON" instruction).
-///
-/// Use this for tools that expect plain text output instead of JSON.
-pub fn build_plain_request<T: Serialize>(
-    prompt: &str,
-    body: &T,
-) -> Result<Vec<ChatMessage>, Box<dyn std::error::Error>> {
-    let contents = [prompt.to_string(), serde_json::to_string(body)?];
 
     Ok(contents
         .iter()

@@ -1,9 +1,7 @@
-//! `ModularFixLlm`: an iterative LLM-based repair tool for the modular translation pipeline.
-//!
-//! It accepts a `CargoPackage` from `ModularTranslationLlm`, tries to build it, and
-//! sends any erroneous declarations to an LLM for targeted fixes.  The final (possibly
-//! still-imperfect) `CargoPackage` is returned so that `TryCargoBuild` can run a clean
-//! final verdict.
+//! `ModularFixLlm`: iterative LLM-based repair pass that accepts any `CargoPackage` from
+//! the pipeline IR, tries to build it, and sends any erroneous declarations to an LLM for
+//! targeted fixes.  The final (possibly still-imperfect) `CargoPackage` is returned so
+//! that `TryCargoBuild` can run a clean final verdict.
 
 mod compiler;
 mod error_classifier;
@@ -84,7 +82,7 @@ impl Tool for ModularFixLlm {
             state.declarations.len()
         );
 
-        for iteration in 0..=config.max_iterations {
+        for iteration in 0..config.max_iterations {
             let pkg = state.to_cargo_package()?;
             pkg.materialize(temp_dir.path())?;
 
@@ -109,7 +107,7 @@ impl Tool for ModularFixLlm {
 
             if build_output.success || classification.total_errors == 0 {
                 info!("ModularFixLlm: build succeeded at iteration {}", iteration);
-                break;
+                return Ok(Box::new(state.to_cargo_package()?));
             }
 
             info!(
@@ -118,14 +116,6 @@ impl Tool for ModularFixLlm {
                 classification.total_errors,
                 classification.files.len()
             );
-
-            if iteration == config.max_iterations {
-                warn!(
-                    "ModularFixLlm: reached max_iterations={}, returning best-effort result",
-                    config.max_iterations
-                );
-                break;
-            }
 
             // Map each error to its declaration by line number.
             let mut decl_errors: HashMap<usize, Vec<String>> = HashMap::new();
@@ -190,6 +180,45 @@ impl Tool for ModularFixLlm {
                 fixed_count,
                 decl_errors.len()
             );
+        }
+
+        // Final build check after all fix iterations.
+        {
+            let pkg = state.to_cargo_package()?;
+            pkg.materialize(temp_dir.path())?;
+
+            let build_output = compiler::run_cargo_build(temp_dir.path())?;
+            let classification = error_classifier::classify_errors(&build_output);
+
+            let source_snapshot = state.assemble_source();
+            let errors_opt = if build_output.success {
+                None
+            } else {
+                Some(&classification)
+            };
+            if let Err(e) = history::save_iteration(
+                &history_dir,
+                config.max_iterations,
+                &source_snapshot,
+                errors_opt,
+            ) {
+                warn!(
+                    "ModularFixLlm: failed to write history for final iteration: {}",
+                    e
+                );
+            }
+
+            if build_output.success || classification.total_errors == 0 {
+                info!(
+                    "ModularFixLlm: build succeeded at iteration {}",
+                    config.max_iterations
+                );
+            } else {
+                warn!(
+                    "ModularFixLlm: reached max_iterations={}, returning best-effort result",
+                    config.max_iterations
+                );
+            }
         }
 
         Ok(Box::new(state.to_cargo_package()?))

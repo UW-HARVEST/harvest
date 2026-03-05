@@ -161,9 +161,7 @@ fn stub_declaration(source: &str) -> String {
         .into_iter()
         .map(|item| {
             let stubbed = stub_item(item);
-            unparse_item(&stubbed)
-                .trim_end_matches('\n')
-                .to_string()
+            unparse_item(&stubbed).trim_end_matches('\n').to_string()
         })
         .collect::<Vec<_>>()
         .join("\n")

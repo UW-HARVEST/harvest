@@ -56,8 +56,9 @@ impl HarvestLLM {
         // hardcoded model capability list. Override it to enable tool use for all
         // models, since HARVEST requires structured output via tool use.
         if backend == LLMBackend::AwsBedrock {
-            // SAFETY: This is called during single-threaded initialization before
-            // any tool threads are spawned.
+            // SAFETY: Although this runs within a tool thread, it is safe because
+            // only one translation tool executes per run, and all HarvestLLM::build()
+            // calls within that tool use the same model config, making writes idempotent.
             unsafe {
                 std::env::set_var(
                     "LLM_BEDROCK_MODEL_CAPABILITIES",

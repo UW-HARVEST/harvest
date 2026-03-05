@@ -19,6 +19,7 @@ use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
+use harvest_core::utils::get_version;
 use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
 use regex::Regex;
@@ -362,6 +363,7 @@ fn main() -> HarvestResult<()> {
 
     let log_file = File::create(args.output_dir.join("output.log"))?;
     TeeLogger::init(log::LevelFilter::Info, log_file)?;
+    log::info!("Harvest version: {}", get_version());
     run(args)
 }
 

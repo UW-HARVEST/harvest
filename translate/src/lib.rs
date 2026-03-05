@@ -8,6 +8,7 @@ pub mod util;
 
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
+use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
 use identify_project_kind::IdentifyProjectKind;
 use load_raw_source::LoadRawSource;
@@ -27,6 +28,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let mut runner = ToolRunner::new(collector.reporter());
     let mut scheduler = Scheduler::default();
 
+    info!("Harvest version: {}", get_version());
     info!("Transpiling with: {}", config.model_info().unwrap());
 
     // Setup a schedule for the transpilation.

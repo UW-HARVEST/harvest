@@ -52,6 +52,23 @@ impl HarvestLLM {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
 
+        // The llm crate's Bedrock backend supports tool use but has an incomplete
+        // hardcoded model capability list. Override it to enable tool use for all
+        // models, since HARVEST requires structured output via tool use.
+        if backend == LLMBackend::AwsBedrock {
+            // SAFETY: This is called during single-threaded initialization before
+            // any tool threads are spawned.
+            unsafe {
+                std::env::set_var(
+                    "LLM_BEDROCK_MODEL_CAPABILITIES",
+                    format!(
+                        r#"{{"models":{{"{}":{{"tool_use":true,"chat":true}}}}}}"#,
+                        config.model
+                    ),
+                );
+            }
+        }
+
         let mut llm_builder = LLMBuilder::new()
             .backend(backend)
             .model(&config.model)

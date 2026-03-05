@@ -410,6 +410,14 @@ fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
     log::info!("Input directory: {}", args.input_dir.display());
     log::info!("Output directory: {}", args.output_dir.display());
+    log::info!(
+        "Using {} Translation",
+        if args.modular {
+            "Modular"
+        } else {
+            "All-at-once"
+        }
+    );
 
     // Get the programs to evaluate.
     // If the input itself is a single test case root, run just that; otherwise, run children.

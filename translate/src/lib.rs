@@ -11,6 +11,7 @@ use harvest_core::config::Config;
 use harvest_core::{HarvestIR, diagnostics};
 use identify_project_kind::IdentifyProjectKind;
 use load_raw_source::LoadRawSource;
+use modular_fix_llm::ModularFixLlm;
 use modular_translation_llm::ModularTranslationLlm;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use runner::ToolRunner;
@@ -32,7 +33,13 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let identify_kind = scheduler.queue_after(IdentifyProjectKind, &[load_src]);
     let translate = if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, identify_kind])
+        let translated =
+            scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, identify_kind]);
+        if config.fix {
+            scheduler.queue_after(ModularFixLlm, &[translated])
+        } else {
+            translated
+        }
     } else {
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, identify_kind])
     };

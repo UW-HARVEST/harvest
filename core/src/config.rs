@@ -32,6 +32,10 @@ pub struct Config {
     // If false, use standard all-at-once translation.
     pub modular: bool,
 
+    /// If true (and `modular` is also true), run `ModularFixLlm` after translation to
+    /// iteratively fix compilation errors before the final `TryCargoBuild` step.
+    pub fix: bool,
+
     /// Filter describing which log messages should be output to stdout. This is in the
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
@@ -56,6 +60,7 @@ impl Config {
             diagnostics_dir: None,
             force: false,
             modular: false,
+            fix: false,
             log_filter: "off".to_owned(),
             tools: Default::default(),
             unknown: Default::default(),

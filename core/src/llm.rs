@@ -69,8 +69,7 @@ impl HarvestLLM {
             );
             llm_builder = llm_builder.system(&augmented_prompt);
         } else {
-            let output_format: StructuredOutputFormat =
-                serde_json::from_str(output_format_json)?;
+            let output_format: StructuredOutputFormat = serde_json::from_str(output_format_json)?;
             llm_builder = llm_builder.schema(output_format).system(system_prompt);
         }
 

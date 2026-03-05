@@ -52,6 +52,12 @@ pub enum EmptyDirError {
     NotWritable,
 }
 
+/// Returns the version string for this build of HARVEST.
+/// These environment variables are set in build.rs.
+pub fn get_version() -> &'static str {
+    concat!(env!("GIT_SHA"), " (", env!("GIT_DATE"), ")")
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(miri))]

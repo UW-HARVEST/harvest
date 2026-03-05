@@ -31,6 +31,11 @@ fn git_date() -> String {
 }
 
 fn main() {
+    // Re-run if git HEAD changes (covers new commits, branch switches)
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    // Re-run if the current ref changes
+    println!("cargo:rerun-if-changed=.git/index");
+    // Log git info as env vars for inclusion in the build
     println!("cargo:rustc-env=GIT_SHA={}", git_sha());
     println!("cargo:rustc-env=GIT_DATE={}", git_date());
 }

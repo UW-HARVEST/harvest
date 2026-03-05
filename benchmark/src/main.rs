@@ -97,22 +97,23 @@ pub fn translate_c_directory_to_rust_project(
         tool_config.model,
         tool_config.max_tokens
     );*/
-    let ir_result = transpile(config.into());
-    if let Ok(ir) = ir_result.as_ref() {
-        if let Ok(raw_c_source) = raw_source(ir) {
-            raw_c_source
-                .materialize(output_dir.join("c_src"))
-                .expect("Failed to materialize C source");
+    match transpile(config.into()) {
+        Ok(ir) => {
+            match raw_source(&ir) {
+                Ok(raw_c_source) => {
+                    if let Err(e) = raw_c_source.materialize(output_dir.join("c_src")) {
+                        log::warn!("Failed to materialize C source: {}", e);
+                    }
+                }
+                Err(e) => log::warn!("Failed to retrieve raw C source from IR: {}", e),
+            }
+            TranspilationResult::from_ir(&ir)
         }
-    }
-
-    match ir_result {
-        Ok(ir) => TranspilationResult::from_ir(&ir),
-        Err(_) => TranspilationResult {
+        Err(e) => TranspilationResult {
             translation_success: false,
             build_success: false,
             rust_binary_path: PathBuf::new(),
-            build_error: Some("Failed to transpile".to_string()),
+            build_error: Some(format!("Failed to transpile: {}", e)),
         },
     }
 }

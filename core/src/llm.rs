@@ -4,10 +4,29 @@
 
 use llm::LLMProvider;
 use llm::builder::{LLMBackend, LLMBuilder};
-pub use llm::chat::ChatMessage;
 use llm::chat::StructuredOutputFormat;
+pub use llm::chat::{ChatMessage, Usage};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+
+/// Aggregated token usage across one or more LLM calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LLMUsageTotals {
+    pub prompt_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl LLMUsageTotals {
+    /// Adds a single call's usage to this aggregate. If usage is absent, no-op.
+    pub fn add_usage(&mut self, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.prompt_tokens += u64::from(usage.prompt_tokens);
+            self.output_tokens += u64::from(usage.completion_tokens);
+            self.total_tokens += u64::from(usage.total_tokens);
+        }
+    }
+}
 
 /// API Key wrapper that hides the key in debug output.
 #[derive(Deserialize)]
@@ -78,22 +97,27 @@ impl HarvestLLM {
     }
 
     /// Invokes the LLM and cleans up the response.
-    pub fn invoke(&self, request: &[ChatMessage]) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn invoke(
+        &self,
+        request: &[ChatMessage],
+    ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
         let response = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()
             .expect("tokio failed")
-            .block_on(self.client.chat(request))?
-            .text()
-            .expect("no response text");
+            .block_on(self.client.chat(request))?;
+
+        let usage = response.usage();
+
+        let response_text = response.text().expect("no response text");
 
         // Parse the response - strip markdown code fences
-        let response = response.strip_prefix("```").unwrap_or(&response);
-        let response = response.strip_prefix("json").unwrap_or(response);
-        let response = response.strip_suffix("```").unwrap_or(response);
+        let response_text = response_text.strip_prefix("```").unwrap_or(&response_text);
+        let response_text = response_text.strip_prefix("json").unwrap_or(response_text);
+        let response_text = response_text.strip_suffix("```").unwrap_or(response_text);
 
-        Ok(response.to_string())
+        Ok((response_text.to_string(), usage))
     }
 }
 

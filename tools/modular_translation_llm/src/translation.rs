@@ -262,6 +262,38 @@ pub fn translate_decls(
 
     let dependencies = collect_dependencies(&combined_translations);
     let cargo_toml = modular_llm.generate_cargo_toml(dependencies, project_kind)?;
+    let usage_by_call = modular_llm.usage_by_call();
+    let usage_totals = modular_llm.usage_totals();
+
+    info!(
+        "token usage [types] - prompt: {}, output: {}, total: {}",
+        usage_by_call.types.prompt_tokens,
+        usage_by_call.types.output_tokens,
+        usage_by_call.types.total_tokens
+    );
+    info!(
+        "token usage [interface] - prompt: {}, output: {}, total: {}",
+        usage_by_call.interface.prompt_tokens,
+        usage_by_call.interface.output_tokens,
+        usage_by_call.interface.total_tokens
+    );
+    info!(
+        "token usage [functions] - prompt: {}, output: {}, total: {}",
+        usage_by_call.functions.prompt_tokens,
+        usage_by_call.functions.output_tokens,
+        usage_by_call.functions.total_tokens
+    );
+    info!(
+        "token usage [cargo_toml] - prompt: {}, output: {}, total: {}",
+        usage_by_call.cargo_toml.prompt_tokens,
+        usage_by_call.cargo_toml.output_tokens,
+        usage_by_call.cargo_toml.total_tokens
+    );
+
+    info!(
+        "token usage [total] - prompt: {}, output: {}, total: {}",
+        usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
+    );
 
     Ok(TranslationResult {
         translations: combined_translations,

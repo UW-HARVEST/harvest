@@ -61,8 +61,11 @@ impl HarvestLLM {
             .temperature(0.0);
 
         if backend == LLMBackend::AwsBedrock {
+            // Keep parity with non-Bedrock: fail fast on invalid schema JSON.
+            let schema_value: serde_json::Value = serde_json::from_str(output_format_json)?;
+            let schema_pretty = serde_json::to_string_pretty(&schema_value)?;
             let augmented_prompt = format!(
-                "{system_prompt}\n\nYou MUST respond with valid JSON matching this schema:\n{output_format_json}\n\nRespond ONLY with the JSON object, no other text."
+                "{system_prompt}\n\nYou MUST respond with valid JSON matching this schema:\n```json\n{schema_pretty}\n```\n\nRespond ONLY with the JSON object, no other text."
             );
             llm_builder = llm_builder.system(&augmented_prompt);
         } else {

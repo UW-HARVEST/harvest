@@ -23,39 +23,55 @@ The output is either the same `CargoPackage` with its source replaced by a versi
 ```
 function ModularFixLlm(pkg: CargoPackage) -> CargoPackage:
     // Initialization
-    (source_file, cargo_toml) = extract(pkg)        // src/main.rs or src/lib.rs + Cargo.toml
-    declarations = split_and_format(source_file)    // syn parse + prettyplease reformat per item
-    line_index = build_line_index(declarations)      // (start, end, decl_idx)
+    (source_file: String, cargo_toml: String) = extract(pkg)   // src/main.rs or src/lib.rs
+
+    // One Rust source snippet per top-level item (fn, struct, impl, type alias, const, ...)
+    // Re-formatting is needed to ensure a consistent line index mapping,
+    // which is used to attribute compiler errors to declarations.
+    declarations: [String] = split_and_format(source_file)
+
+    // Span: location of one declaration in the assembled source, consisting of:
+    // - start, end: 1-indexed absolute line numbers in join(declarations, "\n\n"),
+    //               accounting for the blank separator lines between declarations
+    // - decl_idx:   index into declarations[]
+    line_index: [Span] = build_line_index(declarations)
 
     // Repair loop
     for iter = 0 .. max_iterations:
-        source = join(declarations, "\n\n")
-        save_snapshot(iter, source)                  // <history_dir>/iter_<N>/
+        source: String = join(declarations, "\n\n")
+        save_snapshot(iter, source) // <history_dir>/iter_<N>/
 
-        compilation_result = cargo_build(source, cargo_toml)     // cargo build --release --message-format=json
+        // cargo build --release --message-format=json
+        compilation_result = cargo_build(source, cargo_toml)
 
         if compilation_result.success:
             return assemble(declarations, cargo_toml)
 
-        errors = classify(compilation_result.output) // keep error-level diagnostics only
-                                                     // warnings are included in error text for LLM context
-                                                     // but do not lead to repair attempts
+        // parse all compiler diagnostics; both errors and warnings are returned
+        all_diagnostics: [Diagnostic] = parse_diagnostics(compilation_result.output)
 
-        decl_errors = {}
-        for error in errors:
-            decl_idx = line_index.find(error.primary_span.line)
-            decl_errors[decl_idx].append(error.rendered_text)
+        // Only error-level diagnostics would drive fixes,
+        // but we collect warnings too to provide more context to the LLM
+        decl_errors: Map<int, [String]> = {}
+        decl_warnings: Map<int, [String]> = {}
+        for diag in all_diagnostics:
+            decl_idx = line_index.find_if(span => diag.line in span.start .. span.end)?.decl_idx
+            if diag.level == "error":
+                decl_errors[decl_idx].append(diag.rendered_text)
+            elif diag.level == "warning":
+                decl_warnings[decl_idx].append(diag.rendered_text)
 
-        interface_ctx = stub_all_bodies(declarations)   // replace fn bodies with { todo!() };
-                                                        // computed once per iteration for prefix caching
+        // replace every fn body with { todo!() }; computed once per iteration for prefix caching
+        interface_ctx: String = stub_all_bodies(declarations)
 
         for (decl_idx, errs) in decl_errors:
-            fixed_source = llm_fix(
-                context = interface_ctx,
-                errors  = format(errs),
-                decl    = declarations[decl_idx].source
+            declarations[decl_idx] = llm_fix(
+                context  = interface_ctx,
+                errors   = format(errs),
+                // Warnings are fixed only if they accompany errors in the same declaration
+                warnings = format(decl_warnings.get_or_else(decl_idx, [])),
+                decl     = declarations[decl_idx]
             )
-            declarations[decl_idx].source = fixed_source
 
     return assemble(declarations, cargo_toml)
 ```

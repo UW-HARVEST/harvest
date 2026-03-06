@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -->
 Translate the C code in c_src/ to an idiomatic Rust Cargo project.
 Write Cargo.toml and src/ files in the current directory (NOT in c_src/).
 This is a LIBRARY. Requirements:

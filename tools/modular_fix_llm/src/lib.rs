@@ -39,7 +39,7 @@ pub struct Config {
 
 impl Config {
     fn default_max_iterations() -> usize {
-        10
+        5
     }
 
     fn validate(&self) {

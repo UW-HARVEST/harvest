@@ -15,7 +15,7 @@ Because this is a pipeline pass, its input and output have the same format:  a `
 The output is either the same `CargoPackage` with its source replaced by a version that compiles, or the last attempted state if the iteration limit is reached without success.
 
 - Configuration (under `[tools.modular_fix_llm]` in the pipeline config):
-    - `max_iterations`: maximum number of repair attempts before giving up (default 10)
+    - `max_iterations`: maximum number of repair attempts before giving up (default 5)
     - LLM settings forwarded to the underlying `HarvestLLM` client
 
 ## Pseudocode

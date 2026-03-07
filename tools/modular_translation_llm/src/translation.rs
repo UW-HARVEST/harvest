@@ -9,7 +9,7 @@
 //! - Cargo.toml generated after function/global translation using aggregated dependencies
 
 use full_source::RawSource;
-use identify_project_kind::ProjectKind;
+use build_project_spec::ProjectKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use tracing::{debug, error, info};

@@ -1,8 +1,8 @@
 //! Attempts to directly turn a C project into a Cargo project by throwing it at
 //! an LLM via the `llm` crate.
 
-use full_source::{CargoPackage, RawSource};
 use build_project_spec::{ProjectKind, ProjectSpec};
+use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};

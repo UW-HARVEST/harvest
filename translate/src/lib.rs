@@ -6,8 +6,8 @@ mod runner;
 mod scheduler;
 pub mod util;
 
-use c_ast::ParseToAst;
 use build_project_spec::BuildProjectSpec;
+use c_ast::ParseToAst;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};

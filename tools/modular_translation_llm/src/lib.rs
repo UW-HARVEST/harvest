@@ -6,8 +6,8 @@
 //! - Interface (FunctionDecl and VarDecl signatures) use type context
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
-use c_ast::ClangAst;
 use build_project_spec::{ProjectKind, ProjectSpec};
+use c_ast::ClangAst;
 use full_source::RawSource;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::LLMConfig;

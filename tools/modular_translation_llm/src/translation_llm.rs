@@ -1,11 +1,12 @@
 //! LLM abstraction layer for modular translation.
 //! Abstracts away all the string management needed for building dynamically generated prompts and
 //! provides a clean well-typed interface for use by the rest of the transpiler.
+use build_project_spec::ProjectKind;
 use full_source::RawSource;
-use harvest_core::llm::{HarvestLLM, build_request};
-use identify_project_kind::ProjectKind;
+use harvest_core::llm::{HarvestLLM, LLMUsageTotals, Usage, build_request};
 use serde::Deserialize;
 use serde::Serialize;
+use std::sync::Mutex;
 use tracing::warn;
 
 use crate::Config;
@@ -72,6 +73,42 @@ pub struct ModularTranslationLLM {
     interface_llm: HarvestLLM,
     functions_llm: HarvestLLM,
     cargo_toml_llm: HarvestLLM,
+    usage_totals_by_call: Mutex<ModularLLMUsageTotals>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LLMCallKind {
+    Types,
+    Interface,
+    Functions,
+    CargoToml,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModularLLMUsageTotals {
+    pub types: LLMUsageTotals,
+    pub interface: LLMUsageTotals,
+    pub functions: LLMUsageTotals,
+    pub cargo_toml: LLMUsageTotals,
+}
+
+impl ModularLLMUsageTotals {
+    pub fn total(&self) -> LLMUsageTotals {
+        LLMUsageTotals {
+            prompt_tokens: self.types.prompt_tokens
+                + self.interface.prompt_tokens
+                + self.functions.prompt_tokens
+                + self.cargo_toml.prompt_tokens,
+            output_tokens: self.types.output_tokens
+                + self.interface.output_tokens
+                + self.functions.output_tokens
+                + self.cargo_toml.output_tokens,
+            total_tokens: self.types.total_tokens
+                + self.interface.total_tokens
+                + self.functions.total_tokens
+                + self.cargo_toml.total_tokens,
+        }
+    }
 }
 
 impl ModularTranslationLLM {
@@ -104,7 +141,33 @@ impl ModularTranslationLLM {
             interface_llm,
             functions_llm,
             cargo_toml_llm,
+            usage_totals_by_call: Mutex::new(ModularLLMUsageTotals::default()),
         })
+    }
+
+    fn record_usage(&self, call_kind: LLMCallKind, usage: Option<&Usage>) {
+        let mut totals_by_call = self
+            .usage_totals_by_call
+            .lock()
+            .expect("usage mutex poisoned in modular translation");
+
+        match call_kind {
+            LLMCallKind::Types => totals_by_call.types.add_usage(usage),
+            LLMCallKind::Interface => totals_by_call.interface.add_usage(usage),
+            LLMCallKind::Functions => totals_by_call.functions.add_usage(usage),
+            LLMCallKind::CargoToml => totals_by_call.cargo_toml.add_usage(usage),
+        }
+    }
+
+    pub fn usage_by_call(&self) -> ModularLLMUsageTotals {
+        *self
+            .usage_totals_by_call
+            .lock()
+            .expect("usage mutex poisoned in modular translation")
+    }
+
+    pub fn usage_totals(&self) -> LLMUsageTotals {
+        self.usage_by_call().total()
     }
 
     /// Translates type declarations to Rust using the types_llm.
@@ -152,7 +215,8 @@ impl ModularTranslationLLM {
             },
         )?;
 
-        let response = self.types_llm.invoke(&request)?;
+        let (response, usage) = self.types_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::Types, usage.as_ref());
         let translation_result: TypeTranslationResult = serde_json::from_str(&response)?;
         for (decl, translation) in decl_sources
             .iter()
@@ -224,7 +288,8 @@ impl ModularTranslationLLM {
             },
         )?;
 
-        let response = self.functions_llm.invoke(&request)?;
+        let (response, usage) = self.functions_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::Functions, usage.as_ref());
         let translation_result: FunctionTranslationResult = serde_json::from_str(&response)?;
         let translations = translation_result.translation;
         crate::info!(
@@ -308,7 +373,8 @@ impl ModularTranslationLLM {
             },
         )?;
 
-        let response = self.interface_llm.invoke(&request)?;
+        let (response, usage) = self.interface_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::Interface, usage.as_ref());
         let interface_result: InterfaceResult = serde_json::from_str(&response)?;
 
         if interface_result.signatures.len() != decl_sources.len() {
@@ -360,7 +426,8 @@ impl ModularTranslationLLM {
             },
         )?;
 
-        let response = self.cargo_toml_llm.invoke(&request)?;
+        let (response, usage) = self.cargo_toml_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::CargoToml, usage.as_ref());
         let cargo_result: CargoTomlResult = serde_json::from_str(&response)?;
         crate::info!(
             "Cargo.toml Generation complete:\n {}:{:?} \n==>\n {}",

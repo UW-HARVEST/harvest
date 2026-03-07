@@ -7,7 +7,6 @@ edition = "2024"
 cargo_metadata = "0.23.1"
 full_source.workspace = true
 harvest_core.workspace = true
-identify_project_kind.workspace = true
 prettyplease = "0.2"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 serde.workspace = true

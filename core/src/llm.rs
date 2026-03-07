@@ -4,11 +4,30 @@
 
 use llm::LLMProvider;
 use llm::builder::{LLMBackend, LLMBuilder};
-pub use llm::chat::ChatMessage;
 use llm::chat::StructuredOutputFormat;
+pub use llm::chat::{ChatMessage, Usage};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tracing::{info, warn};
+
+/// Aggregated token usage across one or more LLM calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LLMUsageTotals {
+    pub prompt_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl LLMUsageTotals {
+    /// Adds a single call's usage to this aggregate. If usage is absent, no-op.
+    pub fn add_usage(&mut self, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.prompt_tokens += u64::from(usage.prompt_tokens);
+            self.output_tokens += u64::from(usage.completion_tokens);
+            self.total_tokens += u64::from(usage.total_tokens);
+        }
+    }
+}
 
 /// API Key wrapper that hides the key in debug output.
 #[derive(Deserialize)]
@@ -64,12 +83,31 @@ impl HarvestLLM {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let backend = LLMBackend::from_str(&config.backend).expect("unknown LLM_BACKEND");
 
+        // The llm crate's Bedrock backend supports tool use but has an incomplete
+        // hardcoded model capability list. Override it to enable tool use for all
+        // models, since HARVEST requires structured output via tool use.
+        if backend == LLMBackend::AwsBedrock {
+            // SAFETY: Although this runs within a tool thread, it is safe because
+            // only one translation tool executes per run, and all HarvestLLM::build()
+            // calls within that tool use the same model config, making writes idempotent.
+            unsafe {
+                std::env::set_var(
+                    "LLM_BEDROCK_MODEL_CAPABILITIES",
+                    format!(
+                        r#"{{"models":{{"{}":{{"tool_use":true,"chat":true}}}}}}"#,
+                        config.model
+                    ),
+                );
+            }
+        }
+
         let mut llm_builder = LLMBuilder::new()
             .backend(backend)
             .model(&config.model)
             .max_tokens(config.max_tokens)
-            .temperature(0.0)
-            .system(system_prompt);
+            .temperature(0.0);
+
+        llm_builder = llm_builder.system(system_prompt);
 
         // Only set schema if provided (for structured output)
         if let Some(schema_json) = output_format_json {
@@ -99,7 +137,10 @@ impl HarvestLLM {
     /// Invokes the LLM and cleans up the response.
     /// Retries up to `retry_count` times total (attempt 1 is the first try, not a retry).
     /// A 0-byte response is treated the same as a network/API error and triggers a retry.
-    pub fn invoke(&self, request: &[ChatMessage]) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn invoke(
+        &self,
+        request: &[ChatMessage],
+    ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
         let mut last_err = None;
         for attempt in 1..=self.retry_count {
             if attempt > 1 {
@@ -123,6 +164,7 @@ impl HarvestLLM {
 
             match result {
                 Ok(response) => {
+                    let usage = response.usage();
                     let text = response.text().expect("no response text");
 
                     // Strip markdown code fences
@@ -150,7 +192,7 @@ impl HarvestLLM {
                     if attempt > 1 {
                         info!("Attempt {}/{} succeeded.", attempt, self.retry_count);
                     }
-                    return Ok(cleaned.to_string());
+                    return Ok((cleaned.to_string(), usage));
                 }
                 Err(e) => {
                     last_err = Some(e.to_string());

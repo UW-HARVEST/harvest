@@ -50,7 +50,7 @@ impl FixLlm {
                 .build(),
         ];
 
-        let response = self.llm.invoke(&messages)?;
+        let (response, _usage) = self.llm.invoke(&messages)?;
         let result: FixResult = serde_json::from_str(&response).map_err(|e| {
             format!("Failed to parse fix LLM response as JSON: {e}\nResponse: {response}")
         })?;

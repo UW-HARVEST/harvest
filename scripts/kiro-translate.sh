@@ -4,6 +4,11 @@
 # Usage:
 #   ./kiro-translate.sh <test-corpus-dir> <output-dir> [--filter regex]
 #
+# Features:
+#   - Skips already-completed cases (resume-friendly)
+#   - Writes per-case status to progress.csv in real-time
+#   - Safe to interrupt — completed cases are preserved
+#
 # Output is compatible with the Test-Corpus Rust runner:
 #   python3 -m runtests.rust --root <output-dir> --subset <output-dir> --keep-going
 
@@ -22,11 +27,29 @@ LOG_DIR="$OUTPUT_DIR/logs_$TIMESTAMP"
 mkdir -p "$LOG_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROGRESS="$OUTPUT_DIR/progress.csv"
+
+# Initialize progress file if it doesn't exist
+if [[ ! -f "$PROGRESS" ]]; then
+    echo "name,status,timestamp,duration_s" > "$PROGRESS"
+fi
 
 total=0
 translated=0
 failed=0
+skipped=0
 
+# Count total eligible cases first
+for test_case in "$INPUT_DIR"/*/; do
+    name=$(basename "$test_case")
+    [[ -d "$test_case/test_case" && -d "$test_case/test_vectors" ]] || continue
+    if [[ -n "$FILTER" ]] && ! echo "$name" | grep -qE "$FILTER"; then
+        continue
+    fi
+    total=$((total + 1))
+done
+
+current=0
 for test_case in "$INPUT_DIR"/*/; do
     name=$(basename "$test_case")
 
@@ -38,15 +61,25 @@ for test_case in "$INPUT_DIR"/*/; do
         continue
     fi
 
-    total=$((total + 1))
-    echo "[$total] Translating: $name"
+    current=$((current + 1))
+
+    # Skip already-completed cases (resume support)
+    if [[ -f "$OUTPUT_DIR/$name/translated_rust/Cargo.toml" ]]; then
+        skipped=$((skipped + 1))
+        translated=$((translated + 1))
+        echo "[$current/$total] ⏭️  $name (already done)"
+        continue
+    fi
+
+    echo "[$current/$total] Translating: $name"
+    start_time=$(date +%s)
 
     # Set up output directory
     out="$OUTPUT_DIR/$name"
+    rm -rf "$out"
     mkdir -p "$out/translated_rust"
 
-    # Copy test_vectors and runner (for _lib cases), cleaning first to avoid nesting
-    rm -rf "$out/test_vectors" "$out/runner"
+    # Copy test_vectors and runner (for _lib cases)
     cp -r "$test_case/test_vectors" "$out/"
     [[ -d "$test_case/runner" ]] && cp -r "$test_case/runner" "$out/"
 
@@ -69,22 +102,30 @@ for test_case in "$INPUT_DIR"/*/; do
             "$prompt" \
             2>&1 | tee "$LOG_DIR/$name.log" | tail -5
     ); then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
         if [[ -f "$out/translated_rust/Cargo.toml" ]]; then
             translated=$((translated + 1))
-            echo "  ✅ $name translated"
+            echo "$name,success,$TIMESTAMP,${duration}" >> "$PROGRESS"
+            echo "  ✅ $name (${duration}s) [$translated translated, $failed failed of $current/$total]"
         else
             failed=$((failed + 1))
-            echo "  ❌ $name failed (no Cargo.toml produced)"
+            echo "$name,no_cargo_toml,$TIMESTAMP,${duration}" >> "$PROGRESS"
+            echo "  ❌ $name — no Cargo.toml (${duration}s) [$translated translated, $failed failed of $current/$total]"
         fi
     else
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
         failed=$((failed + 1))
-        echo "  ❌ $name failed (kiro-cli error)"
+        echo "$name,error,$TIMESTAMP,${duration}" >> "$PROGRESS"
+        echo "  ❌ $name — kiro-cli error (${duration}s) [$translated translated, $failed failed of $current/$total]"
     fi
-    echo
 done
 
+echo ""
 echo "========================================"
-echo "Done: $translated/$total translated, $failed failed"
+echo "Done: $translated/$total translated, $failed failed, $skipped skipped (already done)"
+echo "Progress: $PROGRESS"
 echo "Logs: $LOG_DIR"
 echo ""
 echo "To validate, run from the Test-Corpus repo:"

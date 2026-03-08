@@ -81,7 +81,17 @@ for test_case in "$INPUT_DIR"/*/; do
 
     # Copy test_vectors and runner (for _lib cases)
     cp -r "$test_case/test_vectors" "$out/"
-    [[ -d "$test_case/runner" ]] && cp -r "$test_case/runner" "$out/"
+    if [[ -d "$test_case/runner" ]]; then
+        cp -r "$test_case/runner" "$out/"
+        # Fix cando2 relative path to absolute
+        if [[ -f "$out/runner/Cargo.toml" ]]; then
+            CANDO2_ABS="$(cd "$INPUT_DIR" && realpath ../../../tools/cando2 2>/dev/null || realpath "$INPUT_DIR/../../tools/cando2" 2>/dev/null || echo "")"
+            if [[ -n "$CANDO2_ABS" && -d "$CANDO2_ABS" ]]; then
+                sed -i '' "s|path = \"../../../../tools/cando2\"|path = \"$CANDO2_ABS\"|" "$out/runner/Cargo.toml" 2>/dev/null || \
+                sed -i "s|path = \"../../../../tools/cando2\"|path = \"$CANDO2_ABS\"|" "$out/runner/Cargo.toml" 2>/dev/null || true
+            fi
+        fi
+    fi
 
     # Load prompt based on project type
     if [[ "$name" == *_lib ]]; then
@@ -105,6 +115,10 @@ for test_case in "$INPUT_DIR"/*/; do
         end_time=$(date +%s)
         duration=$((end_time - start_time))
         if [[ -f "$out/translated_rust/Cargo.toml" ]]; then
+            # Add workspace isolation so this package isn't pulled into a parent workspace
+            if ! grep -q '\[workspace\]' "$out/translated_rust/Cargo.toml"; then
+                echo -e '\n[workspace]' >> "$out/translated_rust/Cargo.toml"
+            fi
             translated=$((translated + 1))
             echo "$name,success,$TIMESTAMP,${duration}" >> "$PROGRESS"
             echo "  ✅ $name (${duration}s) [$translated translated, $failed failed of $current/$total]"
@@ -124,6 +138,25 @@ done
 
 echo ""
 echo "========================================"
+
+# Generate root workspace Cargo.toml for lib runners
+runners=""
+for runner_toml in "$OUTPUT_DIR"/*/runner/Cargo.toml; do
+    [[ -f "$runner_toml" ]] || continue
+    dir=$(dirname "$runner_toml")
+    rel=${dir#"$OUTPUT_DIR/"}
+    runners="$runners    \"$rel\","$'\n'
+done
+if [[ -n "$runners" ]]; then
+    cat > "$OUTPUT_DIR/Cargo.toml" << EOF
+[workspace]
+members = [
+$runners]
+resolver = "2"
+EOF
+    echo "Generated root workspace with $(echo "$runners" | wc -l | tr -d ' ') lib runners"
+fi
+
 echo "Done: $translated/$total translated, $failed failed, $skipped skipped (already done)"
 echo "Progress: $PROGRESS"
 echo "Logs: $LOG_DIR"

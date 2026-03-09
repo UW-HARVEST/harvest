@@ -95,7 +95,7 @@ for test_case in "$INPUT_DIR"/*/; do
 
     # Load prompt based on project type
     if [[ "$name" == *_lib ]]; then
-        prompt=$(cat "$SCRIPT_DIR/prompts/library.md")
+        prompt=$(cat "$SCRIPT_DIR/prompts/library.md" | sed "s/LIBRARY_NAME_PLACEHOLDER/$name/")
     else
         prompt=$(cat "$SCRIPT_DIR/prompts/executable.md")
     fi

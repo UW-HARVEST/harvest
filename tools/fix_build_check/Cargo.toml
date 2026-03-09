@@ -1,14 +1,14 @@
 [package]
-name = "try_cargo_build"
+name = "fix_build_check"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 cargo_metadata = "0.23.1"
-full_source.workspace = true
 harvest_core.workspace = true
+serde.workspace = true
 split_and_format.workspace = true
-toml_edit = { workspace = true }
+tempfile.workspace = true
 tracing.workspace = true
 
 [lints]

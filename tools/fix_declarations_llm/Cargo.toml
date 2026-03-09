@@ -1,18 +1,15 @@
 [package]
-name = "modular_fix_llm"
+name = "fix_declarations_llm"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cargo_metadata = "0.23.1"
-full_source.workspace = true
+diagnostic_attributor.workspace = true
 harvest_core.workspace = true
-prettyplease = "0.2"
-proc-macro2 = { version = "1", features = ["span-locations"] }
 serde.workspace = true
 serde_json.workspace = true
+split_and_format.workspace = true
 syn = { version = "2", features = ["full"] }
-tempfile.workspace = true
 tracing.workspace = true
 
 [lints]

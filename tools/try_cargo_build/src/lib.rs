@@ -1,17 +1,53 @@
 //! Checks if a generated Rust project builds by materializing
-//! it to a tempdir and running `cargo build --release`.
+//! it to the output directory and running `cargo build --release`.
 use full_source::CargoPackage;
 use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
+use split_and_format::SplitPackage;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::info;
 
-pub struct TryCargoBuild;
 // Either a vector of compiled artifact filenames (on success)
 // or a string containing error messages (on failure).
 pub type BuildResult = Result<Vec<PathBuf>, String>;
+
+/// Controls whether `TryCargoBuild` reads a `CargoPackage` or a `SplitPackage` input.
+enum TryCargoBuildMode {
+    /// Read `CargoPackage` from `inputs[0]` (original behaviour).
+    FromCargoPackage,
+    /// Read `SplitPackage` from `inputs[0]` (used at the end of the fix loop).
+    FromSplitPackage,
+}
+
+/// Validates that the generated Rust project builds by running `cargo build --release`.
+pub struct TryCargoBuild {
+    mode: TryCargoBuildMode,
+}
+
+impl Default for TryCargoBuild {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TryCargoBuild {
+    /// Construct a `TryCargoBuild` that accepts a `CargoPackage` input.
+    pub fn new() -> Self {
+        TryCargoBuild {
+            mode: TryCargoBuildMode::FromCargoPackage,
+        }
+    }
+
+    /// Construct a `TryCargoBuild` that accepts a `SplitPackage` input.
+    /// Use this at the end of the fix loop when the pipeline holds a `SplitPackage`.
+    pub fn from_split_package() -> Self {
+        TryCargoBuild {
+            mode: TryCargoBuildMode::FromSplitPackage,
+        }
+    }
+}
 
 /// Parses cargo output stream and concatenates all compiler messages into a single string.
 fn parse_compiler_messages(stdout: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
@@ -95,13 +131,24 @@ impl Tool for TryCargoBuild {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        // Get cargo package representation (the first and only arg of try_cargo_build)
-        let cargo_package = context
-            .ir_snapshot
-            .get::<CargoPackage>(inputs[0])
-            .ok_or("No CargoPackage representation found in IR")?;
         let output_path = context.config.output.clone();
-        cargo_package.materialize(&output_path)?;
+
+        match self.mode {
+            TryCargoBuildMode::FromCargoPackage => {
+                let cargo_package = context
+                    .ir_snapshot
+                    .get::<CargoPackage>(inputs[0])
+                    .ok_or("No CargoPackage representation found in IR")?;
+                cargo_package.materialize(&output_path)?;
+            }
+            TryCargoBuildMode::FromSplitPackage => {
+                let split_pkg = context
+                    .ir_snapshot
+                    .get::<SplitPackage>(inputs[0])
+                    .ok_or("No SplitPackage representation found in IR")?;
+                split_pkg.materialize(&output_path)?;
+            }
+        }
 
         // Validate that the Rust project builds
         let compilation_result = try_cargo_build(&output_path)?;

@@ -1,8 +1,8 @@
 //! Attempts to directly turn a C project into a Cargo project by throwing it at
 //! an LLM via the `llm` crate.
 
-use build_project_spec::{ProjectKind, ProjectSpec};
-use full_source::{CargoPackage, RawSource};
+use build_project_spec::ProjectKind;
+use full_source::CargoPackage;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
@@ -21,7 +21,15 @@ const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
 const SYSTEM_PROMPT_EXECUTABLE: &str = include_str!("system_prompt_executable.txt");
 const SYSTEM_PROMPT_LIBRARY: &str = include_str!("system_prompt_library.txt");
 
-pub struct RawSourceToCargoLlm;
+pub struct RawSourceToCargoLlm {
+    project_kind: ProjectKind,
+}
+
+impl RawSourceToCargoLlm {
+    pub fn new(project_kind: ProjectKind) -> Self {
+        Self { project_kind }
+    }
+}
 
 impl Tool for RawSourceToCargoLlm {
     fn name(&self) -> &'static str {
@@ -36,24 +44,12 @@ impl Tool for RawSourceToCargoLlm {
         let config =
             Config::deserialize(context.config.tools.get("raw_source_to_cargo_llm").unwrap())?;
         debug!("LLM Configuration {config:?}");
-        // Get both inputs: RawSource and ProjectSpec
+        // Get RawSource input.
         let in_dir = context
             .ir_snapshot
-            .get::<RawSource>(inputs[0])
+            .get::<full_source::RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
-        let project_spec = context
-            .ir_snapshot
-            .get::<ProjectSpec>(inputs[1])
-            .ok_or("No ProjectSpec representation found in IR")?;
-        let project_kind = if project_spec
-            .targets
-            .values()
-            .any(|target| matches!(target.kind, ProjectKind::Executable))
-        {
-            ProjectKind::Executable
-        } else {
-            ProjectKind::Library
-        };
+        let project_kind = self.project_kind;
 
         // Use the llm crate to connect to the LLM.
         // Select system prompt based on project kind

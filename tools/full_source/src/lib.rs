@@ -3,6 +3,7 @@ use std::path::Path;
 use harvest_core::{Representation, fs::RawDir};
 
 /// A raw C project passed as input.
+#[derive(Clone)]
 pub struct RawSource {
     pub dir: RawDir,
 }

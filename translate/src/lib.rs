@@ -7,10 +7,11 @@ mod scheduler;
 pub mod util;
 
 use build_project_spec::BuildProjectSpec;
+use build_project_spec::{ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
-use harvest_core::{HarvestIR, diagnostics};
+use harvest_core::{HarvestIR, Id, diagnostics};
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
@@ -31,14 +32,37 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     info!("Harvest version: {}", get_version());
     info!("Transpiling with: {}", config.model_info().unwrap());
 
-    // Setup a schedule for the transpilation.
+    // Phase 1: load source + infer project spec.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+    let project_spec_id = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+
+    if let Err(e) = scheduler.run_all(&mut runner, &mut ir, config.clone()) {
+        error!("Error while building project spec: {e}");
+        return Err(e);
+    }
+
+    let project_spec = ir
+        .get::<ProjectSpec>(project_spec_id)
+        .ok_or("No ProjectSpec representation found in IR")?;
+    let project_kind = if project_spec
+        .targets
+        .values()
+        .any(|target| matches!(target.kind, ProjectKind::Executable))
+    {
+        ProjectKind::Executable
+    } else {
+        ProjectKind::Library
+    };
+
+    // Phase 2: translate + build using inferred project kind.
     let translate = if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
+        scheduler.queue_after(
+            ModularTranslationLlm::new(project_kind),
+            &[load_src, parse_ast],
+        )
     } else {
-        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
+        scheduler.queue_after(RawSourceToCargoLlm::new(project_kind), &[load_src])
     };
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
 
@@ -52,4 +76,80 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         return Err(e);
     }
     Ok(ir)
+}
+
+/// Performs project-aware transpilation: build a project spec once, then transpile each inferred
+/// target independently.
+pub fn translate_project(
+    config: Arc<Config>,
+) -> Result<Vec<HarvestIR>, Box<dyn std::error::Error>> {
+    let collector = diagnostics::Collector::initialize(&config)?;
+    let mut runner = ToolRunner::new(collector.reporter());
+    let mut scheduler = Scheduler::default();
+
+    info!("Harvest version: {}", get_version());
+    info!("Transpiling with: {}", config.model_info().unwrap());
+
+    // Load raw source once, then build project spec once from the full source tree.
+    let mut spec_ir = HarvestIR::default();
+    let raw_source_id = scheduler.queue(LoadRawSource::new(&config.input));
+    let project_spec_id = scheduler.queue_after(BuildProjectSpec, &[raw_source_id]);
+
+    if let Err(e) = scheduler.run_all(&mut runner, &mut spec_ir, config.clone()) {
+        error!("Error while building project spec: {e}");
+        return Err(e);
+    }
+
+    let project_spec = spec_ir
+        .get::<ProjectSpec>(project_spec_id)
+        .ok_or("No ProjectSpec representation found in IR")?;
+
+    // Iterate targets in the build analyzer's compile order.
+    let targets: Vec<_> = project_spec
+        .target_order
+        .iter()
+        .filter_map(|artifact| {
+            project_spec
+                .targets
+                .get(artifact)
+                .map(|target| (artifact, target))
+        })
+        .collect();
+
+    let mut project_irs = Vec::with_capacity(targets.len());
+    for (artifact_path, target_spec) in targets.iter() {
+        let mut ir = HarvestIR::default();
+
+        let target_raw_source = target_spec.sources.clone();
+        let target_raw_source_id = ir.add_representation(Box::new(target_raw_source));
+
+        let translate = if config.modular {
+            let parse_ast = scheduler.queue_after(ParseToAst, &[target_raw_source_id]);
+            scheduler.queue_after(
+                ModularTranslationLlm::new(target_spec.kind),
+                &[target_raw_source_id, parse_ast],
+            )
+        } else {
+            scheduler.queue_after(
+                RawSourceToCargoLlm::new(target_spec.kind),
+                &[target_raw_source_id],
+            )
+        };
+        let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+
+        if let Err(e) = scheduler.run_all(&mut runner, &mut ir, config.clone()) {
+            error!(
+                "Error during target transpilation for '{}': {e}",
+                artifact_path.display()
+            );
+            return Err(e);
+        }
+
+        project_irs.push(ir);
+    }
+
+    drop(scheduler);
+    drop(runner);
+    collector.diagnostics(); // TODO: Return this value (see issue 51)
+    Ok(project_irs)
 }

@@ -34,11 +34,18 @@ impl Display for ProjectKind {
 
 pub struct ProjectSpec {
     pub targets: HashMap<PathBuf, TargetSpec>,
+    pub target_order: Vec<PathBuf>,
 }
 
 pub struct TargetSpec {
     pub kind: ProjectKind,
-    pub sources: RawDir,
+    pub sources: RawSource,
+}
+
+pub struct ProjectTarget {
+    pub artifact: PathBuf,
+    pub kind: ProjectKind,
+    pub sources: RawSource,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +75,29 @@ impl Representation for ProjectSpec {
     }
 }
 
+impl Display for ProjectTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProjectTarget(artifact={})", self.artifact.display())
+    }
+}
+
+impl Representation for ProjectTarget {
+    fn name(&self) -> &'static str {
+        "project_target"
+    }
+}
+
 pub struct BuildProjectSpec;
+pub struct SelectPrimaryTarget;
+
+fn clone_raw_source(raw_source: &RawSource) -> Result<RawSource, Box<dyn std::error::Error>> {
+    let mut out = RawDir::default();
+    for (path, contents) in raw_source.dir.files_recursive() {
+        out.set_file(&path, contents.to_vec())
+            .map_err(|e| format!("failed cloning file '{}' into RawDir: {e}", path.display()))?;
+    }
+    Ok(RawSource { dir: out })
+}
 
 fn collect_cmakelists_map(raw_source: &RawSource) -> HashMap<String, String> {
     raw_source
@@ -137,8 +166,10 @@ impl Tool for BuildProjectSpec {
         let llm_response = llm.analyze_project(&repr_text, &cmakelists_map)?;
 
         let mut targets: HashMap<PathBuf, TargetSpec> = HashMap::new();
-        for (artifact, target) in llm_response.targets {
-            let artifact_path = PathBuf::from(artifact);
+        let mut target_order = Vec::with_capacity(llm_response.targets.len());
+        for target in llm_response.targets {
+            let artifact_path = PathBuf::from(target.artifact);
+            target_order.push(artifact_path.clone());
 
             let mut sources = RawDir::default();
             for source_path in target
@@ -173,7 +204,7 @@ impl Tool for BuildProjectSpec {
                 artifact_path,
                 TargetSpec {
                     kind: target.kind,
-                    sources,
+                    sources: RawSource { dir: sources },
                 },
             );
         }
@@ -185,6 +216,42 @@ impl Tool for BuildProjectSpec {
             usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
         );
 
-        Ok(Box::new(ProjectSpec { targets }))
+        Ok(Box::new(ProjectSpec {
+            targets,
+            target_order,
+        }))
+    }
+}
+
+impl Tool for SelectPrimaryTarget {
+    fn name(&self) -> &'static str {
+        "select_primary_target"
+    }
+
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        let project_spec = context
+            .ir_snapshot
+            .get::<ProjectSpec>(inputs[0])
+            .ok_or("No ProjectSpec representation found in IR")?;
+
+        let artifact = project_spec
+            .target_order
+            .first()
+            .ok_or("ProjectSpec has no targets")?
+            .clone();
+        let target = project_spec
+            .targets
+            .get(&artifact)
+            .ok_or("Primary target missing from target map")?;
+
+        Ok(Box::new(ProjectTarget {
+            artifact,
+            kind: target.kind,
+            sources: clone_raw_source(&target.sources)?,
+        }))
     }
 }

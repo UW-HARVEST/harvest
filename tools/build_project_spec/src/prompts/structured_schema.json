@@ -4,11 +4,14 @@
     "type": "object",
     "properties": {
       "targets": {
-        "type": "object",
-        "description": "Map from produced artifact relative path to target spec.",
-        "additionalProperties": {
+        "type": "array",
+        "description": "Ordered list of targets in compile/link order.",
+        "items": {
           "type": "object",
           "properties": {
+            "artifact": {
+              "type": "string"
+            },
             "kind": {
               "type": "string",
               "enum": ["Library", "Executable"]
@@ -21,7 +24,7 @@
               }
             }
           },
-          "required": ["kind", "sources"]
+          "required": ["artifact", "kind", "sources"]
         }
       }
     },

@@ -6,7 +6,7 @@
 //! - Interface (FunctionDecl and VarDecl signatures) use type context
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
-use build_project_spec::{ProjectKind, ProjectSpec};
+use build_project_spec::ProjectKind;
 use c_ast::ClangAst;
 use full_source::RawSource;
 use harvest_core::config::unknown_field_warning;
@@ -61,13 +61,21 @@ impl Config {
 }
 
 /// The main tool struct for modular translation.
-pub struct ModularTranslationLlm;
+pub struct ModularTranslationLlm {
+    project_kind: ProjectKind,
+}
+
+impl ModularTranslationLlm {
+    pub fn new(project_kind: ProjectKind) -> Self {
+        Self { project_kind }
+    }
+}
 
 /// Extracts and validates the tool's input arguments from the context.
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
-) -> Result<(&'a RawSource, &'a ClangAst, ProjectKind), Box<dyn std::error::Error>> {
+) -> Result<(&'a RawSource, &'a ClangAst), Box<dyn std::error::Error>> {
     let raw_source = context
         .ir_snapshot
         .get::<RawSource>(inputs[0])
@@ -76,21 +84,7 @@ fn extract_args<'a>(
         .ir_snapshot
         .get::<ClangAst>(inputs[1])
         .ok_or("No ClangAst representation found in IR")?;
-    let project_spec = context
-        .ir_snapshot
-        .get::<ProjectSpec>(inputs[2])
-        .ok_or("No ProjectSpec representation found in IR")?;
-    let project_kind = if project_spec
-        .targets
-        .values()
-        .any(|target| matches!(target.kind, ProjectKind::Executable))
-    {
-        ProjectKind::Executable
-    } else {
-        ProjectKind::Library
-    };
-
-    Ok((raw_source, clang_ast, project_kind))
+    Ok((raw_source, clang_ast))
 }
 
 impl Tool for ModularTranslationLlm {
@@ -112,7 +106,7 @@ impl Tool for ModularTranslationLlm {
         )?;
         config.validate();
 
-        let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
+        let (raw_source, clang_ast) = extract_args(&context, &inputs)?;
 
         // Extract and categorize top-level declarations into types, globals, and functions
         let declarations = extract_top_level_decls(clang_ast, raw_source);
@@ -129,7 +123,7 @@ impl Tool for ModularTranslationLlm {
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result =
-            translation::translate_decls(&declarations, raw_source, &project_kind, &config)
+            translation::translate_decls(&declarations, raw_source, &self.project_kind, &config)
                 .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
@@ -138,7 +132,7 @@ impl Tool for ModularTranslationLlm {
         );
 
         // Assemble translations into a CargoPackage representation
-        let cargo_package = recombine::recombine_decls(translation_result, &project_kind)?;
+        let cargo_package = recombine::recombine_decls(translation_result, &self.project_kind)?;
 
         Ok(Box::new(cargo_package))
     }

@@ -13,6 +13,7 @@ const SYSTEM_PROMPT: &str = include_str!("prompts/system_prompt.txt");
 /// Typed target spec returned by the build analyzer LLM.
 #[derive(Debug, Deserialize)]
 pub struct BuildAnalysisTarget {
+    pub artifact: String,
     pub kind: ProjectKind,
     pub sources: Vec<String>,
 }
@@ -20,7 +21,7 @@ pub struct BuildAnalysisTarget {
 /// Typed full response returned by the build analyzer LLM.
 #[derive(Debug, Deserialize)]
 pub struct BuildAnalysisResponse {
-    pub targets: HashMap<String, BuildAnalysisTarget>,
+    pub targets: Vec<BuildAnalysisTarget>,
 }
 
 #[derive(Serialize)]

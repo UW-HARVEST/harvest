@@ -706,6 +706,9 @@ dependencies = [
  "full_source",
  "harvest_core",
  "load_raw_source",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

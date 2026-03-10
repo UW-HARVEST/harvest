@@ -7,6 +7,9 @@ edition = "2024"
 full_source.workspace = true
 harvest_core.workspace = true
 load_raw_source.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,76 @@
+//! LLM abstraction layer for build target analysis.
+//! Abstracts prompt/request construction and provides a typed response interface.
+
+use crate::{Config, ProjectKind};
+use harvest_core::llm::{HarvestLLM, LLMUsageTotals, Usage, build_request};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("prompts/structured_schema.json");
+const SYSTEM_PROMPT: &str = include_str!("prompts/system_prompt.txt");
+
+/// Typed target spec returned by the build analyzer LLM.
+#[derive(Debug, Deserialize)]
+pub struct BuildAnalysisTarget {
+    pub kind: ProjectKind,
+    pub sources: Vec<String>,
+}
+
+/// Typed full response returned by the build analyzer LLM.
+#[derive(Debug, Deserialize)]
+pub struct BuildAnalysisResponse {
+    pub targets: HashMap<String, BuildAnalysisTarget>,
+}
+
+#[derive(Serialize)]
+struct BuildAnalysisRequest<'a> {
+    repr: &'a str,
+    cmakelists: &'a HashMap<String, String>,
+}
+
+pub struct BuildAnalyzerLLM {
+    llm: HarvestLLM,
+    usage_totals: Mutex<LLMUsageTotals>,
+}
+
+impl BuildAnalyzerLLM {
+    pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, SYSTEM_PROMPT)?;
+        Ok(Self {
+            llm,
+            usage_totals: Mutex::new(LLMUsageTotals::default()),
+        })
+    }
+
+    fn record_usage(&self, usage: Option<&Usage>) {
+        let mut usage_totals = self
+            .usage_totals
+            .lock()
+            .expect("usage mutex poisoned in build analyzer");
+        usage_totals.add_usage(usage);
+    }
+
+    pub fn usage_totals(&self) -> LLMUsageTotals {
+        *self
+            .usage_totals
+            .lock()
+            .expect("usage mutex poisoned in build analyzer")
+    }
+
+    pub fn analyze_project(
+        &self,
+        repr: &str,
+        cmakelists: &HashMap<String, String>,
+    ) -> Result<BuildAnalysisResponse, Box<dyn std::error::Error>> {
+        let request = build_request(
+            "Infer produced artifacts and project kinds from the source tree and CMakeLists content.",
+            &BuildAnalysisRequest { repr, cmakelists },
+        )?;
+
+        let (response, usage) = self.llm.invoke(&request)?;
+        self.record_usage(usage.as_ref());
+
+        Ok(serde_json::from_str(&response)?)
+    }
+}

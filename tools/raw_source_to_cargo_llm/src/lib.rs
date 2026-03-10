@@ -45,7 +45,15 @@ impl Tool for RawSourceToCargoLlm {
             .ir_snapshot
             .get::<ProjectSpec>(inputs[1])
             .ok_or("No ProjectSpec representation found in IR")?;
-        let project_kind = &project_spec.kind;
+        let project_kind = if project_spec
+            .targets
+            .values()
+            .any(|target| matches!(target.kind, ProjectKind::Executable))
+        {
+            ProjectKind::Executable
+        } else {
+            ProjectKind::Library
+        };
 
         // Use the llm crate to connect to the LLM.
         // Select system prompt based on project kind

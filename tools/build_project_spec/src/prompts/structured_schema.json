@@ -1,0 +1,30 @@
+{
+  "name": "project_spec",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "targets": {
+        "type": "object",
+        "description": "Map from produced artifact relative path to target spec.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["Library", "Executable"]
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": ".*\\.(c|h)$"
+              }
+            }
+          },
+          "required": ["kind", "sources"]
+        }
+      }
+    },
+    "required": ["targets"]
+  }
+}

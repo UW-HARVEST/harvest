@@ -67,7 +67,7 @@ pub struct ModularTranslationLlm;
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
-) -> Result<(&'a RawSource, &'a ClangAst, &'a ProjectKind), Box<dyn std::error::Error>> {
+) -> Result<(&'a RawSource, &'a ClangAst, ProjectKind), Box<dyn std::error::Error>> {
     let raw_source = context
         .ir_snapshot
         .get::<RawSource>(inputs[0])
@@ -80,7 +80,17 @@ fn extract_args<'a>(
         .ir_snapshot
         .get::<ProjectSpec>(inputs[2])
         .ok_or("No ProjectSpec representation found in IR")?;
-    Ok((raw_source, clang_ast, &project_spec.kind))
+    let project_kind = if project_spec
+        .targets
+        .values()
+        .any(|target| matches!(target.kind, ProjectKind::Executable))
+    {
+        ProjectKind::Executable
+    } else {
+        ProjectKind::Library
+    };
+
+    Ok((raw_source, clang_ast, project_kind))
 }
 
 impl Tool for ModularTranslationLlm {
@@ -119,7 +129,7 @@ impl Tool for ModularTranslationLlm {
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result =
-            translation::translate_decls(&declarations, raw_source, project_kind, &config)
+            translation::translate_decls(&declarations, raw_source, &project_kind, &config)
                 .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
@@ -128,7 +138,7 @@ impl Tool for ModularTranslationLlm {
         );
 
         // Assemble translations into a CargoPackage representation
-        let cargo_package = recombine::recombine_decls(translation_result, project_kind)?;
+        let cargo_package = recombine::recombine_decls(translation_result, &project_kind)?;
 
         Ok(Box::new(cargo_package))
     }

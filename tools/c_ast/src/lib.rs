@@ -8,9 +8,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::File,
+    path::Path,
     process::{Command, Stdio},
 };
 use tracing::info;
+
+#[derive(Deserialize, Debug)]
+struct CompileCommand {
+    command: String,
+    file: String,
+}
 
 /// Represents a (possibly) qualified type in the Clang AST, such as `int`, `const int`, or `const volatile int`.
 /// Clang Docs on QualType: https://clang.llvm.org/doxygen/classclang_1_1QualType.html
@@ -221,6 +228,24 @@ impl Representation for ClangAst {
 
 pub struct ParseToAst;
 
+fn get_compile_commands(
+    src_dir: &Path,
+    working_dir: &Path,
+) -> Result<Vec<CompileCommand>, Box<dyn std::error::Error>> {
+    Command::new("cmake")
+        .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
+        .arg("-S")
+        .arg(src_dir)
+        .arg("-B")
+        .arg(working_dir)
+        .output()?;
+
+    let compile_commands: Vec<CompileCommand> =
+        serde_json::de::from_reader(File::open(working_dir.join("compile_commands.json"))?)?;
+
+    Ok(compile_commands)
+}
+
 impl Tool for ParseToAst {
     fn name(&self) -> &'static str {
         "parse_to_ast"
@@ -242,22 +267,7 @@ impl Tool for ParseToAst {
         rs.dir.materialize(src_dir.path())?;
         let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
 
-        Command::new("cmake")
-            .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
-            .arg("-S")
-            .arg(src_dir.path())
-            .arg("-B")
-            .arg(working_dir.path())
-            .output()?;
-
-        #[derive(Deserialize, Debug)]
-        struct CompileCommand {
-            command: String,
-            file: String,
-        }
-        let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
-            working_dir.path().join("compile_commands.json"),
-        )?)?;
+        let ccs = get_compile_commands(src_dir.path(), working_dir.path())?;
 
         let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
 

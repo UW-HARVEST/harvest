@@ -10,14 +10,21 @@ Output rules:
 - Return valid JSON only. No markdown.
 - Follow the provided JSON schema exactly.
 - Return `targets` as an array ordered by compile/link order (dependencies first).
+- For each target, set `name` to the logical CMake target name (e.g. from `add_library` / `add_executable`).
 - For each target, set `artifact` to the produced artifact path as a relative string.
 - For each target, set `kind` to `Library` or `Executable`.
-- For each target, provide `sources` as a list of project-root-relative source/header paths.
+- For each target, provide `sources` as a list of project-root-relative source/header paths that are directly compiled as part of that target only.
+- Do NOT duplicate transitive dependency sources in a dependent target's `sources` list.
+- For each target, provide `deps` as a list of direct logical target dependencies by target name. Use `[]` when none.
 - Include only files that appear to be in the provided source tree (`repr`).
 - Include only `.c` and `.h` files in `sources`.
 - Best effort: if uncertain, provide the most plausible targets and sources instead of failing.
 
 Reasoning guidance:
 - Use all CMakeLists content and common CMake patterns (`add_library`, `add_executable`, `target_sources`, variable expansion heuristics, subdirectories, target linking hints).
+- Attempt to resolve CMake variables to concrete paths/values whenever possible.
+- Track variable flow across common commands (`set`, `list`, `foreach`, `function`/`macro` arguments, and simple `if` branches when conditions are obvious from context).
+- Resolve path-construction helpers and transformations, including `cmake_path(...)` operations (e.g. append, normalize, relative/absolute conversions), and similar path-building patterns using variables.
+- When variables are only partially resolvable, still use the best concrete approximation and keep paths project-root-relative when possible.
 - If exact artifact path is not explicit, infer a plausible relative artifact path from context and naming conventions.
 - Do not invent files that are not likely present in the source tree.

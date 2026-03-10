@@ -7,11 +7,11 @@ mod scheduler;
 pub mod util;
 
 use build_project_spec::BuildProjectSpec;
-use build_project_spec::{ProjectKind, ProjectSpec};
+use build_project_spec::ProjectSpec;
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
-use harvest_core::{HarvestIR, Id, diagnostics};
+use harvest_core::{HarvestIR, diagnostics};
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
@@ -23,59 +23,16 @@ use try_cargo_build::TryCargoBuild;
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {
-    // Basic tool setup
-    let collector = diagnostics::Collector::initialize(&config)?;
-    let mut ir = HarvestIR::default();
-    let mut runner = ToolRunner::new(collector.reporter());
-    let mut scheduler = Scheduler::default();
-
-    info!("Harvest version: {}", get_version());
-    info!("Transpiling with: {}", config.model_info().unwrap());
-
-    // Phase 1: load source + infer project spec.
-    let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let project_spec_id = scheduler.queue_after(BuildProjectSpec, &[load_src]);
-
-    if let Err(e) = scheduler.run_all(&mut runner, &mut ir, config.clone()) {
-        error!("Error while building project spec: {e}");
-        return Err(e);
-    }
-
-    let project_spec = ir
-        .get::<ProjectSpec>(project_spec_id)
-        .ok_or("No ProjectSpec representation found in IR")?;
-    let project_kind = if project_spec
-        .targets
-        .values()
-        .any(|target| matches!(target.kind, ProjectKind::Executable))
-    {
-        ProjectKind::Executable
-    } else {
-        ProjectKind::Library
-    };
-
-    // Phase 2: translate + build using inferred project kind.
-    let translate = if config.modular {
-        let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(
-            ModularTranslationLlm::new(project_kind),
-            &[load_src, parse_ast],
+    let mut project_irs = translate_project(config)?;
+    if project_irs.len() != 1 {
+        return Err(format!(
+            "transpile expected exactly 1 target, but build_project_spec produced {}",
+            project_irs.len()
         )
-    } else {
-        scheduler.queue_after(RawSourceToCargoLlm::new(project_kind), &[load_src])
-    };
-    let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
-
-    // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
-    let result = scheduler.run_all(&mut runner, &mut ir, config);
-    drop(scheduler);
-    drop(runner);
-    collector.diagnostics(); // TODO: Return this value (see issue 51)
-    if let Err(e) = result {
-        error!("Error during transpilation: {e}");
-        return Err(e);
+        .into());
     }
-    Ok(ir)
+
+    Ok(project_irs.remove(0))
 }
 
 /// Performs project-aware transpilation: build a project spec once, then transpile each inferred
@@ -108,13 +65,19 @@ pub fn translate_project(
     let targets: Vec<_> = project_spec
         .target_order
         .iter()
-        .filter_map(|artifact| {
+        .map(|artifact| {
             project_spec
                 .targets
                 .get(artifact)
                 .map(|target| (artifact, target))
+                .ok_or_else(|| {
+                    format!(
+                        "target_order referenced missing target '{}'",
+                        artifact.display()
+                    )
+                })
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     let mut project_irs = Vec::with_capacity(targets.len());
     for (artifact_path, target_spec) in targets.iter() {

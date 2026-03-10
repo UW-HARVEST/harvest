@@ -182,7 +182,7 @@ impl Symlink {
 
 // TODO: Remove; RawEntry is being replaced by DirEntry.
 /// A representation of a file-system directory entry.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
 pub enum RawEntry {
     Dir(RawDir),
@@ -207,7 +207,7 @@ impl RawEntry {
 
 /// A representation of a file-system directory tree.
 // TODO: Removed; RawDir is being replaced by Dir.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct RawDir(BTreeMap<OsString, RawEntry>);
 

@@ -9,6 +9,9 @@
         "items": {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string"
+            },
             "artifact": {
               "type": "string"
             },
@@ -22,9 +25,16 @@
                 "type": "string",
                 "pattern": ".*\\.(c|h)$"
               }
+            },
+            "deps": {
+              "type": "array",
+              "description": "Direct logical CMake target dependencies by target name.",
+              "items": {
+                "type": "string"
+              }
             }
           },
-          "required": ["artifact", "kind", "sources"]
+          "required": ["name", "artifact", "kind", "sources", "deps"]
         }
       }
     },

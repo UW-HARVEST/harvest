@@ -15,6 +15,7 @@ use tracing::{debug, info};
 
 mod build_analyzer_llm;
 
+use crate::build_analyzer_llm::BuildAnalysisTarget;
 pub use build_analyzer_llm::BuildAnalyzerLLM;
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -38,14 +39,65 @@ pub struct ProjectSpec {
 }
 
 pub struct TargetSpec {
+    pub name: String,
     pub kind: ProjectKind,
     pub sources: RawSource,
+    pub deps: Vec<String>,
 }
 
 pub struct ProjectTarget {
     pub artifact: PathBuf,
+    pub name: String,
     pub kind: ProjectKind,
     pub sources: RawSource,
+    pub deps: Vec<String>,
+}
+
+impl ProjectTarget {
+    pub fn from_build_analysis_target(
+        target: BuildAnalysisTarget,
+        raw_source: &RawSource,
+        source_files: &HashSet<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let artifact = PathBuf::from(target.artifact);
+
+        let mut sources = RawDir::default();
+        for source_path in target
+            .sources
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| has_allowed_source_extension(p))
+            .filter(|p| source_files.contains(p))
+        {
+            let source_contents = raw_source
+                .dir
+                .get_file(&source_path)
+                .map_err(|e| {
+                    format!(
+                        "failed to read source file '{}' from raw source: {e}",
+                        source_path.display()
+                    )
+                })?
+                .clone();
+
+            sources
+                .set_file(&source_path, source_contents)
+                .map_err(|e| {
+                    format!(
+                        "failed to insert source file '{}' into target source tree: {e}",
+                        source_path.display()
+                    )
+                })?;
+        }
+
+        Ok(Self {
+            artifact,
+            name: target.name,
+            kind: target.kind,
+            sources: RawSource { dir: sources },
+            deps: target.deps,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,16 +140,6 @@ impl Representation for ProjectTarget {
 }
 
 pub struct BuildProjectSpec;
-pub struct SelectPrimaryTarget;
-
-fn clone_raw_source(raw_source: &RawSource) -> Result<RawSource, Box<dyn std::error::Error>> {
-    let mut out = RawDir::default();
-    for (path, contents) in raw_source.dir.files_recursive() {
-        out.set_file(&path, contents.to_vec())
-            .map_err(|e| format!("failed cloning file '{}' into RawDir: {e}", path.display()))?;
-    }
-    Ok(RawSource { dir: out })
-}
 
 fn collect_cmakelists_map(raw_source: &RawSource) -> HashMap<String, String> {
     raw_source
@@ -167,44 +209,20 @@ impl Tool for BuildProjectSpec {
 
         let mut targets: HashMap<PathBuf, TargetSpec> = HashMap::new();
         let mut target_order = Vec::with_capacity(llm_response.targets.len());
+
         for target in llm_response.targets {
-            let artifact_path = PathBuf::from(target.artifact);
-            target_order.push(artifact_path.clone());
+            let project_target =
+                ProjectTarget::from_build_analysis_target(target, repr, &source_files)?;
 
-            let mut sources = RawDir::default();
-            for source_path in target
-                .sources
-                .into_iter()
-                .map(PathBuf::from)
-                .filter(|p| has_allowed_source_extension(p))
-                .filter(|p| source_files.contains(p))
-            {
-                let source_contents = repr
-                    .dir
-                    .get_file(&source_path)
-                    .map_err(|e| {
-                        format!(
-                            "failed to read source file '{}' from raw source: {e}",
-                            source_path.display()
-                        )
-                    })?
-                    .clone();
-
-                sources
-                    .set_file(&source_path, source_contents)
-                    .map_err(|e| {
-                        format!(
-                            "failed to insert source file '{}' into target source tree: {e}",
-                            source_path.display()
-                        )
-                    })?;
-            }
+            target_order.push(project_target.artifact.clone());
 
             targets.insert(
-                artifact_path,
+                project_target.artifact,
                 TargetSpec {
-                    kind: target.kind,
-                    sources: RawSource { dir: sources },
+                    name: project_target.name,
+                    kind: project_target.kind,
+                    sources: project_target.sources,
+                    deps: project_target.deps,
                 },
             );
         }
@@ -216,42 +234,25 @@ impl Tool for BuildProjectSpec {
             usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
         );
 
-        Ok(Box::new(ProjectSpec {
+        let project_spec = ProjectSpec {
             targets,
             target_order,
-        }))
-    }
-}
+        };
 
-impl Tool for SelectPrimaryTarget {
-    fn name(&self) -> &'static str {
-        "select_primary_target"
-    }
+        info!("Inferred project spec: {project_spec}");
+        for artifact in &project_spec.target_order {
+            if let Some(target) = project_spec.targets.get(artifact) {
+                info!(
+                    "  target='{}' name='{}' kind={} deps={:?} sources:\n{}",
+                    artifact.display(),
+                    target.name,
+                    target.kind,
+                    target.deps,
+                    target.sources
+                );
+            }
+        }
 
-    fn run(
-        self: Box<Self>,
-        context: RunContext,
-        inputs: Vec<Id>,
-    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        let project_spec = context
-            .ir_snapshot
-            .get::<ProjectSpec>(inputs[0])
-            .ok_or("No ProjectSpec representation found in IR")?;
-
-        let artifact = project_spec
-            .target_order
-            .first()
-            .ok_or("ProjectSpec has no targets")?
-            .clone();
-        let target = project_spec
-            .targets
-            .get(&artifact)
-            .ok_or("Primary target missing from target map")?;
-
-        Ok(Box::new(ProjectTarget {
-            artifact,
-            kind: target.kind,
-            sources: clone_raw_source(&target.sources)?,
-        }))
+        Ok(Box::new(project_spec))
     }
 }

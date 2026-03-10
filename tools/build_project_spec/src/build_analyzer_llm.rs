@@ -13,9 +13,16 @@ const SYSTEM_PROMPT: &str = include_str!("prompts/system_prompt.txt");
 /// Typed target spec returned by the build analyzer LLM.
 #[derive(Debug, Deserialize)]
 pub struct BuildAnalysisTarget {
+    /// Logical CMake target name (e.g. from `add_library`/`add_executable`).
+    pub name: String,
+    /// Produced artifact path relative to the project root.
     pub artifact: String,
+    /// Target kind inferred from the build system. (Library vs Executable)
     pub kind: ProjectKind,
+    /// Source/header files directly compiled for this target (project-root-relative).
     pub sources: Vec<String>,
+    /// Direct logical target dependencies by CMake target name.
+    pub deps: Vec<String>,
 }
 
 /// Typed full response returned by the build analyzer LLM.

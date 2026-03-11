@@ -26,6 +26,7 @@ load_raw_source.workspace = true
 identify_project_kind.workspace = true
 modular_translation_llm.workspace = true
 try_cargo_build.workspace = true
+clippy_lint.workspace = true
 raw_source_to_cargo_llm.workspace = true
 
 [lints]

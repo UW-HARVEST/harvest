@@ -18,6 +18,7 @@ use scheduler::Scheduler;
 use std::sync::Arc;
 use tracing::error;
 use try_cargo_build::TryCargoBuild;
+use clippy_lint::TryClippyLint;
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {
@@ -37,6 +38,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, identify_kind])
     };
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+    let _try_lint = scheduler.queue_after(TryClippyLint, &[translate]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
     let result = scheduler.run_all(&mut runner, &mut ir, config);

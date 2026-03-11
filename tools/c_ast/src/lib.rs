@@ -232,6 +232,13 @@ fn get_compile_commands(
     src_dir: &Path,
     working_dir: &Path,
 ) -> Result<Vec<CompileCommand>, Box<dyn std::error::Error>> {
+    let command_line = format!(
+        "cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=1 -S {} -B {}",
+        src_dir.display(),
+        working_dir.display()
+    );
+    info!("Generating compile commands with: {command_line}");
+
     Command::new("cmake")
         .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
         .arg("-S")

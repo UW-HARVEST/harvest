@@ -708,6 +708,7 @@ dependencies = [
  "load_raw_source",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 

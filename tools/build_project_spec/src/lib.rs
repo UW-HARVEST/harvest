@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use full_source::RawSource;
 use harvest_core::Id;
@@ -174,6 +175,27 @@ fn source_tree_files(raw_source: &RawSource) -> HashSet<PathBuf> {
         .collect()
 }
 
+fn collect_compile_commands_json(raw_source: &RawSource) -> Option<String> {
+    let working_dir = tempfile::TempDir::new().ok()?;
+    let src_dir = tempfile::TempDir::new().ok()?;
+    raw_source.dir.materialize(src_dir.path()).ok()?;
+
+    let output = Command::new("cmake")
+        .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
+        .arg("-S")
+        .arg(src_dir.path())
+        .arg("-B")
+        .arg(working_dir.path())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    std::fs::read_to_string(working_dir.path().join("compile_commands.json")).ok()
+}
+
 impl Tool for BuildProjectSpec {
     fn name(&self) -> &'static str {
         "build_project_spec"
@@ -202,10 +224,15 @@ impl Tool for BuildProjectSpec {
 
         let repr_text = format!("{repr}");
         let cmakelists_map = collect_cmakelists_map(repr);
+        let compile_commands_json = collect_compile_commands_json(repr);
         let source_files = source_tree_files(repr);
 
         let llm = BuildAnalyzerLLM::build(&config)?;
-        let llm_response = llm.analyze_project(&repr_text, &cmakelists_map)?;
+        let llm_response = llm.analyze_project(
+            &repr_text,
+            &cmakelists_map,
+            compile_commands_json.as_deref(),
+        )?;
 
         let mut targets: HashMap<PathBuf, TargetSpec> = HashMap::new();
         let mut target_order = Vec::with_capacity(llm_response.targets.len());

@@ -35,6 +35,7 @@ pub struct BuildAnalysisResponse {
 struct BuildAnalysisRequest<'a> {
     repr: &'a str,
     cmakelists: &'a HashMap<String, String>,
+    compile_commands_json: Option<&'a str>,
 }
 
 pub struct BuildAnalyzerLLM {
@@ -70,10 +71,15 @@ impl BuildAnalyzerLLM {
         &self,
         repr: &str,
         cmakelists: &HashMap<String, String>,
+        compile_commands_json: Option<&str>,
     ) -> Result<BuildAnalysisResponse, Box<dyn std::error::Error>> {
         let request = build_request(
             "Infer produced artifacts and project kinds from the source tree and CMakeLists content.",
-            &BuildAnalysisRequest { repr, cmakelists },
+            &BuildAnalysisRequest {
+                repr,
+                cmakelists,
+                compile_commands_json,
+            },
         )?;
 
         let (response, usage) = self.llm.invoke(&request)?;

@@ -9,6 +9,7 @@ harvest_core.workspace = true
 load_raw_source.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tracing.workspace = true
 
 [lints]

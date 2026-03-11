@@ -17,17 +17,12 @@ pub type LintResult = Result<Vec<String>, Box<dyn std::error::Error>>;
 /// Returns a vector of PathBuf containing the artifact filenames.
 fn parse_linted_artifacts(stdout: &[u8]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut linter_messages = Vec::new();
-    println!("stdout {:?}\n", stdout);
 
     for message in cargo_metadata::Message::parse_stream(stdout) {
         let message = message?;
-        println!("message here {:?}\n", message);
         if let cargo_metadata::Message::CompilerMessage(artifact) = message {
             // Extract linter messages from all messages
-            println!("found message {}\n", artifact.message.message);
             linter_messages.push(artifact.message.message);
-        } else {
-            println!("not convertible\n");
         }
     }
 

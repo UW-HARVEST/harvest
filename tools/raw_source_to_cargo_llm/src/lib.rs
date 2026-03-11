@@ -1,10 +1,11 @@
 //! Attempts to directly turn a C project into a Cargo project by throwing it at
 //! an LLM via the `llm` crate.
 
+use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
-use harvest_core::llm::{HarvestLLM, LLMConfig, build_request};
+use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use serde::{Deserialize, Serialize};
@@ -13,8 +14,6 @@ use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 use tracing::{debug, info, trace};
-
-use identify_project_kind::ProjectKind;
 
 /// Structured output JSON schema for Ollama.
 const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
@@ -37,15 +36,16 @@ impl Tool for RawSourceToCargoLlm {
         let config =
             Config::deserialize(context.config.tools.get("raw_source_to_cargo_llm").unwrap())?;
         debug!("LLM Configuration {config:?}");
-        // Get both inputs: RawSource and ProjectKind
+        // Get both inputs: RawSource and ProjectSpec
         let in_dir = context
             .ir_snapshot
             .get::<RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
-        let project_kind = context
+        let project_spec = context
             .ir_snapshot
-            .get::<ProjectKind>(inputs[1])
-            .ok_or("No ProjectKind representation found in IR")?;
+            .get::<ProjectSpec>(inputs[1])
+            .ok_or("No ProjectSpec representation found in IR")?;
+        let project_kind = &project_spec.kind;
 
         // Use the llm crate to connect to the LLM.
         // Select system prompt based on project kind
@@ -84,7 +84,9 @@ impl Tool for RawSourceToCargoLlm {
 
         // Make the LLM call.
         trace!("Making LLM call with {:?}", request);
-        let response = llm.invoke(&request)?;
+        let mut usage_totals = LLMUsageTotals::default();
+        let (response, usage) = llm.invoke(&request)?;
+        usage_totals.add_usage(usage.as_ref());
 
         // Parse the response, convert it into a CargoPackage representation.
         #[derive(Deserialize)]
@@ -98,6 +100,12 @@ impl Tool for RawSourceToCargoLlm {
         for file in files.files {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
+
+        info!(
+            "Token usage [total] - prompt: {}, output: {}, total: {}",
+            usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
+        );
+
         Ok(Box::new(CargoPackage { dir: out_dir }))
     }
 }

@@ -19,6 +19,7 @@ use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
+use harvest_core::utils::get_version;
 use harvest_core::HarvestIR;
 use harvest_translate::{transpile, util::set_user_only_umask};
 use regex::Regex;
@@ -95,19 +96,23 @@ pub fn translate_c_directory_to_rust_project(
         tool_config.model,
         tool_config.max_tokens
     );*/
-    let ir_result = transpile(config.into());
-    let raw_c_source = raw_source(ir_result.as_ref().unwrap()).unwrap();
-    raw_c_source
-        .materialize(output_dir.join("c_src"))
-        .expect("Failed to materialize C source");
-
-    match ir_result {
-        Ok(ir) => TranspilationResult::from_ir(&ir),
-        Err(_) => TranspilationResult {
+    match transpile(config.into()) {
+        Ok(ir) => {
+            match raw_source(&ir) {
+                Ok(raw_c_source) => {
+                    if let Err(e) = raw_c_source.materialize(output_dir.join("c_src")) {
+                        log::warn!("Failed to materialize C source: {}", e);
+                    }
+                }
+                Err(e) => log::warn!("Failed to retrieve raw C source from IR: {}", e),
+            }
+            TranspilationResult::from_ir(&ir)
+        }
+        Err(e) => TranspilationResult {
             translation_success: false,
             build_success: false,
             rust_binary_path: PathBuf::new(),
-            build_error: Some("Failed to transpile".to_string()),
+            build_error: Some(format!("Failed to transpile: {}", e)),
         },
     }
 }
@@ -358,6 +363,7 @@ fn main() -> HarvestResult<()> {
 
     let log_file = File::create(args.output_dir.join("output.log"))?;
     TeeLogger::init(log::LevelFilter::Info, log_file)?;
+    log::info!("Harvest version: {}", get_version());
     run(args)
 }
 
@@ -406,6 +412,14 @@ fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
     log::info!("Input directory: {}", args.input_dir.display());
     log::info!("Output directory: {}", args.output_dir.display());
+    log::info!(
+        "Using {} Translation",
+        if args.modular {
+            "Modular"
+        } else {
+            "All-at-once"
+        }
+    );
 
     // Get the programs to evaluate.
     // If the input itself is a single test case root, run just that; otherwise, run children.

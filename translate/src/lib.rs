@@ -6,17 +6,18 @@ mod runner;
 mod scheduler;
 pub mod util;
 
+use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
+use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
-use identify_project_kind::IdentifyProjectKind;
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, info};
 use try_cargo_build::TryCargoBuild;
 use clippy_lint::TryClippyLint;
 
@@ -28,14 +29,17 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let mut runner = ToolRunner::new(collector.reporter());
     let mut scheduler = Scheduler::default();
 
+    info!("Harvest version: {}", get_version());
+    info!("Transpiling with: {}", config.model_info().unwrap());
+
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let identify_kind = scheduler.queue_after(IdentifyProjectKind, &[load_src]);
+    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
     let translate = if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, identify_kind])
+        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
     } else {
-        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, identify_kind])
+        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
     };
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
     let _try_lint = scheduler.queue_after(TryClippyLint, &[translate]);

@@ -61,6 +61,35 @@ impl Config {
             unknown: Default::default(),
         }
     }
+
+    /// Returns formatted llm info.
+    /// Printed at the start of translation and benchmarking runs to aid in reproduction of results.
+    pub fn model_info(&self) -> Option<String> {
+        let tool_name = if self.modular {
+            "modular_translation_llm"
+        } else {
+            "raw_source_to_cargo_llm"
+        };
+
+        self.tools.get(tool_name).map(|tool| {
+            let backend = tool
+                .get("backend")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            let model = tool
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            let max_tokens = tool
+                .get("max_tokens")
+                .map_or("<unknown>".to_owned(), |v| v.to_string());
+
+            format!(
+                "Backend={} Model={} Max Tokens={}",
+                backend, model, max_tokens
+            )
+        })
+    }
 }
 
 /// Prints out a warning message for every field in `unknown`.

@@ -35,7 +35,7 @@ pub struct TestCase {
     pub stdout: StdoutPattern,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
-    pub rc: Option<usize>,
+    pub rc: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub has_ub: Option<String>,
@@ -269,9 +269,13 @@ pub fn validate_binary_output(
     let actual_stdout = String::from_utf8_lossy(&output.stdout);
     let actual_stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Check return code (default expected: 0)
+    let expected_rc = test_case.rc.unwrap_or(0);
+    let actual_rc = output.status.code().unwrap_or(-1);
+    let rc_ok = actual_rc == expected_rc;
+
     // Compare stdout against expected pattern
-    let matches = if test_case.stdout.is_regex {
-        // Use regex matching
+    let stdout_ok = if test_case.stdout.is_regex {
         let regex = Regex::new(&test_case.stdout.pattern).map_err(|e| {
             format!(
                 "Invalid regex pattern '{}': {}",
@@ -280,24 +284,35 @@ pub fn validate_binary_output(
         })?;
         regex.is_match(actual_stdout.trim())
     } else {
-        // Use simple equality matching
         actual_stdout.trim() == test_case.stdout.pattern.trim()
     };
 
-    if matches {
+    if rc_ok && stdout_ok {
         Ok(())
     } else {
-        let pattern_type = if test_case.stdout.is_regex {
-            "regex pattern"
-        } else {
-            "expected stdout"
-        };
+        let mut reasons = Vec::new();
+        if !stdout_ok {
+            let pattern_type = if test_case.stdout.is_regex {
+                "Regex pattern"
+            } else {
+                "Expected stdout"
+            };
+            reasons.push(format!(
+                "{}: {}\n\nActual stdout:\n{}",
+                pattern_type, test_case.stdout.pattern, actual_stdout
+            ));
+        }
+        if !rc_ok {
+            reasons.push(format!(
+                "Expected rc={}, actual rc={}",
+                expected_rc, actual_rc
+            ));
+        }
         Err(format!(
-            "❌ Binary produced unexpected output:\n\n{}: {}\n\nActual stdout:\n{}\n\nActual stderr:\n{}",
-            pattern_type.chars().next().unwrap().to_uppercase().collect::<String>() + &pattern_type[1..],
-            test_case.stdout.pattern,
-            actual_stdout,
+            "❌ Binary produced unexpected output:\n\n{}\n\nActual stderr:\n{}",
+            reasons.join("\n\n"),
             actual_stderr
-        ).into())
+        )
+        .into())
     }
 }

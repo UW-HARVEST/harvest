@@ -80,7 +80,8 @@ pub fn run_library_validation(
     output_dir: &Path,
     test_cases: &[TestCase],
     timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
+    include_ub: bool,
+) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize, usize)> {
     // === Library-specific preparation ===
 
     // Prevent cargo from attaching to the parent workspace
@@ -134,7 +135,13 @@ pub fn run_library_validation(
     log::info!("Runner binary located at: {}", runner_bin.display());
 
     // Run tests
-    run_test_suite(&runner_bin, &ld_library_path, test_cases, timeout)
+    run_test_suite(
+        &runner_bin,
+        &ld_library_path,
+        test_cases,
+        timeout,
+        include_ub,
+    )
 }
 
 /// Locates the compiled shared library artifact in the target directory.
@@ -150,25 +157,42 @@ pub fn run_library_validation(
 /// # Returns
 /// Path to the shared library file (.so, .dylib, or .dll)
 pub fn locate_compiled_library(output_dir: &Path, program_name: &str) -> HarvestResult<PathBuf> {
-    let pkg_name = cargo_utils::read_package_name(&output_dir.join("Cargo.toml"))
-        .unwrap_or_else(|| program_name.to_string());
+    let cargo_toml = output_dir.join("Cargo.toml");
     let target_release = output_dir.join("target").join("release");
 
-    // Construct expected library name from package name
-    let lib_stem = format!("lib{}", pkg_name.replace('-', "_"));
+    // Try [lib] name first (cargo uses this for the .so filename), then package name
+    let candidates: Vec<String> = {
+        let mut c = Vec::new();
+        if let Ok(contents) = fs::read_to_string(&cargo_toml) {
+            if let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() {
+                if let Some(name) = doc
+                    .get("lib")
+                    .and_then(|l| l.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    c.push(name.replace('-', "_"));
+                }
+            }
+        }
+        let pkg_name =
+            cargo_utils::read_package_name(&cargo_toml).unwrap_or_else(|| program_name.to_string());
+        c.push(pkg_name.replace('-', "_"));
+        c
+    };
 
-    // Try common extensions
-    for ext in LIBRARY_EXTENSIONS {
-        let lib_path = target_release.join(format!("{}.{}", lib_stem, ext));
-        if lib_path.exists() {
-            return Ok(lib_path);
+    for name in &candidates {
+        let lib_stem = format!("lib{}", name);
+        for ext in LIBRARY_EXTENSIONS {
+            let lib_path = target_release.join(format!("{}.{}", lib_stem, ext));
+            if lib_path.exists() {
+                return Ok(lib_path);
+            }
         }
     }
 
-    // If not found, return error with helpful message
     Err(format!(
-        "Library not found: expected {} in {}",
-        lib_stem,
+        "Library not found: tried {:?} in {}",
+        candidates,
         target_release.display()
     )
     .into())
@@ -460,15 +484,29 @@ pub fn run_test_suite(
     ld_library_path: &str,
     test_cases: &[TestCase],
     timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
+    include_ub: bool,
+) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize, usize)> {
     let mut test_results = Vec::new();
     let mut error_messages = Vec::new();
     let mut passed_tests = 0;
+    let mut skipped_tests = 0;
     let timeout_duration = Duration::from_secs(timeout);
 
     log::info!("Validating library outputs against test cases...");
 
     for (i, test_case) in test_cases.iter().enumerate() {
+        // Skip has_ub test vectors (mark as skipped+passed, matching MIT runtests)
+        if !include_ub && test_case.has_ub.is_some() {
+            skipped_tests += 1;
+            passed_tests += 1;
+            test_results.push(TestResult {
+                filename: test_case.filename.clone(),
+                passed: true,
+                skipped: true,
+            });
+            continue;
+        }
+
         log::info!(
             "Running library test case {} ({} of {})...",
             test_case.filename,
@@ -485,6 +523,7 @@ pub fn run_test_suite(
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: true,
+                    skipped: false,
                 });
                 log::info!("✅ Test case {} passed", test_case.filename);
             }
@@ -492,16 +531,17 @@ pub fn run_test_suite(
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: false,
+                    skipped: false,
                 });
                 let error = format_test_failure(&test_case.filename, &output);
                 error_messages.push(error.clone());
                 log::info!("❌ Test case {} failed: {}", test_case.filename, error);
             }
             Err(e) => {
-                // Treat runner errors as failed tests rather than aborting the entire suite
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: false,
+                    skipped: false,
                 });
                 let error = format!("Test case {} failed: {}", test_case.filename, e);
                 error_messages.push(error.clone());
@@ -510,7 +550,7 @@ pub fn run_test_suite(
         }
     }
 
-    Ok((test_results, error_messages, passed_tests))
+    Ok((test_results, error_messages, passed_tests, skipped_tests))
 }
 
 /// Runs a single library test case.

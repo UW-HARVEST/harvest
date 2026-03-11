@@ -5,6 +5,7 @@ use serde::Serialize;
 pub struct TestResult {
     pub filename: String,
     pub passed: bool,
+    pub skipped: bool,
 }
 
 /// Statistics for running many tests on a single program
@@ -15,6 +16,7 @@ pub struct ProgramEvalStats {
     pub rust_build_success: bool,
     pub total_tests: usize,
     pub passed_tests: usize,
+    pub skipped_tests: usize,
     pub error_message: Option<String>,
     // Store individual test results with filenames and pass/fail status
     pub test_results: Vec<TestResult>,
@@ -28,6 +30,7 @@ impl ProgramEvalStats {
             rust_build_success: false,
             total_tests: 0,
             passed_tests: 0,
+            skipped_tests: 0,
             error_message: None,
             test_results: Vec::new(),
         }
@@ -51,6 +54,7 @@ pub struct SummaryStats {
     pub successful_rust_builds: usize,
     pub total_tests: usize,
     pub total_passed_tests: usize,
+    pub total_skipped_tests: usize,
 }
 
 impl SummaryStats {
@@ -90,6 +94,7 @@ impl SummaryStats {
             successful_rust_builds: results.iter().filter(|r| r.rust_build_success).count(),
             total_tests: results.iter().map(|r| r.total_tests).sum(),
             total_passed_tests: results.iter().map(|r| r.passed_tests).sum(),
+            total_skipped_tests: results.iter().map(|r| r.skipped_tests).sum(),
         }
     }
 }

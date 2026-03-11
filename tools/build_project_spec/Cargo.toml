@@ -7,6 +7,7 @@ edition = "2024"
 full_source.workspace = true
 harvest_core.workspace = true
 load_raw_source.workspace = true
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

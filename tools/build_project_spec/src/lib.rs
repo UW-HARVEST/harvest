@@ -10,6 +10,7 @@ use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
 use harvest_core::llm::LLMConfig;
 use harvest_core::tools::{RunContext, Tool};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info};
@@ -175,6 +176,29 @@ fn source_tree_files(raw_source: &RawSource) -> HashSet<PathBuf> {
         .collect()
 }
 
+fn collect_file_includes_map(raw_source: &RawSource) -> HashMap<String, Vec<String>> {
+    let include_re = Regex::new(r#"^\s*#\s*include\s*([<\"][^>\"]+[>\"])"#)
+        .expect("include regex should compile");
+
+    raw_source
+        .dir
+        .files_recursive()
+        .into_iter()
+        .filter(|(path, _)| has_allowed_source_extension(path))
+        .map(|(path, contents)| {
+            let includes = String::from_utf8_lossy(contents)
+                .lines()
+                .filter_map(|line| {
+                    include_re
+                        .captures(line)
+                        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+                })
+                .collect::<Vec<_>>();
+            (path.to_string_lossy().into_owned(), includes)
+        })
+        .collect()
+}
+
 fn collect_compile_commands_json(raw_source: &RawSource) -> Option<String> {
     let working_dir = tempfile::TempDir::new().ok()?;
     let src_dir = tempfile::TempDir::new().ok()?;
@@ -222,14 +246,14 @@ impl Tool for BuildProjectSpec {
             .get::<RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
 
-        let repr_text = format!("{repr}");
+        let file_includes = collect_file_includes_map(repr);
         let cmakelists_map = collect_cmakelists_map(repr);
         let compile_commands_json = collect_compile_commands_json(repr);
         let source_files = source_tree_files(repr);
 
         let llm = BuildAnalyzerLLM::build(&config)?;
         let llm_response = llm.analyze_project(
-            &repr_text,
+            &file_includes,
             &cmakelists_map,
             compile_commands_json.as_deref(),
         )?;

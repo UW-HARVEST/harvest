@@ -33,7 +33,7 @@ pub struct BuildAnalysisResponse {
 
 #[derive(Serialize)]
 struct BuildAnalysisRequest<'a> {
-    repr: &'a str,
+    file_includes: &'a HashMap<String, Vec<String>>,
     cmakelists: &'a HashMap<String, String>,
     compile_commands_json: Option<&'a str>,
 }
@@ -69,14 +69,14 @@ impl BuildAnalyzerLLM {
 
     pub fn analyze_project(
         &self,
-        repr: &str,
+        file_includes: &HashMap<String, Vec<String>>,
         cmakelists: &HashMap<String, String>,
         compile_commands_json: Option<&str>,
     ) -> Result<BuildAnalysisResponse, Box<dyn std::error::Error>> {
         let request = build_request(
             "Infer produced artifacts and project kinds from the source tree and CMakeLists content.",
             &BuildAnalysisRequest {
-                repr,
+                file_includes,
                 cmakelists,
                 compile_commands_json,
             },

@@ -7,9 +7,11 @@ mod scheduler;
 pub mod util;
 
 use build_project_spec::BuildProjectSpec;
-use build_project_spec::ProjectSpec;
+use build_project_spec::{ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
+use full_source::RawSource;
 use harvest_core::config::Config;
+use harvest_core::fs::RawDir;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
 use load_raw_source::LoadRawSource;
@@ -20,6 +22,43 @@ use scheduler::Scheduler;
 use std::sync::Arc;
 use tracing::{error, info};
 use try_cargo_build::TryCargoBuild;
+
+fn merge_target_sources(project_spec: &ProjectSpec) -> Result<RawSource, Box<dyn std::error::Error>> {
+    let mut merged = RawDir::default();
+
+    for artifact in &project_spec.target_order {
+        let target = project_spec
+            .targets
+            .get(artifact)
+            .ok_or_else(|| format!("target_order referenced missing target '{}'", artifact.display()))?;
+
+        for (path, contents) in target.sources.dir.files_recursive() {
+            match merged.get_file(&path) {
+                Ok(existing) => {
+                    if existing.as_slice() != contents {
+                        return Err(format!(
+                            "conflicting file contents for '{}' while merging target sources",
+                            path.display()
+                        )
+                        .into());
+                    }
+                }
+                Err(_) => {
+                    merged
+                        .set_file(&path, contents.to_vec())
+                        .map_err(|e| {
+                            format!(
+                                "failed to merge source file '{}': {e}",
+                                path.display()
+                            )
+                        })?;
+                }
+            }
+        }
+    }
+
+    Ok(RawSource { dir: merged })
+}
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {
@@ -115,4 +154,68 @@ pub fn translate_project(
     drop(runner);
     collector.diagnostics(); // TODO: Return this value (see issue 51)
     Ok(project_irs)
+}
+
+/// Performs project-aware transpilation by merging all inferred targets into one source set,
+/// then running a single translation/build pipeline.
+pub fn translate_project_merged(
+    config: Arc<Config>,
+) -> Result<HarvestIR, Box<dyn std::error::Error>> {
+    let collector = diagnostics::Collector::initialize(&config)?;
+    let mut runner = ToolRunner::new(collector.reporter());
+    let mut scheduler = Scheduler::default();
+
+    info!("Harvest version: {}", get_version());
+    info!("Transpiling with: {}", config.model_info().unwrap());
+
+    // Phase 1: load source + infer project spec.
+    let mut spec_ir = HarvestIR::default();
+    let raw_source_id = scheduler.queue(LoadRawSource::new(&config.input));
+    let project_spec_id = scheduler.queue_after(BuildProjectSpec, &[raw_source_id]);
+
+    if let Err(e) = scheduler.run_all(&mut runner, &mut spec_ir, config.clone()) {
+        error!("Error while building project spec: {e}");
+        return Err(e);
+    }
+
+    let project_spec = spec_ir
+        .get::<ProjectSpec>(project_spec_id)
+        .ok_or("No ProjectSpec representation found in IR")?;
+
+    let merged_source = merge_target_sources(project_spec)?;
+    let merged_kind = if project_spec
+        .targets
+        .values()
+        .any(|target| matches!(target.kind, ProjectKind::Executable))
+    {
+        ProjectKind::Executable
+    } else {
+        ProjectKind::Library
+    };
+
+    // Phase 2: single translation/build run over merged sources.
+    let mut ir = HarvestIR::default();
+    let merged_raw_source_id = ir.add_representation(Box::new(merged_source));
+
+    let translate = if config.modular {
+        let parse_ast = scheduler.queue_after(ParseToAst, &[merged_raw_source_id]);
+        scheduler.queue_after(
+            ModularTranslationLlm::new(merged_kind),
+            &[merged_raw_source_id, parse_ast],
+        )
+    } else {
+        scheduler.queue_after(RawSourceToCargoLlm::new(merged_kind), &[merged_raw_source_id])
+    };
+    let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+
+    let result = scheduler.run_all(&mut runner, &mut ir, config);
+    drop(scheduler);
+    drop(runner);
+    collector.diagnostics(); // TODO: Return this value (see issue 51)
+    if let Err(e) = result {
+        error!("Error during merged target transpilation: {e}");
+        return Err(e);
+    }
+
+    Ok(ir)
 }

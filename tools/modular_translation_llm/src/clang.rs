@@ -96,7 +96,19 @@ fn deduplicate_decls(declarations: &mut Vec<ClangNode<'_>>) {
         match seen_names.get(&name) {
             Some((existing_idx, existing_has_no_included_from)) => {
                 // We've seen this name before
-                if has_no_included_from && !existing_has_no_included_from {
+                if matches!(node.kind, Clang::FunctionDecl { .. })
+                    && node
+                        .inner
+                        .iter()
+                        .filter(|n| !matches!(n.kind, Clang::ParmVarDecl { .. }))
+                        .count()
+                        > 0
+                {
+                    // Current is a function body, not just a
+                    // declaration, so keep this one
+                    to_remove.insert(*existing_idx);
+                    seen_names.insert(name, (idx, has_no_included_from));
+                } else if has_no_included_from && !existing_has_no_included_from {
                     // Current is better (has no included_from, existing does)
                     to_remove.insert(*existing_idx);
                     seen_names.insert(name, (idx, has_no_included_from));

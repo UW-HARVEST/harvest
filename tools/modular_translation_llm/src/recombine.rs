@@ -3,10 +3,32 @@
 use build_project_spec::ProjectKind;
 use full_source::CargoPackage;
 use harvest_core::fs::RawDir;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use tracing::debug;
 
+use crate::translation::RustDeclaration;
 use crate::translation::TranslationResult;
+
+fn prepend_dependency_imports(translations: &[RustDeclaration], rust_code: String) -> String {
+    let imports = translations
+        .iter()
+        .flat_map(|decl| decl.dependencies.iter())
+        .map(|dep| dep.trim())
+        .filter(|dep| !dep.is_empty())
+        .map(|dep| format!("use {dep};"))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if imports.is_empty() {
+        rust_code
+    } else if rust_code.trim().is_empty() {
+        imports
+    } else {
+        format!("{imports}\n\n{rust_code}")
+    }
+}
 
 /// Recombines translated Rust declarations into a CargoPackage representation.
 ///
@@ -24,26 +46,20 @@ pub fn recombine_decls(
         translation_result.translations.len()
     );
 
-    // Collect all unique dependencies from all declarations
-    let mut all_dependencies: HashSet<String> = HashSet::new();
-    for decl in &translation_result.translations {
-        for dep in &decl.dependencies {
-            all_dependencies.insert(dep.clone());
-        }
-    }
-
     // Concatenate all Rust code
     let rust_code = translation_result
         .translations
-        .into_iter()
-        .map(|decl| decl.rust_code)
+        .iter()
+        .map(|decl| decl.rust_code.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    // Determine the main source file name and content based on project kind
-    let (source_file, source_content) = match project_kind {
-        ProjectKind::Executable => ("src/main.rs", rust_code),
-        ProjectKind::Library => ("src/lib.rs", rust_code),
+    let source_content = prepend_dependency_imports(&translation_result.translations, rust_code);
+
+    // Determine the main source file name based on project kind
+    let source_file = match project_kind {
+        ProjectKind::Executable => "src/main.rs",
+        ProjectKind::Library => "src/lib.rs",
     };
 
     // Create the directory structure

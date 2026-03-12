@@ -149,14 +149,27 @@ fn run_test_validation(
     test_cases: &[crate::harness::TestCase],
     timeout: u64,
     output_dir: &Path,
-) -> (Vec<TestResult>, Vec<String>, usize) {
+) -> (Vec<TestResult>, Vec<String>) {
     let mut test_results = Vec::new();
     let mut error_messages = Vec::new();
-    let mut passed_tests = 0;
 
     log::info!("Validating Rust binary outputs against test cases...");
 
     for (i, test_case) in test_cases.iter().enumerate() {
+        if test_case.has_ub.is_some() {
+            log::info!(
+                "Skipping test case {} ({} of {})",
+                test_case.filename,
+                i + 1,
+                test_cases.len()
+            );
+            test_results.push(TestResult {
+                filename: test_case.filename.clone(),
+                passed: true,
+                skipped: true,
+            });
+            continue;
+        }
         log::info!(
             "Running test case {} ({} of {})...",
             test_case.filename,
@@ -173,10 +186,10 @@ fn run_test_validation(
         let timeout_opt = Some(timeout);
         match validate_binary_output(binary_path, test_case, timeout_opt) {
             Ok(()) => {
-                passed_tests += 1;
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: true,
+                    skipped: false,
                 });
                 log::info!("✅ Test case {} passed", test_case.filename);
             }
@@ -184,6 +197,7 @@ fn run_test_validation(
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: false,
+                    skipped: false,
                 });
                 let error = format!("Test case {} failed: {}", test_case.filename, e);
                 error_messages.push(error);
@@ -195,7 +209,7 @@ fn run_test_validation(
         }
     }
 
-    (test_results, error_messages, passed_tests)
+    (test_results, error_messages)
 }
 
 /// Run all benchmarks for a single program
@@ -298,7 +312,7 @@ fn benchmark_single_program(
     }
 
     // Library and executable validation differ.
-    let (test_results, error_messages, passed_tests) = if is_lib {
+    let (test_results, error_messages) = if is_lib {
         match harness::library::run_library_validation(
             &program_name,
             program_dir,
@@ -323,8 +337,12 @@ fn benchmark_single_program(
         )
     };
 
+    result.passed_tests = test_results
+        .iter()
+        .filter(|t| t.passed && !t.skipped)
+        .count();
+    result.skipped_tests = test_results.iter().filter(|t| t.skipped).count();
     result.test_results = test_results;
-    result.passed_tests = passed_tests;
 
     // Print summary for this example
     log::info!("\nResults for {}:", program_name);

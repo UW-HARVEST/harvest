@@ -80,7 +80,7 @@ pub fn run_library_validation(
     output_dir: &Path,
     test_cases: &[TestCase],
     timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
+) -> HarvestResult<(Vec<TestResult>, Vec<String>)> {
     // === Library-specific preparation ===
 
     // Prevent cargo from attaching to the parent workspace
@@ -460,15 +460,28 @@ pub fn run_test_suite(
     ld_library_path: &str,
     test_cases: &[TestCase],
     timeout: u64,
-) -> HarvestResult<(Vec<TestResult>, Vec<String>, usize)> {
+) -> HarvestResult<(Vec<TestResult>, Vec<String>)> {
     let mut test_results = Vec::new();
     let mut error_messages = Vec::new();
-    let mut passed_tests = 0;
     let timeout_duration = Duration::from_secs(timeout);
 
     log::info!("Validating library outputs against test cases...");
 
     for (i, test_case) in test_cases.iter().enumerate() {
+        if test_case.has_ub.is_some() {
+            log::info!(
+                "Skipping library test case {} ({} of {})",
+                test_case.filename,
+                i + 1,
+                test_cases.len()
+            );
+            test_results.push(TestResult {
+                filename: test_case.filename.clone(),
+                passed: true,
+                skipped: true,
+            });
+            continue;
+        }
         log::info!(
             "Running library test case {} ({} of {})...",
             test_case.filename,
@@ -481,10 +494,10 @@ pub fn run_test_suite(
 
         match result {
             Ok(output) if output.status.success() => {
-                passed_tests += 1;
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: true,
+                    skipped: false,
                 });
                 log::info!("✅ Test case {} passed", test_case.filename);
             }
@@ -492,6 +505,7 @@ pub fn run_test_suite(
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: false,
+                    skipped: false,
                 });
                 let error = format_test_failure(&test_case.filename, &output);
                 error_messages.push(error.clone());
@@ -502,6 +516,7 @@ pub fn run_test_suite(
                 test_results.push(TestResult {
                     filename: test_case.filename.clone(),
                     passed: false,
+                    skipped: false,
                 });
                 let error = format!("Test case {} failed: {}", test_case.filename, e);
                 error_messages.push(error.clone());
@@ -510,7 +525,7 @@ pub fn run_test_suite(
         }
     }
 
-    Ok((test_results, error_messages, passed_tests))
+    Ok((test_results, error_messages))
 }
 
 /// Runs a single library test case.

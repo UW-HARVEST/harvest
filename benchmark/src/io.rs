@@ -33,6 +33,7 @@ pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> H
         "rust_build_success",
         "total_tests",
         "passed_tests",
+        "skipped_tests",
         "success_rate",
         "error_message",
     ])?;
@@ -45,6 +46,7 @@ pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> H
             &result.rust_build_success.to_string(),
             &result.total_tests.to_string(),
             &result.passed_tests.to_string(),
+            &result.skipped_tests.to_string(),
             &format!("{:.2}", result.success_rate()),
             result.error_message.as_deref().unwrap_or(""),
         ])?;

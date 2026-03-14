@@ -21,13 +21,7 @@ fn prepend_dependency_imports(translations: &[RustDeclaration], rust_code: Strin
         .collect::<Vec<_>>()
         .join("\n");
 
-    if imports.is_empty() {
-        rust_code
-    } else if rust_code.trim().is_empty() {
-        imports
-    } else {
-        format!("{imports}\n\n{rust_code}")
-    }
+    (imports + "\n\n" + &rust_code).trim().into()
 }
 
 /// Recombines translated Rust declarations into a CargoPackage representation.

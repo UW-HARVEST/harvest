@@ -25,6 +25,10 @@ c_ast.workspace = true
 load_raw_source.workspace = true 
 build_project_spec.workspace = true
 modular_translation_llm.workspace = true
+split_and_format.workspace = true
+fix_build_check.workspace = true
+diagnostic_attributor.workspace = true
+fix_declarations_llm.workspace = true
 try_cargo_build.workspace = true
 raw_source_to_cargo_llm.workspace = true
 

@@ -32,6 +32,15 @@ pub struct Config {
     // If false, use standard all-at-once translation.
     pub modular: bool,
 
+    /// If true (and `modular` is also true), run the iterative fix loop after translation
+    /// to fix compilation errors before the final `TryCargoBuild` step.
+    pub fix: bool,
+
+    /// Maximum number of fix-loop iterations when `fix` is true.
+    /// Each iteration runs `FixBuildCheck`, `DiagnosticAttributor`, and `FixDeclarationsLlm`.
+    #[serde(default = "Config::default_max_fix_iterations")]
+    pub max_fix_iterations: usize,
+
     /// Filter describing which log messages should be output to stdout. This is in the
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
@@ -56,10 +65,16 @@ impl Config {
             diagnostics_dir: None,
             force: false,
             modular: false,
+            fix: false,
+            max_fix_iterations: Self::default_max_fix_iterations(),
             log_filter: "off".to_owned(),
             tools: Default::default(),
             unknown: Default::default(),
         }
+    }
+
+    fn default_max_fix_iterations() -> usize {
+        5
     }
 
     /// Returns formatted llm info.

@@ -6,22 +6,14 @@ use std::path::PathBuf;
 use full_source::{CargoPackage, RawSource};
 use try_cargo_build::CargoBuildResult;
 
-/// Extract a single CargoPackage representation from the IR.
-/// Returns an error if there are 0 or multiple CargoPackage representations.
-pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
-    let cargo_packages: Vec<&RawDir> = ir
-        .get_by_representation::<CargoPackage>()
-        .map(|(_, r)| &r.dir)
-        .collect();
-
-    match cargo_packages.len() {
-        0 => Err("No CargoPackage representation found in IR".into()),
-        1 => Ok(cargo_packages[0]),
-        n => Err(format!(
-            "Found {} CargoPackage representations, expected at most 1",
-            n
-        )
-        .into()),
+/// Extract the most recently produced CargoPackage from the IR.
+/// When multiple exist, returns the one with the highest ID, which reflects the latest refinement pass.
+/// Returns an error only if no CargoPackage is present at all.
+pub fn latest_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
+    // BTreeMap iterates in ascending ID order, so `.last()` is the most recently added entry.
+    match ir.get_by_representation::<CargoPackage>().last() {
+        None => Err("No CargoPackage representation found in IR".into()),
+        Some((_, r)) => Ok(&r.dir),
     }
 }
 

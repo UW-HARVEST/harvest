@@ -1,14 +1,15 @@
 [package]
-name = "try_cargo_build"
+name = "fix_declarations_llm"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cargo_metadata = "0.23.1"
-full_source.workspace = true
+diagnostic_attributor.workspace = true
 harvest_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 split_and_format.workspace = true
-toml_edit = { workspace = true }
+syn = { version = "2", features = ["full"] }
 tracing.workspace = true
 
 [lints]

@@ -1014,6 +1014,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "diagnostic_attributor"
+version = "0.1.0"
+dependencies = [
+ "fix_build_check",
+ "harvest_core",
+ "split_and_format",
+ "tracing",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,6 +1126,31 @@ name = "find-msvc-tools"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a3076410a55c90011c298b04d0cfa770b00fa04e1e3c97d3f6c9de105a03844"
+
+[[package]]
+name = "fix_build_check"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "harvest_core",
+ "serde",
+ "split_and_format",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "fix_declarations_llm"
+version = "0.1.0"
+dependencies = [
+ "diagnostic_attributor",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "split_and_format",
+ "syn",
+ "tracing",
+]
 
 [[package]]
 name = "flate2"
@@ -1374,7 +1409,10 @@ dependencies = [
  "c_ast",
  "clap",
  "config",
+ "diagnostic_attributor",
  "directories",
+ "fix_build_check",
+ "fix_declarations_llm",
  "harvest_core",
  "libc",
  "load_raw_source",
@@ -1382,6 +1420,7 @@ dependencies = [
  "raw_source_to_cargo_llm",
  "serde",
  "serde_json",
+ "split_and_format",
  "thiserror",
  "tracing",
  "try_cargo_build",
@@ -2072,6 +2111,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2691,6 +2740,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "split_and_format"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "prettyplease",
+ "proc-macro2",
+ "syn",
+ "tracing",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3109,6 +3170,7 @@ dependencies = [
  "cargo_metadata",
  "full_source",
  "harvest_core",
+ "split_and_format",
  "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
 ]

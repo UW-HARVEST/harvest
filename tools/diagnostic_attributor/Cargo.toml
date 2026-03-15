@@ -1,14 +1,12 @@
 [package]
-name = "try_cargo_build"
+name = "diagnostic_attributor"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cargo_metadata = "0.23.1"
-full_source.workspace = true
+fix_build_check.workspace = true
 harvest_core.workspace = true
 split_and_format.workspace = true
-toml_edit = { workspace = true }
 tracing.workspace = true
 
 [lints]

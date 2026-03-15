@@ -25,6 +25,10 @@ pub struct Args {
     #[arg(long)]
     pub modular: bool,
 
+    /// Run iterative LLM-based error repair after modular translation (requires --modular).
+    #[arg(long, requires = "modular")]
+    pub fix: bool,
+
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
     pub input: Option<PathBuf>,
@@ -93,6 +97,12 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     if args.modular {
         settings = settings
             .set_override("modular", "true")
+            .expect("settings override failed");
+    }
+
+    if args.fix {
+        settings = settings
+            .set_override("fix", "true")
             .expect("settings override failed");
     }
 

@@ -1,5 +1,6 @@
 //! Checks if a generated Rust project builds by materializing
 //! it to a tempdir and running `cargo build --release`.
+pub use cargo_metadata::{Artifact, CompilerMessage};
 use full_source::CargoPackage;
 use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
 use harvest_core::tools::{RunContext, Tool};
@@ -11,46 +12,14 @@ use tracing::info;
 pub struct TryCargoBuild;
 // Either a vector of compiled artifact filenames (on success)
 // or a string containing error messages (on failure).
-pub type BuildResult = Result<Vec<PathBuf>, String>;
-
-/// Parses cargo output stream and concatenates all compiler messages into a single string.
-fn parse_compiler_messages(stdout: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
-    let mut messages = Vec::new();
-
-    for message in cargo_metadata::Message::parse_stream(stdout) {
-        let message = message?;
-        if let cargo_metadata::Message::CompilerMessage(comp_msg) = message {
-            messages.push(format!("Compiler Message: {}", comp_msg));
-        }
-    }
-
-    Ok(messages.join("\n"))
-}
-
-/// Parses cargo output stream and extracts the filenames of all compiled artifacts.
-/// Returns a vector of PathBuf containing the artifact filenames.
-fn parse_compiled_artifacts(stdout: &[u8]) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut artifact_filenames = Vec::new();
-
-    for message in cargo_metadata::Message::parse_stream(stdout) {
-        let message = message?;
-        if let cargo_metadata::Message::CompilerArtifact(artifact) = message {
-            // Extract filenames from all artifact files
-            for filename in artifact.filenames {
-                artifact_filenames.push(filename.into());
-            }
-        }
-    }
-
-    Ok(artifact_filenames)
-}
+pub type BuildResult = Result<Vec<PathBuf>, Vec<CompilerMessage>>;
 
 /// Validates that the generated Rust project builds by running `cargo build --release`.
 /// Note: It has a bit of a confusing return type:
 /// - If the project builds successfully, it returns Ok(Ok(artifact_filenames)).
 /// - If the project fails to build, it returns Ok(Err(error_message)).
 /// - If there is an error running cargo, it returns Err.
-fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::error::Error>> {
+fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
     // Prevent accidentally picking up a parent workspace by marking this project as its own root.
@@ -73,16 +42,37 @@ fn try_cargo_build(project_path: &PathBuf) -> Result<BuildResult, Box<dyn std::e
             )
         })?;
 
-    if output.status.success() {
-        info!("Project builds successfully!");
-        let artifact_filenames = parse_compiled_artifacts(&output.stdout)?;
-        Ok(Ok(artifact_filenames))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let compiler_messages = parse_compiler_messages(&output.stdout)?;
-        let error_message = format!("{}\n{}", compiler_messages, stderr);
-        Ok(Err(error_message))
+    let mut artifacts = vec![];
+    let mut diagnostics = vec![];
+    let mut success = false;
+    for message in cargo_metadata::Message::parse_stream(output.stdout.as_slice()) {
+        let message = message?;
+        match message {
+            // Compiled artifacts for a particular target
+            cargo_metadata::Message::CompilerArtifact(artifact) => artifacts.push(artifact),
+            cargo_metadata::Message::CompilerMessage(compiler_message) => {
+                diagnostics.push(compiler_message)
+            }
+            cargo_metadata::Message::BuildFinished(build_finished) => {
+                success = build_finished.success
+            }
+            // Ignore the following variants for now
+            cargo_metadata::Message::BuildScriptExecuted(_) => {}
+            cargo_metadata::Message::TextLine(_) => {}
+            // Non-exhaustive pattern, so need a catch-all
+            _ => {}
+        }
     }
+
+    if success {
+        info!("Project builds successfully!");
+    }
+    Ok(CargoBuildResult {
+        artifacts,
+        diagnostics,
+        success,
+        err: String::from_utf8(output.stderr)?,
+    })
 }
 
 impl Tool for TryCargoBuild {
@@ -104,31 +94,31 @@ impl Tool for TryCargoBuild {
         cargo_package.materialize(&output_path)?;
 
         // Validate that the Rust project builds
-        let compilation_result = try_cargo_build(&output_path)?;
-        let repr = CargoBuildResult {
-            result: compilation_result,
-        };
-        Ok(Box::new(repr))
+        Ok(Box::new(try_cargo_build(&output_path)?))
     }
 }
 
 /// A Representation that contains the results of running `cargo build`.
+#[derive(Clone)]
 pub struct CargoBuildResult {
-    pub result: Result<Vec<PathBuf>, String>,
+    pub artifacts: Vec<Artifact>,
+    pub diagnostics: Vec<CompilerMessage>,
+    pub success: bool,
+    pub err: String,
 }
 
 impl std::fmt::Display for CargoBuildResult {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "Built Rust artifact:")?;
-        let artifact_filenames = match &self.result {
-            Err(err) => return writeln!(f, "  Build failed: {err}"),
-            Ok(filenames) => filenames,
-        };
-        writeln!(f, "  Build succeeded. Artifacts:")?;
-        for filename in artifact_filenames {
-            writeln!(f, "    {}", filename.display())?;
+        if self.success {
+            writeln!(f, "  Build succeeded. Artifacts:")?;
+            for filename in self.artifacts.iter().flat_map(|a| &a.filenames) {
+                writeln!(f, "    {}", filename)?;
+            }
+            Ok(())
+        } else {
+            writeln!(f, "  Build failed: {}", self.err)
         }
-        Ok(())
     }
 }
 

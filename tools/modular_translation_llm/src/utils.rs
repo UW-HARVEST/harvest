@@ -12,22 +12,22 @@ pub fn get_file_from_location(loc: &Option<clang_ast::SourceLocation>) -> Option
 /// Reads the text from a source file at the range specified by a SourceRange.
 ///
 /// Looks up the file in the `RawSource` and extracts the bytes between the
-/// begin and end locations in the range's `spelling_loc` fields
+/// begin and end locations in the range's `expansion_loc` fields
 pub fn read_source_at_range(
     range: &clang_ast::SourceRange,
     raw_source: &RawSource,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Extract the spelling locations from begin and end
+    // Extract the expansion locations from begin and end
     let begin_loc = range
         .begin
-        .spelling_loc
+        .expansion_loc
         .as_ref()
-        .ok_or("No spelling_loc in begin SourceLocation")?;
+        .ok_or("No expansion_loc in begin SourceLocation")?;
     let end_loc = range
         .end
-        .spelling_loc
+        .expansion_loc
         .as_ref()
-        .ok_or("No spelling_loc in end SourceLocation")?;
+        .ok_or("No expansion_loc in end SourceLocation")?;
 
     // Verify both locations are in the same file
     if begin_loc.file != end_loc.file {

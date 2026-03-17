@@ -352,9 +352,10 @@ fn benchmark_single_program(
     );
     log::info!("  Rust Build: {}", status_emoji(result.rust_build_success));
     log::info!(
-        "  Tests: {}/{} passed ({:.1}%)",
+        "  Tests: {}/{} passed ({} skipped, {:.1}%)",
         result.passed_tests,
-        result.total_tests,
+        result.evaluated_tests(),
+        result.skipped_tests,
         result.success_rate()
     );
 

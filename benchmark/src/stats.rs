@@ -36,13 +36,24 @@ impl ProgramEvalStats {
         }
     }
 
+    /// Number of tests that were actually evaluated (non-skipped)
+    pub fn evaluated_tests(&self) -> usize {
+        self.total_tests.saturating_sub(self.skipped_tests)
+    }
+
+    /// Number of evaluated tests that failed
+    pub fn failed_tests(&self) -> usize {
+        self.evaluated_tests().saturating_sub(self.passed_tests)
+    }
+
     /// Calculate success rate as a percentage
     pub fn success_rate(&self) -> f64 {
-        if self.total_tests == 0 {
+        let evaluated_tests = self.evaluated_tests();
+        if evaluated_tests == 0 {
             return 0.0;
         };
 
-        (self.passed_tests as f64 / (self.total_tests - self.skipped_tests) as f64) * 100.0
+        (self.passed_tests as f64 / evaluated_tests as f64) * 100.0
     }
 }
 
@@ -58,12 +69,24 @@ pub struct SummaryStats {
 }
 
 impl SummaryStats {
+    /// Number of tests that were actually evaluated (non-skipped)
+    pub fn evaluated_tests(&self) -> usize {
+        self.total_tests.saturating_sub(self.total_skipped_tests)
+    }
+
+    /// Number of evaluated tests that failed
+    pub fn failed_tests(&self) -> usize {
+        self.evaluated_tests()
+            .saturating_sub(self.total_passed_tests)
+    }
+
     /// Calculate overall test success rate as a percentage
     pub fn overall_success_rate(&self) -> f64 {
-        if self.total_tests == 0 {
+        let evaluated_tests = self.evaluated_tests();
+        if evaluated_tests == 0 {
             0.0
         } else {
-            (self.total_passed_tests as f64 / self.total_tests as f64) * 100.0
+            (self.total_passed_tests as f64 / evaluated_tests as f64) * 100.0
         }
     }
 

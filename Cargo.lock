@@ -2081,6 +2081,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantize_rust_spans"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn",
+ "tracing",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

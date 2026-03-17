@@ -108,12 +108,15 @@ pub fn translate_c_directory_to_rust_project(
             }
             TranspilationResult::from_ir(&ir)
         }
-        Err(e) => TranspilationResult {
-            translation_success: false,
-            build_success: false,
-            rust_binary_path: PathBuf::new(),
-            build_error: Some(format!("Failed to transpile: {}", e)),
-        },
+        Err(e) => {
+            log::error!("Failed to transpile (full error): {:#?}", e);
+            TranspilationResult {
+                translation_success: false,
+                build_success: false,
+                rust_binary_path: PathBuf::new(),
+                build_error: Some(format!("Failed to transpile: {}", e)),
+            }
+        }
     }
 }
 

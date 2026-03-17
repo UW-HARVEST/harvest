@@ -8,6 +8,7 @@ use llm::chat::StructuredOutputFormat;
 pub use llm::chat::{ChatMessage, Usage};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing::{info, warn};
 
 /// Aggregated token usage across one or more LLM calls.
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,15 +56,31 @@ pub struct LLMConfig {
 
     /// Maximum output tokens.
     pub max_tokens: u32,
+
+    /// Maximum number of retries on failure (default: 3).
+    pub retry_count: Option<u32>,
+
+    /// Seconds to wait between retries (default: 10).
+    pub retry_delay_secs: Option<u64>,
 }
 
 /// Wrapper for an LLM client with helper methods.
 pub struct HarvestLLM {
     client: Box<dyn LLMProvider>,
+    retry_count: u32,
+    retry_delay_secs: u64,
 }
+
+const DEFAULT_RETRY_COUNT: u32 = 3;
+const DEFAULT_RETRY_DELAY_SECS: u64 = 10;
 
 impl HarvestLLM {
     /// Builds an LLM client from configuration.
+    ///
+    /// # Arguments
+    /// * `config` - LLM configuration (backend, model, etc.)
+    /// * `output_format_json` - JSON schema for structured output.
+    /// * `system_prompt` - System prompt for the LLM
     pub fn build(
         config: &LLMConfig,
         output_format_json: &str,
@@ -110,11 +127,17 @@ impl HarvestLLM {
         }
 
         let client = llm_builder.build().expect("Failed to build LLM");
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            retry_count: config.retry_count.unwrap_or(DEFAULT_RETRY_COUNT),
+            retry_delay_secs: config.retry_delay_secs.unwrap_or(DEFAULT_RETRY_DELAY_SECS),
+        })
     }
 
-    /// Invokes the LLM and cleans up the response.
-    pub fn invoke(
+    /// Invokes the LLM with the given messages once.
+    ///
+    /// Helper for [Self::invoke]
+    fn invoke_once(
         &self,
         request: &[ChatMessage],
     ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
@@ -126,15 +149,63 @@ impl HarvestLLM {
             .block_on(self.client.chat(request))?;
 
         let usage = response.usage();
-
         let response_text = response.text().expect("no response text");
 
         // Parse the response - strip markdown code fences
-        let response_text = response_text.strip_prefix("```").unwrap_or(&response_text);
-        let response_text = response_text.strip_prefix("json").unwrap_or(response_text);
-        let response_text = response_text.strip_suffix("```").unwrap_or(response_text);
+        let response_text = response_text
+            .strip_prefix("```json")
+            .or_else(|| response_text.strip_prefix("```rust"))
+            .or_else(|| response_text.strip_prefix("```"))
+            .and_then(|t| t.strip_suffix("```"))
+            .unwrap_or(&response_text)
+            .trim();
 
-        Ok((response_text.to_string(), usage))
+        if response_text.is_empty() {
+            Err("empty response (0 bytes)".into())
+        } else {
+            Ok((response_text.to_string(), usage))
+        }
+    }
+
+    /// Invoke the LLM with the provided messages and clean up the
+    /// reponse
+    ///
+    /// Retries up to [Self::retry_count] times total.  A 0-byte
+    /// response is treated the same as an error and triggers a retry.
+    pub fn invoke(
+        &self,
+        request: &[ChatMessage],
+    ) -> Result<(String, Option<Usage>), Box<dyn std::error::Error>> {
+        let mut attempt = 0;
+        let last_err = loop {
+            if attempt > 0 {
+                info!("Retrying (attempt {}/{})...", attempt, self.retry_count);
+            }
+            match (attempt, self.invoke_once(request)) {
+                (_, resp @ Ok(_)) => return resp,
+                (a, Err(e)) if a >= self.retry_count => {
+                    break e;
+                }
+                (a, Err(e)) => {
+                    warn!(
+                        "Attempt {}/{} failed: {}. Waiting {}s...",
+                        a, self.retry_count, e, self.retry_delay_secs
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(self.retry_delay_secs));
+                }
+            }
+            attempt += 1;
+        };
+
+        warn!(
+            "Attempt {}/{} failed: {}",
+            self.retry_count, self.retry_count, last_err
+        );
+        Err(format!(
+            "LLM call failed after {}/{} attempts: {}",
+            self.retry_count, self.retry_count, last_err
+        )
+        .into())
     }
 }
 

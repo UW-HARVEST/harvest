@@ -1,7 +1,5 @@
 //! Utility functions for working with source locations and ranges.
 
-use full_source::RawSource;
-
 // /// Extracts the file path from a SourceLocation.
 // pub fn get_file_from_location(loc: &Option<clang_ast::SourceLocation>) -> Option<String> {
 //     loc.as_ref()

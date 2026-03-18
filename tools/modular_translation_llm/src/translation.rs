@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use tracing::{debug, error, info};
 
 use crate::Config;
-use crate::clang::{ClangDeclarations, ClangNode};
+use crate::clang::ClangNode;
 use crate::translation_llm::ModularTranslationLLM;
 
 /// Represents a translated Rust declaration.
@@ -192,21 +192,21 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
 pub fn translate_decls(
-    declarations: &ClangDeclarations<'_>,
+    app_types: &[ClangNode<'_>],
+    app_globals: &[ClangNode<'_>],
+    app_functions: &[ClangNode<'_>],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
     config: &Config,
 ) -> Result<TranslationResult, Box<dyn std::error::Error>> {
-    let total_decls = declarations.app_types.len()
-        + declarations.app_globals.len()
-        + declarations.app_functions.len();
+    let total_decls = app_types.len() + app_globals.len() + app_functions.len();
 
     info!(
         "Starting translation of {} declarations ({} types, {} globals, {} functions)",
         total_decls,
-        declarations.app_types.len(),
-        declarations.app_globals.len(),
-        declarations.app_functions.len()
+        app_types.len(),
+        app_globals.len(),
+        app_functions.len()
     );
 
     if total_decls == 0 {
@@ -216,17 +216,12 @@ pub fn translate_decls(
     let modular_llm = ModularTranslationLLM::build(config)?;
 
     // Translate types
-    let type_result = translate_types(
-        &declarations.app_types,
-        raw_source,
-        project_kind,
-        &modular_llm,
-    )?;
+    let type_result = translate_types(app_types, raw_source, project_kind, &modular_llm)?;
 
     // Translate interface (function and global signatures) with type context
     let interface_result = translate_interface(
-        &declarations.app_functions,
-        &declarations.app_globals,
+        app_functions,
+        app_globals,
         raw_source,
         project_kind,
         &type_result,
@@ -234,7 +229,11 @@ pub fn translate_decls(
     )?;
 
     // Combine globals and functions for function/global translation
-    let function_and_global_decls: Vec<_> = declarations.app_functions_and_globals().collect();
+    let function_and_global_decls: Vec<_> = app_globals
+        .iter()
+        .cloned()
+        .chain(app_functions.iter().cloned())
+        .collect();
 
     // Translate functions and globals with type context
     let function_result = if function_and_global_decls.is_empty() {

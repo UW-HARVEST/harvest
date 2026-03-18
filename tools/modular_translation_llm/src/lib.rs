@@ -23,7 +23,7 @@ mod recombine;
 mod translation;
 mod translation_llm;
 mod utils;
-pub use clang::{ClangDeclarations, ClangNode, extract_top_level_decls};
+pub use clang::ClangNode;
 pub use translation::{
     InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
     translate_decls, translate_functions, translate_interface, translate_types,
@@ -106,23 +106,34 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // Extract and categorize top-level declarations into types, globals, and functions
-        let declarations = extract_top_level_decls(clang_ast);
+        // Wrap pre-split declarations from c_ast.
+        let app_types: Vec<ClangNode<'_>> =
+            clang_ast.app_types.iter().map(ClangNode::new).collect();
+        let app_globals: Vec<ClangNode<'_>> =
+            clang_ast.app_globals.iter().map(ClangNode::new).collect();
+        let app_functions: Vec<ClangNode<'_>> =
+            clang_ast.app_functions.iter().map(ClangNode::new).collect();
 
         info!(
             "Extracted {} type declarations, {} global declarations, {} function declarations",
-            declarations.app_types.len(),
-            declarations.app_globals.len(),
-            declarations.app_functions.len()
+            app_types.len(),
+            app_globals.len(),
+            app_functions.len()
         );
 
         // Translation flow:
         // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
-        let translation_result =
-            translation::translate_decls(&declarations, raw_source, project_kind, &config)
-                .map_err(|e| format!("Translation failed: {}", e))?;
+        let translation_result = translation::translate_decls(
+            &app_types,
+            &app_globals,
+            &app_functions,
+            raw_source,
+            project_kind,
+            &config,
+        )
+        .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
             "Translation complete: {} total declarations translated",

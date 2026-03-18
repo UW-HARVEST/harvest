@@ -5,11 +5,11 @@ use crate::{Clang, SourcePoint, SourceSpan, TopLevelItem, TopLevelKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclKind {
-    TypedefDecl,
-    FunctionDecl,
-    RecordDecl,
-    EnumDecl,
-    VarDecl,
+    Typedef,
+    Function,
+    Record,
+    Enum,
+    Var,
 }
 
 pub(crate) fn is_c_or_header(path: &Path) -> bool {
@@ -33,11 +33,11 @@ pub(crate) fn language_args_for_file(path: &str) -> [&'static str; 2] {
 
 pub(crate) fn map_top_level_decl_kind(kind: EntityKind) -> Option<DeclKind> {
     match kind {
-        EntityKind::TypedefDecl => Some(DeclKind::TypedefDecl),
-        EntityKind::FunctionDecl => Some(DeclKind::FunctionDecl),
-        EntityKind::StructDecl | EntityKind::UnionDecl => Some(DeclKind::RecordDecl),
-        EntityKind::EnumDecl => Some(DeclKind::EnumDecl),
-        EntityKind::VarDecl => Some(DeclKind::VarDecl),
+        EntityKind::TypedefDecl => Some(DeclKind::Typedef),
+        EntityKind::FunctionDecl => Some(DeclKind::Function),
+        EntityKind::StructDecl | EntityKind::UnionDecl => Some(DeclKind::Record),
+        EntityKind::EnumDecl => Some(DeclKind::Enum),
+        EntityKind::VarDecl => Some(DeclKind::Var),
         _ => None,
     }
 }
@@ -51,10 +51,10 @@ pub(crate) fn decl_item_from_entity(
     let (span, source_text) = range_to_span_and_text(entity.get_range(), root_dir, file_bytes)?;
 
     let ast = match decl_kind {
-        DeclKind::TypedefDecl => Clang::TypedefDecl {
+        DeclKind::Typedef => Clang::TypedefDecl {
             name: entity.get_name().unwrap_or_default(),
         },
-        DeclKind::FunctionDecl => Clang::FunctionDecl {
+        DeclKind::Function => Clang::FunctionDecl {
             name: entity.get_name().unwrap_or_default(),
             storage_class: None,
             params: entity
@@ -64,14 +64,14 @@ pub(crate) fn decl_item_from_entity(
                 .map(|p| p.get_name())
                 .collect(),
         },
-        DeclKind::RecordDecl => Clang::RecordDecl {
+        DeclKind::Record => Clang::RecordDecl {
             name: entity.get_name(),
             tag_used: None,
         },
-        DeclKind::EnumDecl => Clang::EnumDecl {
+        DeclKind::Enum => Clang::EnumDecl {
             name: entity.get_name(),
         },
-        DeclKind::VarDecl => Clang::VarDecl {
+        DeclKind::Var => Clang::VarDecl {
             name: entity.get_name().unwrap_or_default(),
             storage_class: None,
         },
@@ -87,11 +87,11 @@ pub(crate) fn decl_item_from_entity(
 
 fn map_decl_to_top_level_kind(kind: DeclKind) -> TopLevelKind {
     match kind {
-        DeclKind::TypedefDecl => TopLevelKind::TypedefDecl,
-        DeclKind::FunctionDecl => TopLevelKind::FunctionDecl,
-        DeclKind::RecordDecl => TopLevelKind::RecordDecl,
-        DeclKind::EnumDecl => TopLevelKind::EnumDecl,
-        DeclKind::VarDecl => TopLevelKind::VarDecl,
+        DeclKind::Typedef => TopLevelKind::TypedefDecl,
+        DeclKind::Function => TopLevelKind::FunctionDecl,
+        DeclKind::Record => TopLevelKind::RecordDecl,
+        DeclKind::Enum => TopLevelKind::EnumDecl,
+        DeclKind::Var => TopLevelKind::VarDecl,
     }
 }
 

@@ -90,9 +90,45 @@ pub struct ArgWithOrigin {
 #[derive(Serialize)]
 pub struct ClangAst {
     pub items: Vec<TopLevelItem>,
+    pub app_types: Vec<TopLevelItem>,
+    pub app_globals: Vec<TopLevelItem>,
+    pub app_functions: Vec<TopLevelItem>,
     pub include_paths: Vec<ArgWithOrigin>,
     pub defines: Vec<ArgWithOrigin>,
     pub compiler_args: Vec<ArgWithOrigin>,
+}
+
+impl ClangAst {
+    fn sort_items(&mut self) {
+        self.items.sort_by(|a, b| {
+            a.span
+                .file
+                .cmp(&b.span.file)
+                .then(a.span.start.offset.cmp(&b.span.start.offset))
+                .then(a.span.end.offset.cmp(&b.span.end.offset))
+        });
+    }
+
+    fn split_items(&mut self) {
+        self.app_types.clear();
+        self.app_globals.clear();
+        self.app_functions.clear();
+
+        for item in &self.items {
+            match item.kind {
+                TopLevelKind::TypedefDecl | TopLevelKind::RecordDecl | TopLevelKind::EnumDecl => {
+                    self.app_types.push(item.clone());
+                }
+                TopLevelKind::VarDecl => {
+                    self.app_globals.push(item.clone());
+                }
+                TopLevelKind::FunctionDecl => {
+                    self.app_functions.push(item.clone());
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for ClangAst {
@@ -239,11 +275,18 @@ impl Tool for ParseToAst {
 
         let _ = id;
 
-        Ok(Box::new(ClangAst {
+        let mut out = ClangAst {
             items,
+            app_types: Vec::new(),
+            app_globals: Vec::new(),
+            app_functions: Vec::new(),
             include_paths,
             defines,
             compiler_args,
-        }))
+        };
+        out.sort_items();
+        out.split_items();
+
+        Ok(Box::new(out))
     }
 }

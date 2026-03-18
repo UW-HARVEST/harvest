@@ -12,17 +12,11 @@ use tracing::warn;
 use crate::Config;
 use crate::clang::ClangNode;
 use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
-use crate::utils::read_source_at_range;
 
 fn declaration_source_text(
-    decl: &clang_ast::Node<c_ast::Clang>,
-    raw_source: &RawSource,
+    decl: &c_ast::TopLevelItem,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(range) = decl.kind.range() {
-        read_source_at_range(range, raw_source)
-    } else {
-        Err(format!("Declaration has no source range: {:?}", decl.kind).into())
-    }
+    Ok(decl.source_text.clone())
 }
 
 /// Structured output JSON schema for Pass 1 (types).
@@ -190,14 +184,14 @@ impl ModularTranslationLLM {
     //               Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
     pub fn translate_types(
         &self,
-        type_decls: &[&clang_ast::Node<c_ast::Clang>],
-        raw_source: &RawSource,
+        type_decls: &[&c_ast::TopLevelItem],
+        _raw_source: &RawSource,
         project_kind: &ProjectKind,
     ) -> Result<TypeTranslationResult, Box<dyn std::error::Error>> {
         let mut decl_sources = Vec::new();
 
         for decl in type_decls {
-            let source_text = declaration_source_text(decl, raw_source)?;
+            let source_text = declaration_source_text(decl)?;
             decl_sources.push(DeclarationInput {
                 source: source_text,
             });
@@ -250,13 +244,13 @@ impl ModularTranslationLLM {
     //              Used as context for translating functions and globals.
     pub fn translate_function_global(
         &self,
-        decl: &clang_ast::Node<c_ast::Clang>,
-        raw_source: &RawSource,
+        decl: &c_ast::TopLevelItem,
+        _raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
         interface_translations: &InterfaceTranslationResult,
     ) -> Result<RustDeclaration, Box<dyn std::error::Error>> {
-        let source_text = declaration_source_text(decl, raw_source)?;
+        let source_text = declaration_source_text(decl)?;
 
         let decl_source = DeclarationInput {
             source: source_text,
@@ -314,7 +308,7 @@ impl ModularTranslationLLM {
         &self,
         function_decls: &[ClangNode<'_>],
         global_decls: &[ClangNode<'_>],
-        raw_source: &RawSource,
+        _raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -323,7 +317,7 @@ impl ModularTranslationLLM {
         // Add function declarations first
         for decl in function_decls {
             let node = decl.as_node();
-            let source_text = declaration_source_text(node, raw_source)?;
+            let source_text = declaration_source_text(node)?;
             decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
                 enforce_ffi_interface: matches!(project_kind, ProjectKind::Library)
@@ -334,7 +328,7 @@ impl ModularTranslationLLM {
         // Add global declarations
         for decl in global_decls {
             let node = decl.as_node();
-            let source_text = declaration_source_text(node, raw_source)?;
+            let source_text = declaration_source_text(node)?;
             decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
                 enforce_ffi_interface: false,

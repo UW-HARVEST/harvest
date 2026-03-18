@@ -107,7 +107,7 @@ impl Tool for ModularTranslationLlm {
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
         // Extract and categorize top-level declarations into types, globals, and functions
-        let declarations = extract_top_level_decls(clang_ast, raw_source);
+        let declarations = extract_top_level_decls(clang_ast);
 
         info!(
             "Extracted {} type declarations, {} global declarations, {} function declarations",

@@ -25,37 +25,39 @@ pub enum EntityKind {
     RecordDecl,
     EnumDecl,
     VarDecl,
-    MacroDefinition,
-    IncludeDirective,
-    ConditionalDirective,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TopLevelDefinition {
+pub struct TopLevelEntity {
     pub kind: EntityKind,
     pub source_text: String,
     pub span: SourceSpan,
     pub ast: Option<ClangAST>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PreprocessorDirective {
-    pub value: String,
-    pub span: SourceSpan,
-}
-
 #[derive(Serialize)]
 pub struct RichSourceMap {
-    pub app_types: Vec<TopLevelDefinition>,
-    pub app_globals: Vec<TopLevelDefinition>,
-    pub app_functions: Vec<TopLevelDefinition>,
-    pub include_paths: Vec<PreprocessorDirective>,
-    pub defines: Vec<PreprocessorDirective>,
-    pub compiler_args: Vec<PreprocessorDirective>,
+    pub app_types: Vec<TopLevelEntity>,
+    pub app_globals: Vec<TopLevelEntity>,
+    pub app_functions: Vec<TopLevelEntity>,
+    pub include_paths: Vec<TopLevelEntity>,
+    pub defines: Vec<TopLevelEntity>,
+    pub compiler_args: Vec<TopLevelEntity>,
 }
 
 impl RichSourceMap {
-    pub(crate) fn push_entity(&mut self, item: TopLevelDefinition) {
+    pub fn new() -> Self {
+        Self {
+            app_types: Vec::new(),
+            app_globals: Vec::new(),
+            app_functions: Vec::new(),
+            include_paths: Vec::new(),
+            defines: Vec::new(),
+            compiler_args: Vec::new(),
+        }
+    }
+
+    pub(crate) fn push_entity(&mut self, item: TopLevelEntity) {
         match item.kind {
             EntityKind::TypedefDecl | EntityKind::RecordDecl | EntityKind::EnumDecl => {
                 self.app_types.push(item);
@@ -66,20 +68,17 @@ impl RichSourceMap {
             EntityKind::FunctionDecl => {
                 self.app_functions.push(item);
             }
-            _ => {
-                // non-app declarations are intentionally not retained
-            }
         }
     }
 
-    pub fn iter_definitions(&self) -> impl Iterator<Item = &TopLevelDefinition> {
+    pub fn iter_definitions(&self) -> impl Iterator<Item = &TopLevelEntity> {
         self.app_types
             .iter()
             .chain(self.app_globals.iter())
             .chain(self.app_functions.iter())
     }
 
-    pub fn iter_directives(&self) -> impl Iterator<Item = &PreprocessorDirective> {
+    pub fn iter_directives(&self) -> impl Iterator<Item = &TopLevelEntity> {
         self.include_paths
             .iter()
             .chain(self.defines.iter())

@@ -14,7 +14,7 @@ use crate::clang::ClangNode;
 use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
 
 fn declaration_source_text(
-    decl: &c_ast::TopLevelDefinition,
+    decl: &c_ast::TopLevelEntity,
 ) -> Result<String, Box<dyn std::error::Error>> {
     Ok(decl.source_text.clone())
 }
@@ -184,7 +184,7 @@ impl ModularTranslationLLM {
     //               Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
     pub fn translate_types(
         &self,
-        type_decls: &[&c_ast::TopLevelDefinition],
+        type_decls: &[&c_ast::TopLevelEntity],
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
     ) -> Result<TypeTranslationResult, Box<dyn std::error::Error>> {
@@ -244,7 +244,7 @@ impl ModularTranslationLLM {
     //              Used as context for translating functions and globals.
     pub fn translate_function_global(
         &self,
-        decl: &c_ast::TopLevelDefinition,
+        decl: &c_ast::TopLevelEntity,
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,

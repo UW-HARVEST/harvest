@@ -1,7 +1,8 @@
 mod ast;
 mod rsm;
+mod utils;
 
-use clang::{Clang as LibClang, EntityKind as ClangEntityKind, EntityVisitResult, Index};
+use clang::{Clang as LibClang, Index};
 use full_source::RawSource;
 use harvest_core::{
     Id, Representation,
@@ -11,9 +12,7 @@ use std::{collections::HashMap, path::Path};
 use tracing::{debug, info, warn};
 
 pub use ast::ClangAST;
-pub use rsm::{
-    EntityKind, PreprocessorDirective, RichSourceMap, SourcePoint, SourceSpan, TopLevelDefinition,
-};
+pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity};
 
 pub struct ParseToAst;
 
@@ -36,9 +35,7 @@ fn process_file(
     debug!("Parsing {} with args: {:?}", rel_file, parser_arg_values);
 
     let mut parser = index.parser(&abs_file);
-    parser
-        .arguments(&parser_arg_values)
-        .detailed_preprocessing_record(true);
+    parser.arguments(&parser_arg_values);
 
     let tu = match parser.parse() {
         Ok(tu) => tu,
@@ -67,37 +64,6 @@ fn process_file(
         }
     }
 
-    root.visit_children(|entity, _| {
-        if !entity.is_preprocessing() || !entity.is_in_main_file() {
-            return EntityVisitResult::Recurse;
-        }
-
-        let kind = match entity.get_kind() {
-            ClangEntityKind::MacroDefinition => Some("MacroDefinition"),
-            ClangEntityKind::InclusionDirective => Some("IncludeDirective"),
-            ClangEntityKind::PreprocessingDirective => Some("PreprocessingDirective"),
-            _ => None,
-        };
-
-        let Some(kind) = kind else {
-            return EntityVisitResult::Recurse;
-        };
-
-        let top_kind = match kind {
-            "MacroDefinition" => EntityKind::MacroDefinition,
-            "IncludeDirective" => EntityKind::IncludeDirective,
-            _ => EntityKind::ConditionalDirective,
-        };
-
-        if let Some(item) =
-            ast::preprocessor_item_from_entity(top_kind, &entity, src_root, file_bytes)
-        {
-            out.push_entity(item);
-        }
-
-        EntityVisitResult::Recurse
-    });
-
     info!("Parsed {}", rel_file);
 }
 
@@ -125,7 +91,7 @@ impl Tool for ParseToAst {
 
         for (rel_path, bytes) in rs.dir.files_recursive() {
             if ast::is_c_or_header(&rel_path) {
-                let rel = ast::normalize_rel_path(&rel_path);
+                let rel = utils::normalize_rel_path(&rel_path);
                 source_files.push(rel.clone());
                 file_bytes.insert(rel, bytes.to_vec());
             }
@@ -137,21 +103,10 @@ impl Tool for ParseToAst {
         let clang = LibClang::new().map_err(|e| format!("Failed to initialize libclang: {e}"))?;
         let index = Index::new(&clang, false, false);
 
-        let include_paths: Vec<PreprocessorDirective> = Vec::new();
-        let defines: Vec<PreprocessorDirective> = Vec::new();
-        let compiler_args: Vec<PreprocessorDirective> = Vec::new();
-
         let mut common_parse_args: Vec<String> = vec!["-std=gnu11".to_string()];
         common_parse_args.push(format!("-I{}", src_dir.path().to_string_lossy()));
 
-        let mut out = RichSourceMap {
-            app_types: Vec::new(),
-            app_globals: Vec::new(),
-            app_functions: Vec::new(),
-            include_paths,
-            defines,
-            compiler_args,
-        };
+        let mut out = RichSourceMap::new();
 
         for rel_file in &source_files {
             process_file(
@@ -168,9 +123,6 @@ impl Tool for ParseToAst {
             "Generated RichSourceMap:\n{}",
             serde_json::to_string_pretty(&out)?
         );
-
-        let _ = id;
-
         Ok(Box::new(out))
     }
 }

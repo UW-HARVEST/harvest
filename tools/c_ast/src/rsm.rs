@@ -31,7 +31,7 @@ pub enum EntityKind {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TopLevelEntity {
+pub struct TopLevelDefinition {
     pub kind: EntityKind,
     pub source_text: String,
     pub span: SourceSpan,
@@ -46,16 +46,16 @@ pub struct PreprocessorDirective {
 
 #[derive(Serialize)]
 pub struct RichSourceMap {
-    pub app_types: Vec<TopLevelEntity>,
-    pub app_globals: Vec<TopLevelEntity>,
-    pub app_functions: Vec<TopLevelEntity>,
+    pub app_types: Vec<TopLevelDefinition>,
+    pub app_globals: Vec<TopLevelDefinition>,
+    pub app_functions: Vec<TopLevelDefinition>,
     pub include_paths: Vec<PreprocessorDirective>,
     pub defines: Vec<PreprocessorDirective>,
     pub compiler_args: Vec<PreprocessorDirective>,
 }
 
 impl RichSourceMap {
-    pub(crate) fn push_sorted(&mut self, item: TopLevelEntity) {
+    pub(crate) fn push_entity(&mut self, item: TopLevelDefinition) {
         match item.kind {
             EntityKind::TypedefDecl | EntityKind::RecordDecl | EntityKind::EnumDecl => {
                 self.app_types.push(item);
@@ -70,6 +70,20 @@ impl RichSourceMap {
                 // non-app declarations are intentionally not retained
             }
         }
+    }
+
+    pub fn iter_definitions(&self) -> impl Iterator<Item = &TopLevelDefinition> {
+        self.app_types
+            .iter()
+            .chain(self.app_globals.iter())
+            .chain(self.app_functions.iter())
+    }
+
+    pub fn iter_directives(&self) -> impl Iterator<Item = &PreprocessorDirective> {
+        self.include_paths
+            .iter()
+            .chain(self.defines.iter())
+            .chain(self.compiler_args.iter())
     }
 }
 

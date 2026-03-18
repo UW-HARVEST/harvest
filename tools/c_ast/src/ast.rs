@@ -2,7 +2,7 @@ use clang::{EntityKind as ClangEntityKind, source::SourceRange};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
 
-use crate::{EntityKind, SourcePoint, SourceSpan, TopLevelEntity};
+use crate::{EntityKind, SourcePoint, SourceSpan, TopLevelDefinition};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClangAST {
@@ -80,7 +80,7 @@ pub(crate) fn decl_item_from_entity(
     entity: &clang::Entity<'_>,
     root_dir: &Path,
     file_bytes: &HashMap<String, Vec<u8>>,
-) -> Option<TopLevelEntity> {
+) -> Option<TopLevelDefinition> {
     let (span, source_text) = range_to_span_and_text(entity.get_range(), root_dir, file_bytes)?;
 
     let ast = match decl_kind {
@@ -110,7 +110,7 @@ pub(crate) fn decl_item_from_entity(
         },
     };
 
-    Some(TopLevelEntity {
+    Some(TopLevelDefinition {
         kind: map_decl_to_top_level_kind(decl_kind),
         source_text,
         span,
@@ -133,7 +133,7 @@ pub(crate) fn preprocessor_item_from_entity(
     entity: &clang::Entity<'_>,
     root_dir: &Path,
     file_bytes: &HashMap<String, Vec<u8>>,
-) -> Option<TopLevelEntity> {
+) -> Option<TopLevelDefinition> {
     let (span, source_text) = range_to_span_and_text(entity.get_range(), root_dir, file_bytes)?;
 
     if (kind == EntityKind::MacroDefinition || kind == EntityKind::IncludeDirective)
@@ -153,7 +153,7 @@ pub(crate) fn preprocessor_item_from_entity(
         _ => None,
     };
 
-    Some(TopLevelEntity {
+    Some(TopLevelDefinition {
         kind,
         source_text,
         span,

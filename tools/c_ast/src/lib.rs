@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 pub use ast::ClangAST;
 pub use rsm::{
-    EntityKind, PreprocessorDirective, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity,
+    EntityKind, PreprocessorDirective, RichSourceMap, SourcePoint, SourceSpan, TopLevelDefinition,
 };
 
 pub struct ParseToAst;
@@ -57,9 +57,13 @@ fn process_file(
         if !child.is_in_main_file() {
             continue;
         }
+        // Ignore function declarations that aren't definitions (i.e., don't have bodies).
+        if decl_kind == ast::DeclKind::Function && !child.is_definition() {
+            continue;
+        }
 
         if let Some(item) = ast::decl_item_from_entity(decl_kind, &child, src_root, file_bytes) {
-            out.push_sorted(item);
+            out.push_entity(item);
         }
     }
 
@@ -88,7 +92,7 @@ fn process_file(
         if let Some(item) =
             ast::preprocessor_item_from_entity(top_kind, &entity, src_root, file_bytes)
         {
-            out.push_sorted(item);
+            out.push_entity(item);
         }
 
         EntityVisitResult::Recurse
@@ -159,6 +163,11 @@ impl Tool for ParseToAst {
                 &mut out,
             );
         }
+
+        info!(
+            "Generated RichSourceMap:\n{}",
+            serde_json::to_string_pretty(&out)?
+        );
 
         let _ = id;
 

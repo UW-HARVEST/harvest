@@ -1,23 +1,23 @@
 //! Types and utilities for working with top-level C declarations.
 
-use c_ast::TopLevelItem;
+use c_ast::TopLevelEntity;
 
 /// Container for categorizing declarations by their source.
 #[derive(Debug, Clone)]
 pub struct ClangNode<'a> {
-    node: &'a TopLevelItem,
+    node: &'a TopLevelEntity,
     pub visibility: Option<bool>,
 }
 
 impl<'a> ClangNode<'a> {
-    pub fn new(node: &'a TopLevelItem) -> Self {
+    pub fn new(node: &'a TopLevelEntity) -> Self {
         Self {
             node,
             visibility: None,
         }
     }
 
-    pub fn as_node(&self) -> &TopLevelItem {
+    pub fn as_node(&self) -> &TopLevelEntity {
         self.node
     }
 }

@@ -7,7 +7,7 @@
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
 use build_project_spec::{ProjectKind, ProjectSpec};
-use c_ast::ClangAst;
+use c_ast::RichSourceMap;
 use full_source::RawSource;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::LLMConfig;
@@ -22,7 +22,6 @@ mod clang;
 mod recombine;
 mod translation;
 mod translation_llm;
-mod utils;
 pub use clang::ClangNode;
 pub use translation::{
     InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
@@ -69,15 +68,15 @@ pub struct ModularTranslationLlm;
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
-) -> Result<(&'a RawSource, &'a ClangAst, &'a ProjectKind), Box<dyn std::error::Error>> {
+) -> Result<(&'a RawSource, &'a RichSourceMap, &'a ProjectKind), Box<dyn std::error::Error>> {
     let raw_source = context
         .ir_snapshot
         .get::<RawSource>(inputs[0])
         .ok_or("No RawSource representation found in IR")?;
     let clang_ast = context
         .ir_snapshot
-        .get::<ClangAst>(inputs[1])
-        .ok_or("No ClangAst representation found in IR")?;
+        .get::<RichSourceMap>(inputs[1])
+        .ok_or("No RichSourceMap representation found in IR")?;
     let project_spec = context
         .ir_snapshot
         .get::<ProjectSpec>(inputs[2])

@@ -1,210 +1,76 @@
-use clang_ast::Node;
+use clang::{Clang, EntityKind, EntityVisitResult, Index, source::SourceRange};
 use full_source::RawSource;
 use harvest_core::{
     Id, Representation,
     tools::{RunContext, Tool},
 };
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    fs::File,
-    process::{Command, Stdio},
-};
-use tracing::info;
+use serde::Serialize;
+use std::{collections::HashMap, path::Path};
+use tracing::{debug, info, warn};
 
-/// Represents a (possibly) qualified type in the Clang AST, such as `int`, `const int`, or `const volatile int`.
-/// Clang Docs on QualType: https://clang.llvm.org/doxygen/classclang_1_1QualType.html
-#[derive(Serialize, Deserialize, Debug)]
-pub struct QualType {
-    /// String representation of the desugared type, i.e., it will have `typedefs` and `typeofs` resolved.
-    #[serde(rename = "desugaredQualType")]
-    pub desugared_qual_type: Option<String>,
-    /// String representation of the type as written in the source code, i.e., it may include `typedefs` and `typeofs`.
-    #[serde(rename = "qualType")]
-    pub qual_type: String,
-    /// The ID of the type alias declaration, if this type is a typedef.
-    #[serde(rename = "typeAliasDecId")]
-    pub type_alias_dec_id: Option<clang_ast::Id>,
+#[derive(Serialize, Debug, Clone)]
+pub struct SourcePoint {
+    pub line: u32,
+    pub column: u32,
+    pub offset: u32,
 }
 
-/// Represents a node in the Clang AST.
-/// For the sake of simplicity, it only encodes a subset of the Clang AST nodes that are relevant for our analysis.
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Clang {
-    TranslationUnitDecl,
-    /// Represents a typedef declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1TypedefDecl.html
-    TypedefDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<String>,
-    },
-    /// Represents a function declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html
-    FunctionDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "storageClass")]
-        storage_class: Option<String>,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<FunctionAnnotation>,
-    },
-    /// Represents a record (struct/union) declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1RecordDecl.html
-    RecordDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        #[serde(rename = "tagUsed")]
-        tag_used: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents an enum declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1EnumDecl.html
-    EnumDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents a variable declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1VarDecl.html
-    VarDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        #[serde(rename = "storageClass")]
-        storage_class: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents a parameter variable declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1ParmVarDecl.html
-    ParmVarDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<String>,
-    },
-    /// Represents a compound statement in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1CompoundStmt.html
-    CompoundStmt {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        annotation: Option<String>,
-    },
-    /// Every other node (not relevant to our analysis at the moment)
-    Other {
-        kind: Option<String>,
-        annotation: Option<String>,
-    },
+#[derive(Serialize, Debug, Clone)]
+pub struct SourceSpan {
+    /// Path relative to the root of the `RawSource` directory.
+    pub file: String,
+    /// Inclusive start position.
+    pub start: SourcePoint,
+    /// Exclusive end position.
+    pub end: SourcePoint,
 }
 
-impl Clang {
-    /// Returns the source location of this AST node, if available.
-    ///
-    /// # Returns
-    /// - `Some(&SourceLocation)` if the node has a location field
-    /// - `None` if the node doesn't have a location or if the location field is None
-    pub fn loc(&self) -> Option<&clang_ast::SourceLocation> {
-        match self {
-            Clang::TranslationUnitDecl => None,
-            Clang::TypedefDecl { loc, .. }
-            | Clang::FunctionDecl { loc, .. }
-            | Clang::RecordDecl { loc, .. }
-            | Clang::VarDecl { loc, .. }
-            | Clang::EnumDecl { loc, .. }
-            | Clang::ParmVarDecl { loc, .. }
-            | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
-            Clang::Other { .. } => None,
-        }
-    }
-
-    /// Returns the source range of this AST node, if available.
-    ///
-    /// # Returns
-    /// - `Some(&SourceRange)` if the node has a range field
-    /// - `None` if the node doesn't have a range or if the range field is None
-    pub fn range(&self) -> Option<&clang_ast::SourceRange> {
-        match self {
-            Clang::TranslationUnitDecl => None,
-            Clang::TypedefDecl { range, .. }
-            | Clang::FunctionDecl { range, .. }
-            | Clang::RecordDecl { range, .. }
-            | Clang::VarDecl { range, .. }
-            | Clang::ParmVarDecl { range, .. }
-            | Clang::EnumDecl { range, .. }
-            | Clang::CompoundStmt { range, .. } => range.as_ref(),
-            Clang::Other { .. } => None,
-        }
-    }
-
-    /// Returns the name of this declaration, if available.
-    ///
-    /// # Returns
-    /// - `Some(String)` if the declaration has a name field and it is populated
-    /// - `None` if the declaration doesn't have a name or if the name field is None
-    pub fn name(&self) -> Option<String> {
-        match self {
-            Clang::TypedefDecl { name, .. } => Some(name.clone()),
-            Clang::FunctionDecl { name, .. } => Some(name.clone()),
-            Clang::RecordDecl { name, .. } => name.clone(),
-            Clang::VarDecl { name, .. } => Some(name.clone()),
-            Clang::EnumDecl { name, .. } => name.clone(),
-            _ => None,
-        }
-    }
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TopLevelKind {
+    TypedefDecl,
+    FunctionDecl,
+    RecordDecl,
+    EnumDecl,
+    VarDecl,
+    MacroDefinition,
+    IncludeDirective,
+    ConditionalDirective,
 }
 
-/// Our annotations for functions in the Clang AST.
-/// Will expand as Harvest's analyses get more sophisticated.
-#[non_exhaustive]
-#[derive(Serialize, Deserialize, Debug)]
-pub enum FunctionAnnotation {
-    Entry,
-    Static,
+#[derive(Serialize, Debug, Clone)]
+pub struct TopLevelItem {
+    pub kind: TopLevelKind,
+    /// Exact source text slice from the original file bytes.
+    pub source_text: String,
+    pub span: SourceSpan,
 }
 
-fn annotate_ast(ast: &mut Node<Clang>) {
-    if let Clang::FunctionDecl {
-        name,
-        storage_class,
-        annotation,
-        ..
-    } = &mut ast.kind
-    {
-        match storage_class.as_ref().map(|s| s.as_str()) {
-            None if name == "main" => *annotation = Some(FunctionAnnotation::Entry),
-            Some("static") => *annotation = Some(FunctionAnnotation::Static),
-            _ => {}
-        }
-    }
-
-    for node in ast.inner.iter_mut() {
-        annotate_ast(node);
-    }
+#[derive(Serialize, Debug, Clone)]
+pub struct ArgOrigin {
+    pub span: SourceSpan,
 }
 
-/// Represents a Clang AST for a set of source files.
+#[derive(Serialize, Debug, Clone)]
+pub struct ArgWithOrigin {
+    pub value: String,
+    pub origin: ArgOrigin,
+}
+
+/// Flat extraction output from libclang for all `.c` and `.h` files in the input `RawSource`.
 #[derive(Serialize)]
 pub struct ClangAst {
-    /// Maps file paths to the root node of the Clang AST for that file.
-    pub asts: HashMap<String, Node<Clang>>,
-    /// The ID of the source representation from which this AST was generated.
-    pub source_representation: Id,
+    pub items: Vec<TopLevelItem>,
+    /// Include paths passed to clang parser invocations.
+    pub include_paths: Vec<ArgWithOrigin>,
+    /// Command-line macro definitions passed as `-D...`.
+    pub defines: Vec<ArgWithOrigin>,
+    /// Common compiler flags passed to all parser invocations.
+    pub compiler_args: Vec<ArgWithOrigin>,
 }
 
 impl std::fmt::Display for ClangAst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "C ASTs for {:?}", self.asts.keys())
+        write!(f, "C top-level items ({} entries)", self.items.len())
     }
 }
 
@@ -213,7 +79,7 @@ impl Representation for ClangAst {
         "clang_ast"
     }
 
-    fn materialize(&self, path: &std::path::Path) -> std::io::Result<()> {
+    fn materialize(&self, path: &Path) -> std::io::Result<()> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer(file, self).map_err(Into::into)
     }
@@ -225,6 +91,7 @@ impl Tool for ParseToAst {
     fn name(&self) -> &'static str {
         "parse_to_ast"
     }
+
     fn run(
         self: Box<Self>,
         context: RunContext,
@@ -236,72 +103,240 @@ impl Tool for ParseToAst {
             .get::<RawSource>(id)
             .ok_or("No RawSource representation found in IR")?;
 
-        let working_dir = tempfile::TempDir::new()?;
-
+        // We parse each source independently, including headers, to guarantee
+        // extraction even when a header is never included by a `.c` file.
         let src_dir = tempfile::TempDir::new()?;
         rs.dir.materialize(src_dir.path())?;
-        let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
 
-        Command::new("cmake")
-            .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
-            .arg("-S")
-            .arg(src_dir.path())
-            .arg("-B")
-            .arg(working_dir.path())
-            .output()?;
+        let mut file_bytes: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut source_files: Vec<String> = Vec::new();
 
-        #[derive(Deserialize, Debug)]
-        struct CompileCommand {
-            command: String,
-            file: String,
+        for (rel_path, bytes) in rs.dir.files_recursive() {
+            if is_c_or_header(&rel_path) {
+                let rel = normalize_rel_path(&rel_path);
+                source_files.push(rel.clone());
+                file_bytes.insert(rel, bytes.to_vec());
+            }
         }
-        let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
-            working_dir.path().join("compile_commands.json"),
-        )?)?;
 
-        let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
+        source_files.sort();
 
-        info!(
-            "Parsing {} files: {}",
-            ccs.len(),
-            ccs.iter()
-                .map(|cc| cc.file.as_str())
-                .collect::<Vec<&str>>()
-                .join(", ")
-        );
+        info!("Parsing {} source files", source_files.len());
 
-        for cc in ccs {
-            let file = cc
-                .file
-                .strip_prefix(src_dir_prefix.as_str())
-                .unwrap_or(&cc.file)
-                .to_string();
-            let includes = cc
-                .command
-                .split(" ")
-                .filter(|p| p.starts_with("-I"))
-                .map(|p| p.replace(src_dir_prefix.as_str(), ""));
+        let clang = Clang::new().map_err(|e| format!("Failed to initialize libclang: {e}"))?;
+        let index = Index::new(&clang, false, false);
 
-            let mut clang_cmd = Command::new("clang");
-            let clang_cmd = clang_cmd
-                .current_dir(src_dir.path())
-                .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
-                .args(includes)
-                .arg(&file)
-                .stderr(Stdio::null())
-                .stdout(Stdio::piped());
-            let mut clang = clang_cmd.spawn()?;
-            let mut ast: clang_ast::Node<Clang> =
-                serde_json::from_reader(clang.stdout.take().unwrap())?;
-            clang.wait()?;
-            annotate_ast(&mut ast);
-            info!("Parsed {file}");
-            asts.insert(file, ast);
+        // Source-derived argument origins only.
+        // Tool-default args are still used for parsing, but are not emitted.
+        let include_paths: Vec<ArgWithOrigin> = Vec::new();
+        let defines: Vec<ArgWithOrigin> = Vec::new();
+        let compiler_args: Vec<ArgWithOrigin> = Vec::new();
+
+        let mut common_parse_args: Vec<String> = vec!["-std=gnu11".to_string()];
+        common_parse_args.push(format!("-I{}", src_dir.path().to_string_lossy()));
+
+        let mut items = Vec::new();
+        for rel_file in &source_files {
+            let abs_file = src_dir.path().join(rel_file);
+            let lang_args = language_args_for_file(rel_file);
+            let mut parser_arg_values = common_parse_args.clone();
+            parser_arg_values.extend(lang_args.iter().map(|s| s.to_string()));
+
+            debug!("Parsing {} with args: {:?}", rel_file, parser_arg_values);
+
+            let mut parser = index.parser(&abs_file);
+            parser
+                .arguments(&parser_arg_values)
+                .detailed_preprocessing_record(true);
+
+            let tu = match parser.parse() {
+                Ok(tu) => tu,
+                Err(e) => {
+                    warn!("Skipping {} due to parse failure: {:?}", rel_file, e);
+                    continue;
+                }
+            };
+
+            let root = tu.get_entity();
+
+            // Top-level declarations: direct children of the translation unit.
+            for child in root.get_children() {
+                let Some(kind) = map_top_level_decl_kind(child.get_kind()) else {
+                    continue;
+                };
+                if !child.is_in_main_file() {
+                    continue;
+                }
+                if let Some(item) =
+                    entity_to_item(kind, child.get_range(), src_dir.path(), &file_bytes, None)
+                {
+                    items.push(item);
+                }
+            }
+
+            // Preprocessor entities: walk recursively to collect macros/includes/conditionals.
+            root.visit_children(|entity, _| {
+                if !entity.is_preprocessing() || !entity.is_in_main_file() {
+                    return EntityVisitResult::Recurse;
+                }
+
+                let entity_kind = entity.get_kind();
+                let top_kind = match entity_kind {
+                    EntityKind::MacroDefinition => Some(TopLevelKind::MacroDefinition),
+                    EntityKind::InclusionDirective => Some(TopLevelKind::IncludeDirective),
+                    EntityKind::PreprocessingDirective => Some(TopLevelKind::ConditionalDirective),
+                    _ => None,
+                };
+
+                let Some(top_kind) = top_kind else {
+                    return EntityVisitResult::Recurse;
+                };
+
+                let item = entity_to_item(
+                    top_kind,
+                    entity.get_range(),
+                    src_dir.path(),
+                    &file_bytes,
+                    Some(entity_kind),
+                );
+
+                if let Some(item) = item {
+                    // Keep only conditional directives for PreprocessingDirective.
+                    if top_kind == TopLevelKind::ConditionalDirective
+                        && !is_conditional_directive(&item.source_text)
+                    {
+                        return EntityVisitResult::Recurse;
+                    }
+                    items.push(item);
+                }
+
+                EntityVisitResult::Recurse
+            });
+
+            info!("Parsed {}", rel_file);
         }
 
         Ok(Box::new(ClangAst {
-            source_representation: id,
-            asts,
+            items,
+            include_paths,
+            defines,
+            compiler_args,
         }))
     }
+}
+
+fn is_c_or_header(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("c") || ext.eq_ignore_ascii_case("h"),
+        None => false,
+    }
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn language_args_for_file(path: &str) -> [&'static str; 2] {
+    if path.ends_with(".h") {
+        ["-x", "c-header"]
+    } else {
+        ["-x", "c"]
+    }
+}
+
+fn map_top_level_decl_kind(kind: EntityKind) -> Option<TopLevelKind> {
+    match kind {
+        EntityKind::TypedefDecl => Some(TopLevelKind::TypedefDecl),
+        EntityKind::FunctionDecl => Some(TopLevelKind::FunctionDecl),
+        EntityKind::StructDecl | EntityKind::UnionDecl => Some(TopLevelKind::RecordDecl),
+        EntityKind::EnumDecl => Some(TopLevelKind::EnumDecl),
+        EntityKind::VarDecl => Some(TopLevelKind::VarDecl),
+        _ => None,
+    }
+}
+
+fn entity_to_item(
+    kind: TopLevelKind,
+    range: Option<SourceRange<'_>>,
+    root_dir: &Path,
+    file_bytes: &HashMap<String, Vec<u8>>,
+    source_kind: Option<EntityKind>,
+) -> Option<TopLevelItem> {
+    let range = range?;
+    let (span, source_text) = range_to_span_and_text(range, root_dir, file_bytes)?;
+
+    // For macro definitions and includes, keep empty-text items out.
+    if matches!(
+        source_kind,
+        Some(EntityKind::MacroDefinition | EntityKind::InclusionDirective)
+    ) && source_text.trim().is_empty()
+    {
+        return None;
+    }
+
+    Some(TopLevelItem {
+        kind,
+        source_text,
+        span,
+    })
+}
+
+fn range_to_span_and_text(
+    range: SourceRange<'_>,
+    root_dir: &Path,
+    file_bytes: &HashMap<String, Vec<u8>>,
+) -> Option<(SourceSpan, String)> {
+    let start = range.get_start().get_file_location();
+    let end = range.get_end().get_file_location();
+
+    let start_file = start.file?;
+    let end_file = end.file?;
+
+    let start_path = start_file.get_path();
+    let end_path = end_file.get_path();
+    if start_path != end_path {
+        return None;
+    }
+
+    let rel_path = start_path
+        .strip_prefix(root_dir)
+        .ok()
+        .map(normalize_rel_path)
+        .unwrap_or_else(|| start_path.to_string_lossy().replace('\\', "/"));
+
+    let bytes = file_bytes.get(&rel_path)?;
+    let start_offset = start.offset as usize;
+    let end_offset = end.offset as usize;
+
+    if start_offset > end_offset || end_offset > bytes.len() {
+        return None;
+    }
+
+    let source_text = String::from_utf8_lossy(&bytes[start_offset..end_offset]).to_string();
+
+    let span = SourceSpan {
+        file: rel_path,
+        start: SourcePoint {
+            line: start.line,
+            column: start.column,
+            offset: start.offset,
+        },
+        end: SourcePoint {
+            line: end.line,
+            column: end.column,
+            offset: end.offset,
+        },
+    };
+
+    Some((span, source_text))
+}
+
+fn is_conditional_directive(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("#if")
+        || t.starts_with("#ifdef")
+        || t.starts_with("#ifndef")
+        || t.starts_with("#elif")
+        || t.starts_with("#else")
+        || t.starts_with("#endif")
 }

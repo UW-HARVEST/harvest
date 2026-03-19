@@ -9,7 +9,7 @@ use harvest_core::{
     tools::{RunContext, Tool},
 };
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 pub use ast::ClangAST;
 pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity};
@@ -129,7 +129,7 @@ impl Tool for ParseToAst {
             extract_entities(parser, &rel_path, bytes, &mut out);
         }
 
-        info!(
+        debug!(
             "Generated RichSourceMap:\n{}",
             serde_json::to_string_pretty(&out)?
         );

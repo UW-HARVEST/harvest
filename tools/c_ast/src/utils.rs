@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::{SourcePoint, SourceSpan};
 
+/// Checks if the file has a .c or .h extension, which indicates that we should parse it
 pub(crate) fn is_c_or_header(path: &Path) -> bool {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => ext == "c" || ext == "h",

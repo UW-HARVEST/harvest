@@ -13,6 +13,7 @@ pub struct EntityAnnotations {
 /// Marks function definitions as public when:
 /// - Their name matches a declaration in a header
 /// - They are not static
+///
 /// Ultimately this a hueristic, however the MITLL benchmarks don't always link against their headers, so it is necessary for now.
 pub fn annotate_visibility(app_functions: &mut [TopLevelEntity], app_func_sigs: &[TopLevelEntity]) {
     let mut declared_in_headers: HashSet<String> = HashSet::new();

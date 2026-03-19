@@ -74,12 +74,11 @@ pub(crate) fn is_header_file(path: &str) -> bool {
 
 pub(crate) fn is_static_function(entity: &TopLevelEntity) -> bool {
     // Preferred source of truth when available.
-    if let Some(ClangAST::FunctionDecl { storage_class, .. }) = entity.ast.as_ref() {
-        if let Some(storage_class) = storage_class {
-            if storage_class.eq_ignore_ascii_case("static") {
-                return true;
-            }
-        }
+    if let Some(ClangAST::FunctionDecl { storage_class, .. }) = entity.ast.as_ref()
+        && let Some(storage_class) = storage_class
+        && storage_class.eq_ignore_ascii_case("static")
+    {
+        return true;
     }
     false
 }

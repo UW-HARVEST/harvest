@@ -231,7 +231,7 @@ mod tests {
     use super::super::test_util::dir_has_entries;
     use super::*;
     use std::fs::{create_dir, create_dir_all, read_link, set_permissions, write};
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
     use std::ptr;
 
     impl<'s, 'p> DirectVerified<'s, 'p> {
@@ -249,13 +249,6 @@ mod tests {
     /// Returns true iff the object at this path is read-only.
     fn is_readonly<P: AsRef<Path>>(path: P) -> bool {
         symlink_metadata(path).unwrap().permissions().readonly()
-    }
-
-    /// Adds owner write permission to the object at this path.
-    fn set_owner_writable<P: AsRef<Path>>(path: P) {
-        let mut perms = symlink_metadata(path.as_ref()).unwrap().permissions();
-        perms.set_mode(perms.mode() | 0o200);
-        set_permissions(path, perms).unwrap();
     }
 
     #[test]
@@ -346,12 +339,8 @@ mod tests {
         let entry = freezer.freeze("a/b/inner_file").unwrap();
         assert!(entry.file().is_some());
         assert!(!is_readonly(&a_b));
-        assert!(
-            symlink_metadata(&a_b_inner_file)
-                .unwrap()
-                .permissions()
-                .readonly()
-        );
+        let mut inner_file_perms = symlink_metadata(&a_b_inner_file).unwrap().permissions();
+        assert!(inner_file_perms.readonly());
         // Freeze a/b/dir_link
         let a_b_dir_link_symlink = freezer.freeze("a/b/dir_link").unwrap().symlink().unwrap();
         assert_eq!(a_b_dir_link_symlink.contents(), "../..");
@@ -361,14 +350,15 @@ mod tests {
         // 1. For a/b/inner_file, we make the file writable again, then verify that it is still
         //    writable after freezing a/b.
         // 2. For a/b/dir_link, we verify the returned path has the same address as the first copy.
-        set_owner_writable(&a_b_inner_file);
+        inner_file_perms.set_readonly(false);
+        set_permissions(&a_b_inner_file, inner_file_perms).unwrap();
         // Freeze a/b
         let a_b_dir = freezer.freeze("a/b").unwrap().dir().unwrap();
         let entry = |n| a_b_dir.get_nofollow(n).unwrap();
         let absolute_link_symlink = entry("absolute_link").symlink().unwrap();
         assert_eq!(absolute_link_symlink.contents(), "/absolute");
         assert_eq!(entry("c").dir().unwrap().entries().count(), 0);
-        assert!(entry("inner_file").file().is_some());
+        assert_eq!(entry("inner_file").file().is_some(), true);
         let a_b_dir_link_symlink_2 = entry("dir_link").symlink().unwrap();
         assert_eq!(a_b_dir_link_symlink_2.contents(), "../..");
         let file_link_symlink = entry("file_link").symlink().unwrap();
@@ -376,8 +366,10 @@ mod tests {
         assert_eq!(a_b_dir.entries().count(), 5);
         // Verify that everything has the expected permissions.
         assert!(!is_readonly(&a));
-        assert!(symlink_metadata(&a_b).unwrap().permissions().readonly());
-        assert!(symlink_metadata(&a_b_c).unwrap().permissions().readonly());
+        let mut a_b_perms = symlink_metadata(&a_b).unwrap().permissions();
+        assert!(a_b_perms.readonly());
+        let mut a_b_c_perms = symlink_metadata(&a_b_c).unwrap().permissions();
+        assert!(a_b_c_perms.readonly());
         assert!(!is_readonly(&a_b_inner_file)); // Verifies a/b/inner_file not re-frozen
         assert!(!is_readonly(&a_outer_file));
         // Check that a/b/dir_link has the same path.
@@ -387,8 +379,10 @@ mod tests {
         ));
         // Repeat the previous readonly trick to verify that freezing a/ does not re-freeze
         // anything under b/.
-        set_owner_writable(&a_b);
-        set_owner_writable(&a_b_c);
+        a_b_perms.set_readonly(false);
+        a_b_c_perms.set_readonly(false);
+        set_permissions(&a_b, a_b_perms).unwrap();
+        set_permissions(&a_b_c, a_b_c_perms).unwrap();
         // Freeze a/
         let a_dir = freezer.freeze("a").unwrap().dir().unwrap();
         let a_b_dir_2 = a_dir.get_nofollow("b").unwrap().dir().unwrap();

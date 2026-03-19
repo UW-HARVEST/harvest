@@ -879,6 +879,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "clippy_lint"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "full_source",
+ "harvest_core",
+ "toml_edit 0.23.10+spec-1.0.0",
+ "tracing",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1373,6 +1384,7 @@ dependencies = [
  "build_project_spec",
  "c_ast",
  "clap",
+ "clippy_lint",
  "config",
  "directories",
  "harvest_core",

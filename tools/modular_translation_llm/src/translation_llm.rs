@@ -2,6 +2,7 @@
 //! Abstracts away all the string management needed for building dynamically generated prompts and
 //! provides a clean well-typed interface for use by the rest of the transpiler.
 use build_project_spec::ProjectKind;
+use c_ast::TopLevelEntity;
 use full_source::RawSource;
 use harvest_core::llm::{HarvestLLM, LLMUsageTotals, Usage, build_request};
 use serde::Deserialize;
@@ -10,12 +11,9 @@ use std::sync::Mutex;
 use tracing::warn;
 
 use crate::Config;
-use crate::clang::ClangNode;
 use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
 
-fn declaration_source_text(
-    decl: &c_ast::TopLevelEntity,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn declaration_source_text(decl: &TopLevelEntity) -> Result<String, Box<dyn std::error::Error>> {
     Ok(decl.source_text.clone())
 }
 
@@ -184,7 +182,7 @@ impl ModularTranslationLLM {
     //               Used to decide whether we need to make these types #[repr(C)] (compatible with outside C code).
     pub fn translate_types(
         &self,
-        type_decls: &[&c_ast::TopLevelEntity],
+        type_decls: &[TopLevelEntity],
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
     ) -> Result<TypeTranslationResult, Box<dyn std::error::Error>> {
@@ -244,7 +242,7 @@ impl ModularTranslationLLM {
     //              Used as context for translating functions and globals.
     pub fn translate_function_global(
         &self,
-        decl: &c_ast::TopLevelEntity,
+        decl: &TopLevelEntity,
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
@@ -306,8 +304,8 @@ impl ModularTranslationLLM {
     ///              Used as context for translating signatures.
     pub fn translate_interface(
         &self,
-        function_decls: &[ClangNode<'_>],
-        global_decls: &[ClangNode<'_>],
+        function_decls: &[TopLevelEntity],
+        global_decls: &[TopLevelEntity],
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
         type_translations: &TypeTranslationResult,
@@ -316,19 +314,17 @@ impl ModularTranslationLLM {
 
         // Add function declarations first
         for decl in function_decls {
-            let node = decl.as_node();
-            let source_text = declaration_source_text(node)?;
+            let source_text = declaration_source_text(decl)?;
             decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
                 enforce_ffi_interface: matches!(project_kind, ProjectKind::Library)
-                    && decl.visibility == Some(true),
+                    && decl.annotations.public,
             });
         }
 
         // Add global declarations
         for decl in global_decls {
-            let node = decl.as_node();
-            let source_text = declaration_source_text(node)?;
+            let source_text = declaration_source_text(decl)?;
             decl_sources.push(InterfaceDeclarationInput {
                 source: source_text,
                 enforce_ffi_interface: false,

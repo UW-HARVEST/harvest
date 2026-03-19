@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::ClangAST;
+use crate::EntityAnnotations;
 
 /// Representaiton of a single point in a source file, used for source mapping.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -60,6 +61,8 @@ pub struct TopLevelEntity {
     pub source_text: String,
     pub span: SourceSpan,
     pub ast: Option<ClangAST>,
+    #[serde(default)]
+    pub annotations: EntityAnnotations,
 }
 
 /// This is the output of the parsing step, and therefore this tool.

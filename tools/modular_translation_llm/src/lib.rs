@@ -7,7 +7,7 @@
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
 use build_project_spec::{ProjectKind, ProjectSpec};
-use c_ast::RichSourceMap;
+use c_ast::{RichSourceMap, TopLevelEntity, annotate_visibility};
 use full_source::RawSource;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::LLMConfig;
@@ -18,11 +18,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::info;
 
-mod clang;
 mod recombine;
 mod translation;
 mod translation_llm;
-pub use clang::ClangNode;
 pub use translation::{
     InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
     translate_decls, translate_functions, translate_interface, translate_types,
@@ -105,13 +103,12 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // Wrap pre-split declarations from c_ast.
-        let app_types: Vec<ClangNode<'_>> =
-            clang_ast.app_types.iter().map(ClangNode::new).collect();
-        let app_globals: Vec<ClangNode<'_>> =
-            clang_ast.app_globals.iter().map(ClangNode::new).collect();
-        let app_functions: Vec<ClangNode<'_>> =
-            clang_ast.app_functions.iter().map(ClangNode::new).collect();
+        let app_types: &[TopLevelEntity] = &clang_ast.app_types;
+        let app_globals: &[TopLevelEntity] = &clang_ast.app_globals;
+        let mut app_functions: Vec<TopLevelEntity> = clang_ast.app_functions.clone();
+
+        annotate_visibility(&mut app_functions, &clang_ast.app_func_sigs);
+        info!("Visibility annotation complete");
 
         info!(
             "Extracted {} type declarations, {} global declarations, {} function declarations",
@@ -125,8 +122,8 @@ impl Tool for ModularTranslationLlm {
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result = translation::translate_decls(
-            &app_types,
-            &app_globals,
+            app_types,
+            app_globals,
             &app_functions,
             raw_source,
             project_kind,

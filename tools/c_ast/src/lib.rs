@@ -1,3 +1,4 @@
+mod annotations;
 mod ast;
 mod rsm;
 mod utils;
@@ -11,6 +12,7 @@ use harvest_core::{
 use std::path::Path;
 use tracing::{debug, warn};
 
+pub use annotations::{EntityAnnotations, annotate_visibility};
 pub use ast::ClangAST;
 pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity};
 
@@ -89,6 +91,7 @@ fn extract_entities(
                 source_text,
                 span,
                 ast,
+                annotations: EntityAnnotations::default(),
             },
             &child,
         );

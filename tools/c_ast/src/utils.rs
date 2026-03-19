@@ -1,7 +1,7 @@
 use clang::source::SourceRange;
 use std::path::Path;
 
-use crate::{SourcePoint, SourceSpan};
+use crate::{ClangAST, SourcePoint, SourceSpan, TopLevelEntity};
 
 /// Checks if the file has a .c or .h extension, which indicates that we should parse it
 pub(crate) fn is_c_or_header(path: &Path) -> bool {
@@ -59,4 +59,27 @@ pub(crate) fn range_to_span_and_text(
     };
 
     Some((span, source_text))
+}
+
+pub(crate) fn function_name(entity: &TopLevelEntity) -> Option<&str> {
+    match entity.ast.as_ref() {
+        Some(ClangAST::FunctionDecl { name, .. }) if !name.is_empty() => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_header_file(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".h")
+}
+
+pub(crate) fn is_static_function(entity: &TopLevelEntity) -> bool {
+    // Preferred source of truth when available.
+    if let Some(ClangAST::FunctionDecl { storage_class, .. }) = entity.ast.as_ref() {
+        if let Some(storage_class) = storage_class {
+            if storage_class.eq_ignore_ascii_case("static") {
+                return true;
+            }
+        }
+    }
+    false
 }

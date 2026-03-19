@@ -28,15 +28,15 @@ fn parse_linter_messages(stdout: &[u8]) -> Result<String, Box<dyn std::error::Er
 }
 
 /// Parses cargo clippy output stream and extracts linter output.
-/// Returns a vector of PathBuf containing the artifact filenames.
+/// Returns a vector of linter messages.
 fn parse_linted_artifacts(stdout: &[u8]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut linter_messages = Vec::new();
 
     for message in cargo_metadata::Message::parse_stream(stdout) {
         let message = message?;
-        if let cargo_metadata::Message::CompilerMessage(artifact) = message {
+        if let cargo_metadata::Message::CompilerMessage(compiler_message) = message {
             // Extract linter messages from all messages
-            linter_messages.push(artifact.message.message);
+            linter_messages.push(compiler_message.message.message);
         }
     }
 
@@ -61,25 +61,7 @@ fn try_clippy_lint(project_path: &PathBuf) -> Result<LintResult, Box<dyn std::er
     // Normalize the package name to match the output directory so shared library names align with runner expectations.
     normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
 
-    // Run clippy in the project directory once to get messages
-    let output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--message-format=json")
-        .current_dir(project_path)
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to run cargo clippy in {}: {}",
-                project_path.display(),
-                e
-            )
-        })?;
-    
-    if !output.status.success() {
-        return clippy_error_output(&output);
-    }
-
-    // Run clippy a second time to auto-fix the linter issues
+    // Run clippy once auto-fix the linter issues
     let fix_output = Command::new("cargo")
         .arg("clippy")
         .arg("--fix")
@@ -94,13 +76,31 @@ fn try_clippy_lint(project_path: &PathBuf) -> Result<LintResult, Box<dyn std::er
                 e
             )
         })?;
+    
+    if !fix_output.status.success() {
+        return clippy_error_output(&fix_output);
+    }
 
-    if fix_output.status.success() {
+    // Run clippy a second time to get any unfixed linter messages
+    let post_fix_output = Command::new("cargo")
+        .arg("clippy")
+        .arg("--message-format=json")
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| {
+            format!(
+                "Failed to run cargo clippy in {}: {}",
+                project_path.display(),
+                e
+            )
+        })?;
+
+    if post_fix_output.status.success() {
         info!("Project linted successfully!");
-        let lint_output = parse_linted_artifacts(&output.stdout)?;
+        let lint_output = parse_linted_artifacts(&post_fix_output.stdout)?;
         Ok(Ok(lint_output))
     } else {
-        clippy_error_output(&fix_output)
+        clippy_error_output(&post_fix_output)
     }
 }
 

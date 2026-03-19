@@ -159,3 +159,9 @@ impl Representation for RichSourceMap {
         serde_json::to_writer(file, self).map_err(Into::into)
     }
 }
+
+impl Default for RichSourceMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}

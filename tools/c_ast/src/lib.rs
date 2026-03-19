@@ -8,7 +8,7 @@ use harvest_core::{
     Id, Representation,
     tools::{RunContext, Tool},
 };
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 use tracing::{debug, info, warn};
 
 pub use ast::ClangAST;
@@ -16,7 +16,7 @@ pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity
 
 pub struct ParseToAst;
 
-fn generate_parse_args(src_root: &Path, rel_file: &str) -> Vec<String> {
+fn generate_parse_args(src_root: &Path, rel_file: &Path) -> Vec<String> {
     let mut parser_arg_values = vec!["-std=gnu11".to_string()];
     parser_arg_values.push(format!("-I{}", src_root.to_string_lossy()));
     parser_arg_values.extend(
@@ -27,21 +27,26 @@ fn generate_parse_args(src_root: &Path, rel_file: &str) -> Vec<String> {
     parser_arg_values
 }
 
-fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &str) -> clang::Parser<'a> {
+fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &Path) -> clang::Parser<'a> {
     let abs_file = src_root.join(rel_file);
     let parser_arg_values = generate_parse_args(src_root, rel_file);
 
-    debug!("Parsing {} with args: {:?}", rel_file, parser_arg_values);
+    debug!(
+        "Parsing {} with args: {:?}",
+        rel_file.to_string_lossy(),
+        parser_arg_values
+    );
 
     let mut parser = index.parser(abs_file);
+    parser.detailed_preprocessing_record(true);
     parser.arguments(&parser_arg_values);
     parser
 }
 
-fn process_file(
+fn extract_decls(
     parser: clang::Parser<'_>,
-    src_root: &Path,
-    file_bytes: &HashMap<String, Vec<u8>>,
+    rel_file: &Path,
+    file_bytes: &[u8],
     out: &mut RichSourceMap,
 ) {
     let tu = match parser.parse() {
@@ -55,6 +60,7 @@ fn process_file(
     let root = tu.get_entity();
 
     for child in root.get_children() {
+        // Ignore entities that we don't care about.
         let Some(decl_kind) = rsm::map_top_level_decl_kind(child.get_kind()) else {
             continue;
         };
@@ -69,7 +75,7 @@ fn process_file(
 
         // Read the source text from the file
         let Some((span, source_text)) =
-            utils::range_to_span_and_text(child.get_range(), src_root, file_bytes)
+            utils::range_to_span_and_text(child.get_range(), rel_file, file_bytes)
         else {
             continue;
         };
@@ -104,28 +110,17 @@ impl Tool for ParseToAst {
         let src_dir = tempfile::TempDir::new()?;
         rs.dir.materialize(src_dir.path())?;
 
-        let mut file_bytes: HashMap<String, Vec<u8>> = HashMap::new();
-        let mut source_files: Vec<String> = Vec::new();
-
-        for (rel_path, bytes) in rs.dir.files_recursive() {
-            if utils::is_c_or_header(&rel_path) {
-                let rel = utils::normalize_rel_path(&rel_path);
-                source_files.push(rel.clone());
-                file_bytes.insert(rel, bytes.to_vec());
-            }
-        }
-
-        source_files.sort();
-        info!("Parsing {} source files", source_files.len());
-
         let clang = LibClang::new().map_err(|e| format!("Failed to initialize libclang: {e}"))?;
         let index = Index::new(&clang, false, false);
 
         let mut out = RichSourceMap::new();
 
-        for rel_file in &source_files {
-            let parser = build_parser(&index, src_dir.path(), rel_file);
-            process_file(parser, src_dir.path(), &file_bytes, &mut out);
+        for (rel_path, bytes) in rs.dir.files_recursive() {
+            if !utils::is_c_or_header(&rel_path) {
+                continue;
+            }
+            let parser = build_parser(&index, src_dir.path(), &rel_path);
+            extract_decls(parser, &rel_path, bytes, &mut out);
         }
 
         info!(

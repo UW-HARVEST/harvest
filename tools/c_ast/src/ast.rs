@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::EntityKind;
 
+/// Persistent AST representation for the C source code.
+/// We will extend this as we find that we need more info (from libClang).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClangAST {
     TypedefDecl {
@@ -30,6 +32,8 @@ pub enum ClangAST {
     },
 }
 
+/// Extract info from a libClang Entity and convert it into our ClangAST representation.
+/// Returns None for entities that are removed during preprocessing.
 pub(crate) fn ast_from_entity(
     decl_kind: EntityKind,
     entity: &clang::Entity<'_>,

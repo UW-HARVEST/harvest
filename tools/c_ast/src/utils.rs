@@ -3,6 +3,21 @@ use std::{collections::HashMap, path::Path};
 
 use crate::{SourcePoint, SourceSpan};
 
+pub(crate) fn is_c_or_header(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("c") || ext.eq_ignore_ascii_case("h"),
+        None => false,
+    }
+}
+
+pub(crate) fn language_args_for_file(path: &str) -> [&'static str; 2] {
+    if path.ends_with(".h") {
+        ["-x", "c-header"]
+    } else {
+        ["-x", "c"]
+    }
+}
+
 pub(crate) fn normalize_rel_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }

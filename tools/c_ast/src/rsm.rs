@@ -23,8 +23,27 @@ pub enum EntityKind {
     TypedefDecl,
     FunctionDecl,
     RecordDecl,
+    UnionDecl,
     EnumDecl,
     VarDecl,
+    PreprocessingDirective,
+    MacroDefinition,
+    InclusionDirective,
+}
+
+pub(crate) fn map_top_level_decl_kind(kind: clang::EntityKind) -> Option<EntityKind> {
+    match kind {
+        clang::EntityKind::TypedefDecl => Some(EntityKind::TypedefDecl),
+        clang::EntityKind::FunctionDecl => Some(EntityKind::FunctionDecl),
+        clang::EntityKind::StructDecl => Some(EntityKind::RecordDecl),
+        clang::EntityKind::UnionDecl => Some(EntityKind::UnionDecl),
+        clang::EntityKind::EnumDecl => Some(EntityKind::EnumDecl),
+        clang::EntityKind::VarDecl => Some(EntityKind::VarDecl),
+        clang::EntityKind::PreprocessingDirective => Some(EntityKind::PreprocessingDirective),
+        clang::EntityKind::MacroDefinition => Some(EntityKind::MacroDefinition),
+        clang::EntityKind::InclusionDirective => Some(EntityKind::InclusionDirective),
+        _ => None,
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -59,7 +78,10 @@ impl RichSourceMap {
 
     pub(crate) fn push_entity(&mut self, item: TopLevelEntity) {
         match item.kind {
-            EntityKind::TypedefDecl | EntityKind::RecordDecl | EntityKind::EnumDecl => {
+            EntityKind::TypedefDecl
+            | EntityKind::RecordDecl
+            | EntityKind::UnionDecl
+            | EntityKind::EnumDecl => {
                 self.app_types.push(item);
             }
             EntityKind::VarDecl => {
@@ -67,6 +89,15 @@ impl RichSourceMap {
             }
             EntityKind::FunctionDecl => {
                 self.app_functions.push(item);
+            }
+            EntityKind::InclusionDirective => {
+                self.include_paths.push(item);
+            }
+            EntityKind::MacroDefinition => {
+                self.defines.push(item);
+            }
+            EntityKind::PreprocessingDirective => {
+                self.compiler_args.push(item);
             }
         }
     }

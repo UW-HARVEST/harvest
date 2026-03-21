@@ -20,7 +20,6 @@ tempfile = "3.23.0"
 thiserror = "2.0.17"
 toml_edit = "0.23.9"
 tracing = { default-features = false, features = ["std"], version = "0.1.44" }
-clang-ast = { version = "0.1.35", features = ["serde"] }
 
 [workspace.lints.clippy]
 self_named_module_files = "warn"

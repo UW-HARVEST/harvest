@@ -1,230 +1,110 @@
-use clang_ast::Node;
+mod annotations;
+mod ast;
+mod rsm;
+mod utils;
+
+use clang::{Clang as LibClang, Index};
 use full_source::RawSource;
 use harvest_core::{
     Id, Representation,
     tools::{RunContext, Tool},
 };
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    fs::File,
-    process::{Command, Stdio},
-};
-use tracing::info;
+use std::path::Path;
+use tracing::{debug, warn};
 
-/// Represents a (possibly) qualified type in the Clang AST, such as `int`, `const int`, or `const volatile int`.
-/// Clang Docs on QualType: https://clang.llvm.org/doxygen/classclang_1_1QualType.html
-#[derive(Serialize, Deserialize, Debug)]
-pub struct QualType {
-    /// String representation of the desugared type, i.e., it will have `typedefs` and `typeofs` resolved.
-    #[serde(rename = "desugaredQualType")]
-    pub desugared_qual_type: Option<String>,
-    /// String representation of the type as written in the source code, i.e., it may include `typedefs` and `typeofs`.
-    #[serde(rename = "qualType")]
-    pub qual_type: String,
-    /// The ID of the type alias declaration, if this type is a typedef.
-    #[serde(rename = "typeAliasDecId")]
-    pub type_alias_dec_id: Option<clang_ast::Id>,
-}
-
-/// Represents a node in the Clang AST.
-/// For the sake of simplicity, it only encodes a subset of the Clang AST nodes that are relevant for our analysis.
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Clang {
-    TranslationUnitDecl,
-    /// Represents a typedef declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1TypedefDecl.html
-    TypedefDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<String>,
-    },
-    /// Represents a function declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html
-    FunctionDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "storageClass")]
-        storage_class: Option<String>,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<FunctionAnnotation>,
-    },
-    /// Represents a record (struct/union) declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1RecordDecl.html
-    RecordDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        #[serde(rename = "tagUsed")]
-        tag_used: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents an enum declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1EnumDecl.html
-    EnumDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents a variable declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1VarDecl.html
-    VarDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: String,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        #[serde(rename = "storageClass")]
-        storage_class: Option<String>,
-        annotation: Option<String>,
-    },
-    /// Represents a parameter variable declaration in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1ParmVarDecl.html
-    ParmVarDecl {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        name: Option<String>,
-        #[serde(rename = "type")]
-        qtype: QualType,
-        annotation: Option<String>,
-    },
-    /// Represents a compound statement in the Clang AST.
-    /// Clang Docs: https://clang.llvm.org/doxygen/classclang_1_1CompoundStmt.html
-    CompoundStmt {
-        loc: Option<clang_ast::SourceLocation>,
-        range: Option<clang_ast::SourceRange>,
-        annotation: Option<String>,
-    },
-    /// Every other node (not relevant to our analysis at the moment)
-    Other {
-        kind: Option<String>,
-        annotation: Option<String>,
-    },
-}
-
-impl Clang {
-    /// Returns the source location of this AST node, if available.
-    ///
-    /// # Returns
-    /// - `Some(&SourceLocation)` if the node has a location field
-    /// - `None` if the node doesn't have a location or if the location field is None
-    pub fn loc(&self) -> Option<&clang_ast::SourceLocation> {
-        match self {
-            Clang::TranslationUnitDecl => None,
-            Clang::TypedefDecl { loc, .. }
-            | Clang::FunctionDecl { loc, .. }
-            | Clang::RecordDecl { loc, .. }
-            | Clang::VarDecl { loc, .. }
-            | Clang::EnumDecl { loc, .. }
-            | Clang::ParmVarDecl { loc, .. }
-            | Clang::CompoundStmt { loc, .. } => loc.as_ref(),
-            Clang::Other { .. } => None,
-        }
-    }
-
-    /// Returns the source range of this AST node, if available.
-    ///
-    /// # Returns
-    /// - `Some(&SourceRange)` if the node has a range field
-    /// - `None` if the node doesn't have a range or if the range field is None
-    pub fn range(&self) -> Option<&clang_ast::SourceRange> {
-        match self {
-            Clang::TranslationUnitDecl => None,
-            Clang::TypedefDecl { range, .. }
-            | Clang::FunctionDecl { range, .. }
-            | Clang::RecordDecl { range, .. }
-            | Clang::VarDecl { range, .. }
-            | Clang::ParmVarDecl { range, .. }
-            | Clang::EnumDecl { range, .. }
-            | Clang::CompoundStmt { range, .. } => range.as_ref(),
-            Clang::Other { .. } => None,
-        }
-    }
-
-    /// Returns the name of this declaration, if available.
-    ///
-    /// # Returns
-    /// - `Some(String)` if the declaration has a name field and it is populated
-    /// - `None` if the declaration doesn't have a name or if the name field is None
-    pub fn name(&self) -> Option<String> {
-        match self {
-            Clang::TypedefDecl { name, .. } => Some(name.clone()),
-            Clang::FunctionDecl { name, .. } => Some(name.clone()),
-            Clang::RecordDecl { name, .. } => name.clone(),
-            Clang::VarDecl { name, .. } => Some(name.clone()),
-            Clang::EnumDecl { name, .. } => name.clone(),
-            _ => None,
-        }
-    }
-}
-
-/// Our annotations for functions in the Clang AST.
-/// Will expand as Harvest's analyses get more sophisticated.
-#[non_exhaustive]
-#[derive(Serialize, Deserialize, Debug)]
-pub enum FunctionAnnotation {
-    Entry,
-    Static,
-}
-
-fn annotate_ast(ast: &mut Node<Clang>) {
-    if let Clang::FunctionDecl {
-        name,
-        storage_class,
-        annotation,
-        ..
-    } = &mut ast.kind
-    {
-        match storage_class.as_ref().map(|s| s.as_str()) {
-            None if name == "main" => *annotation = Some(FunctionAnnotation::Entry),
-            Some("static") => *annotation = Some(FunctionAnnotation::Static),
-            _ => {}
-        }
-    }
-
-    for node in ast.inner.iter_mut() {
-        annotate_ast(node);
-    }
-}
-
-/// Represents a Clang AST for a set of source files.
-#[derive(Serialize)]
-pub struct ClangAst {
-    /// Maps file paths to the root node of the Clang AST for that file.
-    pub asts: HashMap<String, Node<Clang>>,
-    /// The ID of the source representation from which this AST was generated.
-    pub source_representation: Id,
-}
-
-impl std::fmt::Display for ClangAst {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "C ASTs for {:?}", self.asts.keys())
-    }
-}
-
-impl Representation for ClangAst {
-    fn name(&self) -> &'static str {
-        "clang_ast"
-    }
-
-    fn materialize(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer(file, self).map_err(Into::into)
-    }
-}
+pub use annotations::{EntityAnnotations, annotate_visibility};
+pub use ast::ClangAST;
+pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity};
 
 pub struct ParseToAst;
+
+/// Utility function to generate libClang parser arguments based on the source root and file being parsed.
+/// This includes standard flags, include paths, and language specification based on file extension.
+fn generate_parse_args(src_root: &Path, rel_file: &Path) -> Vec<String> {
+    let mut parser_arg_values = vec!["-std=gnu11".to_string()];
+    parser_arg_values.push(format!("-I{}", src_root.to_string_lossy()));
+    parser_arg_values.extend(
+        utils::language_args_for_file(rel_file)
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    parser_arg_values
+}
+
+/// Utility function to instantiate the libclang parser.
+fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &Path) -> clang::Parser<'a> {
+    let abs_file = src_root.join(rel_file);
+    let parser_arg_values = generate_parse_args(src_root, rel_file);
+
+    debug!(
+        "Parsing {} with args: {:?}",
+        rel_file.to_string_lossy(),
+        parser_arg_values
+    );
+
+    let mut parser = index.parser(abs_file);
+    parser.detailed_preprocessing_record(true);
+    parser.arguments(&parser_arg_values);
+    parser
+}
+
+/// Extract top-level entities from the file at `rel_path`.
+/// This includes both entities that survive preprocessing (types, functions, globals) and preprocessor directives (includes, defines, compiler args).
+fn extract_entities(
+    parser: clang::Parser<'_>,
+    rel_file: &Path,
+    file_bytes: &[u8],
+    out: &mut RichSourceMap,
+) {
+    let tu = match parser.parse() {
+        Ok(tu) => tu,
+        Err(e) => {
+            warn!("Skipping due to parse failure: {:?}", e);
+            return;
+        }
+    };
+
+    let root = tu.get_entity();
+
+    for child in root.get_children() {
+        // Ignore entities that we don't care about.
+        let Some(decl_kind) = rsm::map_top_level_decl_kind(child.get_kind()) else {
+            continue;
+        };
+        // Ignore imports
+        if !child.is_in_main_file() {
+            continue;
+        }
+
+        // Read the source text from the file
+        let Some((span, source_text)) =
+            utils::range_to_span_and_text(child.get_range(), rel_file, file_bytes)
+        else {
+            continue;
+        };
+
+        // Extract the AST for this entity
+        let ast = ast::ast_from_entity(decl_kind, &child);
+        out.push_entity(
+            TopLevelEntity {
+                kind: decl_kind,
+                source_text,
+                span,
+                ast,
+                annotations: EntityAnnotations::default(),
+            },
+            &child,
+        );
+    }
+}
 
 impl Tool for ParseToAst {
     fn name(&self) -> &'static str {
         "parse_to_ast"
     }
+
+    /// For each C and header file in the RawSource, parse it with libClang and extract top-level declarations into a RichSourceMap.
+    /// Captures preprocessor information such as include paths and defines as well.
     fn run(
         self: Box<Self>,
         context: RunContext,
@@ -236,72 +116,26 @@ impl Tool for ParseToAst {
             .get::<RawSource>(id)
             .ok_or("No RawSource representation found in IR")?;
 
-        let working_dir = tempfile::TempDir::new()?;
-
         let src_dir = tempfile::TempDir::new()?;
         rs.dir.materialize(src_dir.path())?;
-        let src_dir_prefix = format!("{}/", src_dir.path().to_str().unwrap());
 
-        Command::new("cmake")
-            .args(["-DCMAKE_EXPORT_COMPILE_COMMANDS=1"])
-            .arg("-S")
-            .arg(src_dir.path())
-            .arg("-B")
-            .arg(working_dir.path())
-            .output()?;
+        let clang = LibClang::new().map_err(|e| format!("Failed to initialize libclang: {e}"))?;
+        let index = Index::new(&clang, false, false);
 
-        #[derive(Deserialize, Debug)]
-        struct CompileCommand {
-            command: String,
-            file: String,
+        let mut out = RichSourceMap::new();
+
+        for (rel_path, bytes) in rs.dir.files_recursive() {
+            if !utils::is_c_or_header(&rel_path) {
+                continue;
+            }
+            let parser = build_parser(&index, src_dir.path(), &rel_path);
+            extract_entities(parser, &rel_path, bytes, &mut out);
         }
-        let ccs: Vec<CompileCommand> = serde_json::de::from_reader(File::open(
-            working_dir.path().join("compile_commands.json"),
-        )?)?;
 
-        let mut asts: HashMap<String, clang_ast::Node<Clang>> = Default::default();
-
-        info!(
-            "Parsing {} files: {}",
-            ccs.len(),
-            ccs.iter()
-                .map(|cc| cc.file.as_str())
-                .collect::<Vec<&str>>()
-                .join(", ")
+        debug!(
+            "Generated RichSourceMap:\n{}",
+            serde_json::to_string_pretty(&out)?
         );
-
-        for cc in ccs {
-            let file = cc
-                .file
-                .strip_prefix(src_dir_prefix.as_str())
-                .unwrap_or(&cc.file)
-                .to_string();
-            let includes = cc
-                .command
-                .split(" ")
-                .filter(|p| p.starts_with("-I"))
-                .map(|p| p.replace(src_dir_prefix.as_str(), ""));
-
-            let mut clang_cmd = Command::new("clang");
-            let clang_cmd = clang_cmd
-                .current_dir(src_dir.path())
-                .args(["-Xclang", "-ast-dump=json", "-fsyntax-only"])
-                .args(includes)
-                .arg(&file)
-                .stderr(Stdio::null())
-                .stdout(Stdio::piped());
-            let mut clang = clang_cmd.spawn()?;
-            let mut ast: clang_ast::Node<Clang> =
-                serde_json::from_reader(clang.stdout.take().unwrap())?;
-            clang.wait()?;
-            annotate_ast(&mut ast);
-            info!("Parsed {file}");
-            asts.insert(file, ast);
-        }
-
-        Ok(Box::new(ClangAst {
-            source_representation: id,
-            asts,
-        }))
+        Ok(Box::new(out))
     }
 }

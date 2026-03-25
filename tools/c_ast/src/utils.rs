@@ -11,6 +11,19 @@ pub(crate) fn is_c_or_header(path: &Path) -> bool {
     }
 }
 
+/// Returns true when a file path should be skipped by source parsers.
+///
+/// Currently excludes generated internals in any `CMakeFiles`, `.cache`, or
+/// `build` directory.
+pub(crate) fn should_skip_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| matches!(name, "CMakeFiles" | ".cache" | "build"))
+    })
+}
+
 /// Generate appropriate libClang parser arguments based on the file type.
 pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
     if path.extension().and_then(|ext| ext.to_str()) == Some("h") {

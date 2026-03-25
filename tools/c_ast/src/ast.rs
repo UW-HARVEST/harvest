@@ -5,18 +5,17 @@ use crate::EntityKind;
 /// Persistent AST representation for the C source code.
 /// We will extend this as we find that we need more info (from libClang).
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all_fields = "camelCase")]
 pub enum ClangAST {
     TypedefDecl {
         name: String,
     },
     FunctionDecl {
         name: String,
-        #[serde(rename = "storageClass")]
         storage_class: Option<String>,
     },
     RecordDecl {
         name: Option<String>,
-        #[serde(rename = "tagUsed")]
         tag_used: Option<String>,
     },
     EnumDecl {
@@ -24,7 +23,6 @@ pub enum ClangAST {
     },
     VarDecl {
         name: String,
-        #[serde(rename = "storageClass")]
         storage_class: Option<String>,
     },
     Other {

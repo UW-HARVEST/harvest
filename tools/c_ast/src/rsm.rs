@@ -6,6 +6,7 @@ use crate::ClangAST;
 use crate::EntityAnnotations;
 
 /// Representaiton of a single point in a source file, used for source mapping.
+/// `column` and `offset` are UTF8 byte offsets, to match Clang's source location representation.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SourcePoint {
     pub line: u32,

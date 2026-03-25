@@ -1118,6 +1118,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a3076410a55c90011c298b04d0cfa770b00fa04e1e3c97d3f6c9de105a03844"
 
 [[package]]
+name = "fix_declarations_llm"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "full_source",
+ "harvest_core",
+ "quantize_rust_spans",
+ "serde",
+ "serde_json",
+ "syn",
+ "tracing",
+ "try_cargo_build",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2078,6 +2093,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quantize_rust_spans"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn",
+ "tracing",
 ]
 
 [[package]]

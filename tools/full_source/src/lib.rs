@@ -25,6 +25,7 @@ impl Representation for RawSource {
 }
 
 /// A cargo project representation (Cargo.toml, src/, etc).
+#[derive(Clone)]
 pub struct CargoPackage {
     pub dir: RawDir,
 }

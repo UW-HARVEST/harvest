@@ -92,6 +92,7 @@ fn extract_entities(
                 span,
                 ast,
                 annotations: EntityAnnotations::default(),
+                sub_entities: Vec::new(),
             },
             &child,
         );

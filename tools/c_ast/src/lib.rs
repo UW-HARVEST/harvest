@@ -125,9 +125,13 @@ impl Tool for ParseToAst {
         let mut out = RichSourceMap::new();
 
         for (rel_path, bytes) in rs.dir.files_recursive() {
+            if utils::should_skip_path(&rel_path) {
+                continue;
+            }
             if !utils::is_c_or_header(&rel_path) {
                 continue;
             }
+            tracing::info!("Parsing file: {}", rel_path.to_string_lossy());
             let parser = build_parser(&index, src_dir.path(), &rel_path);
             extract_entities(parser, &rel_path, bytes, &mut out);
         }

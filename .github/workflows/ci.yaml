@@ -4,6 +4,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2.0.9
+        with:
+          version: 21
+          directory: ${{ runner.temp }}/llvm
       - name: Check out repository
         uses: actions/checkout@v5
       - name: Test

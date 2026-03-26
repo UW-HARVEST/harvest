@@ -28,8 +28,8 @@ return as JSON
 Example output:
 
 { "macros": [
-  "const MAX_LEN: i32 = 1024;",
-  "fn add(a: i32, b: i32) -> i32 { a + b }",
+  "const MAX_LEN: usize = 1024;",
+  "#[inline]\nfn add<T>(a: T, b: T) -> T\nwhere\n    T: std::ops::Add<Output = T>,\n{\n    a + b\n}",
   "macro_rules! str_ {\n    ($x:tt) => {\n        stringify!($x)\n    };\n}",
   "macro_rules! cat {\n    ($a:ident, $b:ident) => {\n        concat!(stringify!($a), stringify!($b))\n    };\n}"
 ] }

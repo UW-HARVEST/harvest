@@ -77,10 +77,7 @@ pub(crate) fn get_range<'tu>(
 
 /// Read source text from a libClang entity location/range.
 /// Returns None if the range is invalid or spans multiple files.
-pub(crate) fn get_span_and_text(
-    child: &clang::Entity<'_>,
-    rel_file: &Path,
-) -> Option<(SourceSpan, String)> {
+pub(crate) fn get_span_and_text(child: &clang::Entity<'_>) -> Option<(SourceSpan, String)> {
     let (start, end) = get_range(child)?;
     let start_file = get_file_location(child)?;
     let end_file = end.file?;
@@ -101,7 +98,7 @@ pub(crate) fn get_span_and_text(
     let source_text = String::from_utf8_lossy(&file_bytes[start_offset..end_offset]).to_string();
 
     let span = SourceSpan {
-        file: rel_file.to_string_lossy().to_string(),
+        file: start_path.to_string_lossy().to_string(),
         start: SourcePoint {
             line: start.line,
             column: start.column,

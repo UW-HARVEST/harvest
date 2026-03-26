@@ -11,17 +11,22 @@ use std::sync::Mutex;
 use tracing::warn;
 
 use crate::Config;
-use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
+use crate::translation::{
+    InterfaceTranslationResult, MacroTranslationResult, RustDeclaration, TypeTranslationResult,
+};
 
 fn declaration_source_text(decl: &TopLevelEntity) -> Result<String, Box<dyn std::error::Error>> {
     Ok(decl.source_text.clone())
 }
 
-/// Structured output JSON schema for Pass 1 (types).
+/// Structured output JSON schema for the macro pass.
+const STRUCTURED_OUTPUT_SCHEMA_MACROS: &str = include_str!("prompts/macros/structured_schema.json");
+
+/// Structured output JSON schema for the type pass.
 const STRUCTURED_OUTPUT_SCHEMA_TYPES: &str =
     include_str!("prompts/type_translation/structured_schema.json");
 
-/// Structured output JSON schema for Pass 2 (functions).
+/// Structured output JSON schema for the function pass.
 const STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS: &str =
     include_str!("prompts/func_translation/structured_schema.json");
 
@@ -33,10 +38,13 @@ const STRUCTURED_OUTPUT_SCHEMA_INTERFACE: &str =
 const STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML: &str =
     include_str!("prompts/cargo_toml/structured_schema.json");
 
-/// System prompt for Pass 1 (types).
+/// System prompt for the macro pass.
+const SYSTEM_PROMPT_MACROS: &str = include_str!("prompts/macros/system_prompt.txt");
+
+/// System prompt for the type pass.
 const SYSTEM_PROMPT_TYPES: &str = include_str!("prompts/type_translation/system_prompt.txt");
 
-/// System prompt for Pass 2 (functions).
+/// System prompt for the function pass.
 const SYSTEM_PROMPT_FUNCTIONS: &str = include_str!("prompts/func_translation/system_prompt.txt");
 
 /// System prompt for the interface pass.
@@ -63,15 +71,23 @@ struct InterfaceResult {
     pub signatures: Vec<String>,
 }
 
+/// Result of macro pass response.
+#[derive(Debug, Deserialize)]
+struct MacrosResult {
+    pub macros: Vec<String>,
+}
+
 /// LLM abstraction layer for modular translation.
 /// Has support for 4 different types of LLM calls with different system prompts
 // and structured output schemas:
 /// - types_llm: for translating type declarations
+/// - macros_llm: for translating macro definitions
 /// - interface_llm: for translating function and global variable signatures in a single batch
 /// - functions_llm: for translating function and global variable declarations one-by-one
 /// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the
 //    translated code
 pub struct ModularTranslationLLM {
+    macros_llm: HarvestLLM,
     types_llm: HarvestLLM,
     interface_llm: HarvestLLM,
     functions_llm: HarvestLLM,
@@ -81,6 +97,7 @@ pub struct ModularTranslationLLM {
 
 #[derive(Debug, Clone, Copy)]
 enum LLMCallKind {
+    Macros,
     Types,
     Interface,
     Functions,
@@ -89,6 +106,7 @@ enum LLMCallKind {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModularLLMUsageTotals {
+    pub macros: LLMUsageTotals,
     pub types: LLMUsageTotals,
     pub interface: LLMUsageTotals,
     pub functions: LLMUsageTotals,
@@ -98,15 +116,18 @@ pub struct ModularLLMUsageTotals {
 impl ModularLLMUsageTotals {
     pub fn total(&self) -> LLMUsageTotals {
         LLMUsageTotals {
-            prompt_tokens: self.types.prompt_tokens
+            prompt_tokens: self.macros.prompt_tokens
+                + self.types.prompt_tokens
                 + self.interface.prompt_tokens
                 + self.functions.prompt_tokens
                 + self.cargo_toml.prompt_tokens,
-            output_tokens: self.types.output_tokens
+            output_tokens: self.macros.output_tokens
+                + self.types.output_tokens
                 + self.interface.output_tokens
                 + self.functions.output_tokens
                 + self.cargo_toml.output_tokens,
-            total_tokens: self.types.total_tokens
+            total_tokens: self.macros.total_tokens
+                + self.types.total_tokens
                 + self.interface.total_tokens
                 + self.functions.total_tokens
                 + self.cargo_toml.total_tokens,
@@ -118,6 +139,11 @@ impl ModularTranslationLLM {
     /// Initializes seperate HarvestLLM instances for each type of translation task with the
     // appropriate system prompts and structured output schemas.
     pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+        let macros_llm = HarvestLLM::build(
+            &config.llm,
+            STRUCTURED_OUTPUT_SCHEMA_MACROS,
+            SYSTEM_PROMPT_MACROS,
+        )?;
         let types_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_TYPES,
@@ -140,6 +166,7 @@ impl ModularTranslationLLM {
         )?;
 
         Ok(Self {
+            macros_llm,
             types_llm,
             interface_llm,
             functions_llm,
@@ -155,6 +182,7 @@ impl ModularTranslationLLM {
             .expect("usage mutex poisoned in modular translation");
 
         match call_kind {
+            LLMCallKind::Macros => totals_by_call.macros.add_usage(usage),
             LLMCallKind::Types => totals_by_call.types.add_usage(usage),
             LLMCallKind::Interface => totals_by_call.interface.add_usage(usage),
             LLMCallKind::Functions => totals_by_call.functions.add_usage(usage),
@@ -171,6 +199,58 @@ impl ModularTranslationLLM {
 
     pub fn usage_totals(&self) -> LLMUsageTotals {
         self.usage_by_call().total()
+    }
+
+    /// Translates macro definitions to Rust using the macros_llm.
+    pub fn translate_macros(
+        &self,
+        macro_definitions: &[TopLevelEntity],
+        _raw_source: &RawSource,
+        project_kind: &ProjectKind,
+    ) -> Result<MacroTranslationResult, Box<dyn std::error::Error>> {
+        let mut macro_sources = Vec::new();
+
+        for decl in macro_definitions {
+            let source_text = declaration_source_text(decl)?;
+            macro_sources.push(DeclarationInput {
+                source: format!("#define {}", source_text.trim()),
+            });
+        }
+
+        #[derive(Serialize)]
+        struct RequestWithContext {
+            project_kind: String,
+            declarations: Vec<DeclarationInput>,
+        }
+
+        let project_kind_str = match project_kind {
+            ProjectKind::Executable => "executable",
+            ProjectKind::Library => "library",
+        };
+
+        let request = build_request(
+            "Please translate the following C macro definitions to Rust:",
+            &RequestWithContext {
+                project_kind: project_kind_str.to_string(),
+                declarations: macro_sources.clone(),
+            },
+        )?;
+
+        let (response, usage) = self.macros_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::Macros, usage.as_ref());
+        let macro_result: MacrosResult = serde_json::from_str(&response)?;
+
+        for (decl, translation) in macro_sources.iter().zip(macro_result.macros.iter()) {
+            crate::info!(
+                "Macro Translation complete:\n {} \n==>\n {}",
+                decl.source,
+                translation
+            );
+        }
+
+        Ok(MacroTranslationResult {
+            macros: macro_result.macros,
+        })
     }
 
     /// Translates type declarations to Rust using the types_llm.
@@ -245,6 +325,7 @@ impl ModularTranslationLLM {
         decl: &TopLevelEntity,
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
+        macro_translations: &MacroTranslationResult,
         type_translations: &TypeTranslationResult,
         interface_translations: &InterfaceTranslationResult,
     ) -> Result<RustDeclaration, Box<dyn std::error::Error>> {
@@ -257,6 +338,7 @@ impl ModularTranslationLLM {
         #[derive(Serialize)]
         struct RequestWithContext {
             project_kind: String,
+            macro_translations: Vec<String>,
             type_translations: Vec<String>,
             interface_translations: Vec<String>,
             declaration: DeclarationInput,
@@ -274,9 +356,10 @@ impl ModularTranslationLLM {
             .collect();
 
         let request = build_request(
-            "Please translate the following C function or global variable declaration to Rust. The type declarations and function/global signatures have already been translated and are provided for context:",
+            "Please translate the following C function or global variable declaration to Rust. Macro translations, type declarations, and function/global signatures have already been translated and are provided for context:",
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
+                macro_translations: macro_translations.macros.clone(),
                 type_translations: type_code,
                 interface_translations: interface_translations.signatures.clone(),
                 declaration: decl_source.clone(),

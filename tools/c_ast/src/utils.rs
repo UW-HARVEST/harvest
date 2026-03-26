@@ -1,4 +1,3 @@
-use clang::source::SourceRange;
 use std::path::Path;
 
 use crate::{ClangAST, SourcePoint, SourceSpan, TopLevelEntity};
@@ -33,17 +32,57 @@ pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
     }
 }
 
-/// Read source text from a libClang SourceRange.
+fn uses_spelling_location(child: &clang::Entity<'_>) -> bool {
+    child.get_kind() == clang::EntityKind::MacroDefinition
+}
+
+/// Returns the entity location, resolved as spelling location for macros and
+/// expansion location for all other declarations.
+pub(crate) fn get_location<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<clang::source::Location<'tu>> {
+    let location = child.get_location()?;
+    Some(if uses_spelling_location(child) {
+        location.get_spelling_location()
+    } else {
+        location.get_expansion_location()
+    })
+}
+
+/// Returns the underlying file for the entity location.
+pub(crate) fn get_file_location<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<clang::source::File<'tu>> {
+    get_location(child)?.file
+}
+
+/// Returns start/end locations for an entity's range, resolved as spelling
+/// locations for macros and expansion locations for all other declarations.
+pub(crate) fn get_range<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<(clang::source::Location<'tu>, clang::source::Location<'tu>)> {
+    let range = child.get_range()?;
+    Some(if uses_spelling_location(child) {
+        (
+            range.get_start().get_spelling_location(),
+            range.get_end().get_spelling_location(),
+        )
+    } else {
+        (
+            range.get_start().get_expansion_location(),
+            range.get_end().get_expansion_location(),
+        )
+    })
+}
+
+/// Read source text from a libClang entity location/range.
 /// Returns None if the range is invalid or spans multiple files.
-pub(crate) fn range_to_span_and_text(
-    range: Option<SourceRange<'_>>,
+pub(crate) fn get_span_and_text(
+    child: &clang::Entity<'_>,
     rel_file: &Path,
 ) -> Option<(SourceSpan, String)> {
-    let range = range?;
-    let start = range.get_start().get_file_location();
-    let end = range.get_end().get_file_location();
-
-    let start_file = start.file?;
+    let (start, end) = get_range(child)?;
+    let start_file = get_file_location(child)?;
     let end_file = end.file?;
     // check if span is across multiple files
     let start_path = start_file.get_path();

@@ -68,18 +68,12 @@ fn extract_entities(parser: clang::Parser<'_>, rel_file: &Path, out: &mut RichSo
         };
 
         // Ignore imports
-        if child.is_in_system_header()
-            || child
-                .get_location()
-                .and_then(|loc| loc.get_file_location().file)
-                .is_none()
-        {
+        if child.is_in_system_header() || utils::get_file_location(&child).is_none() {
             continue;
         }
 
         // Read the source text from the file
-        let Some((span, source_text)) = utils::range_to_span_and_text(child.get_range(), rel_file)
-        else {
+        let Some((span, source_text)) = utils::get_span_and_text(&child, rel_file) else {
             continue;
         };
 

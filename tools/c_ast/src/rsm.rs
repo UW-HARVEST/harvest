@@ -7,7 +7,7 @@ use crate::EntityAnnotations;
 
 /// Representaiton of a single point in a source file, used for source mapping.
 /// `column` and `offset` are UTF8 byte offsets, to match Clang's source location representation.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SourcePoint {
     pub line: u32,
     pub column: u32,
@@ -16,7 +16,7 @@ pub struct SourcePoint {
 
 /// Our own simplified representation of a span.
 /// Corresponds to clang's spelling_loc.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpan {
     pub file: String,
     pub start: SourcePoint,
@@ -64,6 +64,10 @@ pub struct TopLevelEntity {
     pub ast: Option<ClangAST>,
     #[serde(default)]
     pub annotations: EntityAnnotations,
+    /// If this entity encloses another (sourcespan of child is fully contained within parent), we store it here.
+    // This helps us deduplicate typedefs and struct/enum/union declarations.
+    #[serde(default)]
+    pub sub_entities: Vec<TopLevelEntity>,
 }
 
 /// This is the output of the parsing step, and therefore this tool.
@@ -101,7 +105,7 @@ impl RichSourceMap {
             | EntityKind::RecordDecl
             | EntityKind::UnionDecl
             | EntityKind::EnumDecl => {
-                self.app_types.push(item);
+                self.push_type(item);
             }
             EntityKind::VarDecl => {
                 self.app_globals.push(item);
@@ -125,6 +129,34 @@ impl RichSourceMap {
         }
     }
 
+    fn push_type(&mut self, item: TopLevelEntity) {
+        Self::insert_type_into(&mut self.app_types, item);
+    }
+
+    fn insert_type_into(nodes: &mut Vec<TopLevelEntity>, mut item: TopLevelEntity) {
+        // If an existing top-level node contains this item, attach it directly
+        // as an immediate child. We do not preserve deeper sub-entity ordering.
+        for node in nodes.iter_mut() {
+            if Self::span_contains(&node.span, &item.span) {
+                node.sub_entities.push(item);
+                return;
+            }
+        }
+
+        // Otherwise, absorb any existing nodes contained by this item.
+        let mut i = 0;
+        while i < nodes.len() {
+            if Self::span_contains(&item.span, &nodes[i].span) {
+                let child = nodes.remove(i);
+                item.sub_entities.push(child);
+            } else {
+                i += 1;
+            }
+        }
+
+        nodes.push(item);
+    }
+
     /// Iterate over the entities that survive preprocessing.
     /// They should all have AST representations.
     pub fn iter_definitions(&self) -> impl Iterator<Item = &TopLevelEntity> {
@@ -140,6 +172,61 @@ impl RichSourceMap {
             .iter()
             .chain(self.defines.iter())
             .chain(self.compiler_args.iter())
+    }
+
+    fn span_contains(parent: &SourceSpan, child: &SourceSpan) -> bool {
+        if parent.file != child.file {
+            return false;
+        }
+
+        parent.start.offset <= child.start.offset && parent.end.offset >= child.end.offset
+    }
+
+    /// Iterate over every top-level source entity tracked by the map.
+    fn iter_all_entities(&self) -> impl Iterator<Item = &TopLevelEntity> {
+        self.app_types
+            .iter()
+            .chain(self.app_globals.iter())
+            .chain(self.app_functions.iter())
+            .chain(self.app_func_sigs.iter())
+            .chain(self.include_paths.iter())
+            .chain(self.defines.iter())
+            .chain(self.compiler_args.iter())
+    }
+
+    /// Returns true when the map satisfies its span invariants:
+    /// - every span is internally valid (`start.offset <= end.offset`)
+    /// - no two top-level entities overlap within the same file
+    pub fn well_formed(&self) -> bool {
+        let mut spans: Vec<&SourceSpan> = self
+            .iter_all_entities()
+            .map(|entity| &entity.span)
+            .collect();
+
+        spans.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then(a.start.offset.cmp(&b.start.offset))
+                .then(a.end.offset.cmp(&b.end.offset))
+        });
+
+        let mut prev_span: Option<&SourceSpan> = None;
+        for span in spans {
+            if span.start.offset > span.end.offset {
+                return false;
+            }
+
+            if let Some(prev) = prev_span
+                && prev.file == span.file
+                && prev.end.offset > span.start.offset
+            {
+                return false;
+            }
+
+            prev_span = Some(span);
+        }
+
+        true
     }
 }
 

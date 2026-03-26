@@ -11,6 +11,19 @@ pub(crate) fn is_c_or_header(path: &Path) -> bool {
     }
 }
 
+/// Returns true when a file path should be skipped by source parsers.
+///
+/// Currently excludes generated internals in any `CMakeFiles`, `.cache`, or
+/// `build` directory.
+pub(crate) fn should_skip_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|name| matches!(name, "CMakeFiles" | ".cache" | "build"))
+    })
+}
+
 /// Generate appropriate libClang parser arguments based on the file type.
 pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
     if path.extension().and_then(|ext| ext.to_str()) == Some("h") {
@@ -25,7 +38,6 @@ pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
 pub(crate) fn range_to_span_and_text(
     range: Option<SourceRange<'_>>,
     rel_file: &Path,
-    file_bytes: &[u8],
 ) -> Option<(SourceSpan, String)> {
     let range = range?;
     let start = range.get_start().get_file_location();
@@ -40,8 +52,13 @@ pub(crate) fn range_to_span_and_text(
         return None;
     }
 
+    let file_bytes = std::fs::read(&start_path).ok()?;
+
     let start_offset = start.offset as usize;
     let end_offset = end.offset as usize;
+    if start_offset > end_offset || end_offset > file_bytes.len() {
+        return None;
+    }
     let source_text = String::from_utf8_lossy(&file_bytes[start_offset..end_offset]).to_string();
 
     let span = SourceSpan {

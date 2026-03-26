@@ -50,12 +50,7 @@ fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &Path) -> clang
 
 /// Extract top-level entities from the file at `rel_path`.
 /// This includes both entities that survive preprocessing (types, functions, globals) and preprocessor directives (includes, defines, compiler args).
-fn extract_entities(
-    parser: clang::Parser<'_>,
-    rel_file: &Path,
-    file_bytes: &[u8],
-    out: &mut RichSourceMap,
-) {
+fn extract_entities(parser: clang::Parser<'_>, rel_file: &Path, out: &mut RichSourceMap) {
     let tu = match parser.parse() {
         Ok(tu) => tu,
         Err(e) => {
@@ -71,14 +66,19 @@ fn extract_entities(
         let Some(decl_kind) = rsm::map_top_level_decl_kind(child.get_kind()) else {
             continue;
         };
+
         // Ignore imports
-        if !child.is_in_main_file() {
+        if child.is_in_system_header()
+            || child
+                .get_location()
+                .and_then(|loc| loc.get_file_location().file)
+                .is_none()
+        {
             continue;
         }
 
         // Read the source text from the file
-        let Some((span, source_text)) =
-            utils::range_to_span_and_text(child.get_range(), rel_file, file_bytes)
+        let Some((span, source_text)) = utils::range_to_span_and_text(child.get_range(), rel_file)
         else {
             continue;
         };
@@ -92,6 +92,7 @@ fn extract_entities(
                 span,
                 ast,
                 annotations: EntityAnnotations::default(),
+                sub_entities: Vec::new(),
             },
             &child,
         );
@@ -124,12 +125,16 @@ impl Tool for ParseToAst {
 
         let mut out = RichSourceMap::new();
 
-        for (rel_path, bytes) in rs.dir.files_recursive() {
+        for (rel_path, _) in rs.dir.files_recursive() {
+            if utils::should_skip_path(&rel_path) {
+                continue;
+            }
             if !utils::is_c_or_header(&rel_path) {
                 continue;
             }
+            tracing::info!("Parsing file: {}", rel_path.to_string_lossy());
             let parser = build_parser(&index, src_dir.path(), &rel_path);
-            extract_entities(parser, &rel_path, bytes, &mut out);
+            extract_entities(parser, &rel_path, &mut out);
         }
 
         debug!(

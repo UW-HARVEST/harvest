@@ -39,11 +39,56 @@ pub struct InterfaceTranslationResult {
     pub signatures: Vec<String>,
 }
 
+/// Result of the macros translation containing translated Rust macro outputs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroTranslationResult {
+    pub macros: Vec<String>,
+}
+
 /// Result of the translation containing both declarations and Cargo.toml
 #[derive(Debug, Deserialize)]
 pub struct TranslationResult {
+    pub macros: Vec<String>,
     pub translations: Vec<RustDeclaration>,
     pub cargo_toml: String,
+}
+
+/// Translates macro definitions to Rust using an LLM.
+///
+/// This function translates C preprocessor macro definitions before all other passes.
+/// The output is a list of Rust code strings corresponding to each macro.
+pub fn translate_macros(
+    macro_definitions: &[TopLevelEntity],
+    raw_source: &RawSource,
+    project_kind: &ProjectKind,
+    modular_llm: &ModularTranslationLLM,
+) -> Result<MacroTranslationResult, Box<dyn std::error::Error>> {
+    debug!(
+        "Starting macro translation for {} definitions",
+        macro_definitions.len()
+    );
+
+    if macro_definitions.is_empty() {
+        return Ok(MacroTranslationResult { macros: Vec::new() });
+    }
+
+    let translation_result =
+        modular_llm.translate_macros(macro_definitions, raw_source, project_kind)?;
+
+    if translation_result.macros.len() != macro_definitions.len() {
+        error!(
+            "Macro translation: LLM returned {} translations but expected {}",
+            translation_result.macros.len(),
+            macro_definitions.len()
+        );
+    }
+
+    info!(
+        "Macro translation complete: successfully translated {} definitions",
+        translation_result.macros.len()
+    );
+
+    Ok(translation_result)
 }
 
 /// Translates type declarations to Rust using an LLM.
@@ -99,6 +144,7 @@ pub fn translate_functions(
     function_and_global_decls: &[&TopLevelEntity],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
+    macro_translations: &MacroTranslationResult,
     type_translations: &TypeTranslationResult,
     interface_translations: &InterfaceTranslationResult,
     modular_llm: &ModularTranslationLLM,
@@ -120,6 +166,7 @@ pub fn translate_functions(
             decl,
             raw_source,
             project_kind,
+            macro_translations,
             type_translations,
             interface_translations,
         )?;
@@ -191,6 +238,7 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
 pub fn translate_decls(
+    defines: &[TopLevelEntity],
     app_types: &[TopLevelEntity],
     app_globals: &[TopLevelEntity],
     app_functions: &[TopLevelEntity],
@@ -198,11 +246,12 @@ pub fn translate_decls(
     project_kind: &ProjectKind,
     config: &Config,
 ) -> Result<TranslationResult, Box<dyn std::error::Error>> {
-    let total_decls = app_types.len() + app_globals.len() + app_functions.len();
+    let total_decls = defines.len() + app_types.len() + app_globals.len() + app_functions.len();
 
     info!(
-        "Starting translation of {} declarations ({} types, {} globals, {} functions)",
+        "Starting translation of {} declarations ({} macros, {} types, {} globals, {} functions)",
         total_decls,
+        defines.len(),
         app_types.len(),
         app_globals.len(),
         app_functions.len()
@@ -213,6 +262,9 @@ pub fn translate_decls(
     }
 
     let modular_llm = ModularTranslationLLM::build(config)?;
+
+    // Translate macros first
+    let macro_result = translate_macros(defines, raw_source, project_kind, &modular_llm)?;
 
     // Translate types
     let type_result = translate_types(app_types, raw_source, project_kind, &modular_llm)?;
@@ -240,6 +292,7 @@ pub fn translate_decls(
             &function_and_global_decls,
             raw_source,
             project_kind,
+            &macro_result,
             &type_result,
             &interface_result,
             &modular_llm,
@@ -260,6 +313,12 @@ pub fn translate_decls(
     let usage_by_call = modular_llm.usage_by_call();
     let usage_totals = modular_llm.usage_totals();
 
+    info!(
+        "token usage [macros] - prompt: {}, output: {}, total: {}",
+        usage_by_call.macros.prompt_tokens,
+        usage_by_call.macros.output_tokens,
+        usage_by_call.macros.total_tokens
+    );
     info!(
         "token usage [types] - prompt: {}, output: {}, total: {}",
         usage_by_call.types.prompt_tokens,
@@ -291,6 +350,7 @@ pub fn translate_decls(
     );
 
     Ok(TranslationResult {
+        macros: macro_result.macros,
         translations: combined_translations,
         cargo_toml,
     })

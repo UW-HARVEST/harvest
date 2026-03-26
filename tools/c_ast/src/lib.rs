@@ -71,8 +71,7 @@ fn extract_entities(parser: clang::Parser<'_>, rel_file: &Path, out: &mut RichSo
         if child.is_in_system_header()
             || child
                 .get_location()
-                .map(|loc| loc.get_file_location().file)
-                .flatten()
+                .and_then(|loc| loc.get_file_location().file)
                 .is_none()
         {
             continue;

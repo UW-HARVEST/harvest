@@ -216,10 +216,11 @@ impl RichSourceMap {
                 return false;
             }
 
-            if let Some(prev) = prev_span {
-                if prev.file == span.file && prev.end.offset > span.start.offset {
-                    return false;
-                }
+            if let Some(prev) = prev_span
+                && prev.file == span.file
+                && prev.end.offset > span.start.offset
+            {
+                return false;
             }
 
             prev_span = Some(span);

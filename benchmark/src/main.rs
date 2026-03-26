@@ -49,9 +49,10 @@ impl TranspilationResult {
                         Some("Build succeeded but produced no artifacts".to_string()),
                     )
                 } else {
-                    // Prefer the first artifact as the "binary" path for executable cases.
-                    let first = artifacts.first().cloned().unwrap();
-                    (true, first, None)
+                    // Prefer the last artifact as the "binary" path for executable cases.
+                    println!("Build artifacts: {:?}", artifacts);
+                    let last = artifacts.last().cloned().unwrap();
+                    (true, last, None)
                 }
             }
             Err(err) => (false, PathBuf::new(), Some(err.clone())),

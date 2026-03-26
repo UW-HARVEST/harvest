@@ -28,6 +28,11 @@ fn spawn_process_with_args(binary_path: &Path, test_case: &TestCase) -> HarvestR
         .stderr(Stdio::piped());
 
     // Start the process
+    log::info!(
+        "Spawning process: {} {:?}",
+        binary_path.display(),
+        test_case.argv
+    );
     cmd.spawn().map_err(|e| -> Box<dyn std::error::Error> {
         format!("Failed to spawn process: {}: {}", binary_path.display(), e).into()
     })

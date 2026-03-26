@@ -38,7 +38,6 @@ pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
 pub(crate) fn range_to_span_and_text(
     range: Option<SourceRange<'_>>,
     rel_file: &Path,
-    file_bytes: &[u8],
 ) -> Option<(SourceSpan, String)> {
     let range = range?;
     let start = range.get_start().get_file_location();
@@ -53,8 +52,13 @@ pub(crate) fn range_to_span_and_text(
         return None;
     }
 
+    let file_bytes = std::fs::read(&start_path).ok()?;
+
     let start_offset = start.offset as usize;
     let end_offset = end.offset as usize;
+    if start_offset > end_offset || end_offset > file_bytes.len() {
+        return None;
+    }
     let source_text = String::from_utf8_lossy(&file_bytes[start_offset..end_offset]).to_string();
 
     let span = SourceSpan {

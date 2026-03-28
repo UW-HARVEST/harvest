@@ -8,6 +8,7 @@ pub mod util;
 
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
+use clippy_lint::TryClippyLint;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -41,6 +42,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
     };
     let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+    let _try_lint = scheduler.queue_after(TryClippyLint, &[translate]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
     let result = scheduler.run_all(&mut runner, &mut ir, config);

@@ -879,6 +879,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
+name = "clippy_lint"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "full_source",
+ "harvest_core",
+ "toml_edit 0.23.10+spec-1.0.0",
+ "tracing",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1397,6 +1408,7 @@ dependencies = [
  "build_project_spec",
  "c_ast",
  "clap",
+ "clippy_lint",
  "config",
  "directories",
  "harvest_core",

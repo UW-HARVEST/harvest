@@ -1,0 +1,14 @@
+{
+  "name": "fix_result",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "fixed_code": {
+        "type": "string",
+        "description": "The corrected Rust declaration source code, without markdown fences"
+      }
+    },
+    "required": ["fixed_code"],
+    "additionalProperties": false
+  }
+}

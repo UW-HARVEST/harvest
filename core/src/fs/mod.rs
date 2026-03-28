@@ -23,7 +23,7 @@ mod freezer;
 
 use crate::utils::{EmptyDirError, empty_writable_dir};
 use std::collections::{BTreeMap, btree_map};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::Permissions;
 use std::fs::ReadDir;
 use std::fs::canonicalize;
@@ -182,7 +182,7 @@ impl Symlink {
 
 // TODO: Remove; RawEntry is being replaced by DirEntry.
 /// A representation of a file-system directory entry.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub enum RawEntry {
     Dir(RawDir),
@@ -207,7 +207,7 @@ impl RawEntry {
 
 /// A representation of a file-system directory tree.
 // TODO: Removed; RawDir is being replaced by Dir.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct RawDir(BTreeMap<OsString, RawEntry>);
 
@@ -310,38 +310,41 @@ impl RawDir {
     /// just removes the previously-specified directory (in general
     /// this isn't correct in the presence of symlinks, but `RawDir`
     /// does not support symlinks).
-    pub fn get_file<P: AsRef<Path>>(&self, path: P) -> Result<&Vec<u8>, GetFileError> {
-        // Determine which directories we need to descend into to reach the file (handling normal
-        // directory names as well as . and ..), and split out the file name.
-        let mut segments = vec![];
-        // Whether the most-recently-processed entry can be a file.
-        let mut last_can_be_file = true;
-        for component in path.as_ref().components() {
-            last_can_be_file = match component {
-                Component::CurDir => false,
-                Component::Normal(name) => {
-                    segments.push(name);
-                    true
-                }
-                Component::ParentDir => {
-                    if segments.pop().is_none() {
-                        return Err(GetFileError::OutsideDir);
-                    }
-                    false
-                }
-                Component::Prefix(_) | Component::RootDir => {
-                    return Err(GetFileError::AbsolutePath);
-                }
-            };
+    pub fn get_file_mut<P: AsRef<Path>>(&mut self, path: P) -> Result<&mut Vec<u8>, GetFileError> {
+        let (segments, file_name) = resolve_file_path(path.as_ref())?;
+
+        let mut cur_dir = self;
+        for component in segments {
+            if let RawEntry::Dir(rd) = cur_dir
+                .0
+                .get_mut(component)
+                .ok_or(GetFileError::DoesNotExist)?
+            {
+                cur_dir = rd;
+            } else {
+                return Err(GetFileError::UnderFile);
+            }
         }
-        if !last_can_be_file {
-            return Err(GetFileError::Directory);
+        if let RawEntry::File(v) = cur_dir
+            .0
+            .get_mut(file_name)
+            .ok_or(GetFileError::DoesNotExist)?
+        {
+            Ok(v)
+        } else {
+            Err(GetFileError::Directory)
         }
-        let file_name = match segments.pop() {
-            None => return Err(GetFileError::DoesNotExist),
-            Some(empty) if empty.is_empty() => return Err(GetFileError::DoesNotExist),
-            Some(name) => name,
-        };
+    }
+
+    /// Gets the contents of a file at the given path. The file must
+    /// exist. On success, returns a reference to file's contents.
+    ///
+    /// `path` must be a relative path. `..` is resolved lexically: it
+    /// just removes the previously-specified directory (in general
+    /// this isn't correct in the presence of symlinks, but `RawDir`
+    /// does not support symlinks).
+    pub fn get_file<P: AsRef<Path>>(&self, path: P) -> Result<&[u8], GetFileError> {
+        let (segments, file_name) = resolve_file_path(path.as_ref())?;
 
         let mut cur_dir = self;
         for component in segments {
@@ -631,4 +634,41 @@ mod tests {
             PathBuf::from_iter([diagnostics_dir.path(), "relative/path".as_ref()])
         );
     }
+}
+
+// Helper function that deconstructs a [Path] to a vector of directory
+// components and a file component.
+fn resolve_file_path(path: &Path) -> Result<(Vec<&OsStr>, &OsStr), GetFileError> {
+    // Determine which directories we need to descend into to reach the file (handling normal
+    // directory names as well as . and ..), and split out the file name.
+    let mut segments = vec![];
+    // Whether the most-recently-processed entry can be a file.
+    let mut last_can_be_file = true;
+    for component in path.components() {
+        last_can_be_file = match component {
+            Component::CurDir => false,
+            Component::Normal(name) => {
+                segments.push(name);
+                true
+            }
+            Component::ParentDir => {
+                if segments.pop().is_none() {
+                    return Err(GetFileError::OutsideDir);
+                }
+                false
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(GetFileError::AbsolutePath);
+            }
+        };
+    }
+    if !last_can_be_file {
+        return Err(GetFileError::Directory);
+    }
+    let file_name = match segments.pop() {
+        None => return Err(GetFileError::DoesNotExist),
+        Some(empty) if empty.is_empty() => return Err(GetFileError::DoesNotExist),
+        Some(name) => name,
+    };
+    Ok((segments, file_name))
 }

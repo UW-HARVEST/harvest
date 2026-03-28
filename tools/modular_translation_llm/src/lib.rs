@@ -7,7 +7,7 @@
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
 use build_project_spec::{ProjectKind, ProjectSpec};
-use c_ast::ClangAst;
+use c_ast::{RichSourceMap, TopLevelEntity, annotate_visibility};
 use full_source::RawSource;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::LLMConfig;
@@ -18,12 +18,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::info;
 
-mod clang;
 mod recombine;
 mod translation;
 mod translation_llm;
-mod utils;
-pub use clang::{ClangDeclarations, ClangNode, extract_top_level_decls};
 pub use translation::{
     InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
     translate_decls, translate_functions, translate_interface, translate_types,
@@ -54,6 +51,8 @@ impl Config {
                 backend: "mock_llm".into(),
                 model: "mock_model".into(),
                 max_tokens: 4000,
+                retry_count: None,
+                retry_delay_secs: None,
             },
             unknown: HashMap::new(),
         }
@@ -67,15 +66,15 @@ pub struct ModularTranslationLlm;
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
-) -> Result<(&'a RawSource, &'a ClangAst, &'a ProjectKind), Box<dyn std::error::Error>> {
+) -> Result<(&'a RawSource, &'a RichSourceMap, &'a ProjectKind), Box<dyn std::error::Error>> {
     let raw_source = context
         .ir_snapshot
         .get::<RawSource>(inputs[0])
         .ok_or("No RawSource representation found in IR")?;
     let clang_ast = context
         .ir_snapshot
-        .get::<ClangAst>(inputs[1])
-        .ok_or("No ClangAst representation found in IR")?;
+        .get::<RichSourceMap>(inputs[1])
+        .ok_or("No RichSourceMap representation found in IR")?;
     let project_spec = context
         .ir_snapshot
         .get::<ProjectSpec>(inputs[2])
@@ -104,23 +103,33 @@ impl Tool for ModularTranslationLlm {
 
         let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
 
-        // Extract and categorize top-level declarations into types, globals, and functions
-        let declarations = extract_top_level_decls(clang_ast, raw_source);
+        let app_types: &[TopLevelEntity] = &clang_ast.app_types;
+        let app_globals: &[TopLevelEntity] = &clang_ast.app_globals;
+        let mut app_functions: Vec<TopLevelEntity> = clang_ast.app_functions.clone();
+
+        annotate_visibility(&mut app_functions, &clang_ast.app_func_sigs);
+        info!("Visibility annotation complete");
 
         info!(
             "Extracted {} type declarations, {} global declarations, {} function declarations",
-            declarations.app_types.len(),
-            declarations.app_globals.len(),
-            declarations.app_functions.len()
+            app_types.len(),
+            app_globals.len(),
+            app_functions.len()
         );
 
         // Translation flow:
         // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
-        let translation_result =
-            translation::translate_decls(&declarations, raw_source, project_kind, &config)
-                .map_err(|e| format!("Translation failed: {}", e))?;
+        let translation_result = translation::translate_decls(
+            app_types,
+            app_globals,
+            &app_functions,
+            raw_source,
+            project_kind,
+            &config,
+        )
+        .map_err(|e| format!("Translation failed: {}", e))?;
 
         info!(
             "Translation complete: {} total declarations translated",

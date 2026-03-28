@@ -278,7 +278,7 @@ pub fn validate_binary_output(
                 test_case.stdout.pattern, e
             )
         })?;
-        regex.is_match(actual_stdout.trim())
+        regex.is_match(&actual_stdout)
     } else {
         // Use simple equality matching
         actual_stdout.trim() == test_case.stdout.pattern.trim()

@@ -33,6 +33,7 @@ pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> H
         "rust_build_success",
         "total_tests",
         "passed_tests",
+        "skipped_tests",
         "success_rate",
         "error_message",
     ])?;
@@ -45,6 +46,7 @@ pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> H
             &result.rust_build_success.to_string(),
             &result.total_tests.to_string(),
             &result.passed_tests.to_string(),
+            &result.skipped_tests.to_string(),
             &format!("{:.2}", result.success_rate()),
             result.error_message.as_deref().unwrap_or(""),
         ])?;
@@ -119,11 +121,9 @@ pub fn log_summary_stats(summary: &SummaryStats) {
 
     log::info!("\nTest Results:");
     log::info!("  Total test cases: {}", summary.total_tests);
+    log::info!("  Skipped: {} ⏭️", summary.total_skipped_tests);
     log::info!("  Passed: {} ✅", summary.total_passed_tests);
-    log::info!(
-        "  Failed: {} ❌",
-        summary.total_tests - summary.total_passed_tests
-    );
+    log::info!("  Failed: {} ❌", summary.failed_tests());
     log::info!(
         "  Overall success rate: {:.1}%",
         summary.overall_success_rate()
@@ -134,7 +134,7 @@ pub fn log_summary_stats(summary: &SummaryStats) {
 pub fn log_failing_programs(results: &[ProgramEvalStats]) {
     let failed_examples: Vec<_> = results
         .iter()
-        .filter(|r| !r.translation_success || !r.rust_build_success || r.success_rate() < 100.0)
+        .filter(|r| !r.translation_success || !r.rust_build_success || r.failed_tests() > 0)
         .collect();
 
     if !failed_examples.is_empty() {
@@ -147,11 +147,12 @@ pub fn log_failing_programs(results: &[ProgramEvalStats]) {
             if !example.rust_build_success {
                 log::info!("    ❌ Rust build failed");
             }
-            if example.success_rate() < 100.0 && example.total_tests > 0 {
+            if example.failed_tests() > 0 {
                 log::info!(
-                    "    ⚠️  Tests: {}/{} passed ({:.1}%)",
+                    "    ⚠️  Tests: {}/{} passed ({} skipped, {:.1}%)",
                     example.passed_tests,
-                    example.total_tests,
+                    example.evaluated_tests(),
+                    example.skipped_tests,
                     example.success_rate()
                 );
             }

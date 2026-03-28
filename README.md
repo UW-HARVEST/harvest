@@ -5,6 +5,11 @@ repository.
 
 ## Building the Rust code
 
+First, you will need to install libClang if you do not already have it. If you use ubuntu, this you can do this by runing:
+```
+apt-get install libclang-dev
+```
+
 If you have [rustup](https://rustup.rs) installed, you can build the code by
 running:
 

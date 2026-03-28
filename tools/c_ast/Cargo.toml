@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-clang-ast.workspace=true
+clang = { version = "2.0.0" }
 full_source = { version = "0.1.0", path = "../full_source" }
 harvest_core.workspace = true
 serde = { workspace = true }

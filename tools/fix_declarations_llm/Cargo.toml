@@ -1,0 +1,18 @@
+[package]
+name = "fix_declarations_llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+harvest_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+try_cargo_build.workspace = true
+full_source.workspace = true
+quantize_rust_spans.workspace = true
+cargo_metadata = "0.23.1"
+syn = { version = "2", features = ["full"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

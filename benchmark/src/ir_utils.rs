@@ -1,10 +1,9 @@
 use crate::error::HarvestResult;
 use harvest_core::fs::RawDir;
 use harvest_core::HarvestIR;
-use std::path::PathBuf;
 
 use full_source::{CargoPackage, RawSource};
-use try_cargo_build::CargoBuildResult;
+use try_cargo_build::{Artifact, CargoBuildResult};
 
 /// Extract a single CargoPackage representation from the IR.
 /// Returns an error if there are 0 or multiple CargoPackage representations.
@@ -42,15 +41,15 @@ pub fn raw_source(ir: &HarvestIR) -> HarvestResult<&RawDir> {
 
 /// Extract cargo build results from the IR.
 /// Returns the build artifacts or an error if no results or multiple results are found.
-pub fn cargo_build_result(ir: &HarvestIR) -> Result<Vec<PathBuf>, String> {
-    let build_results: Vec<Result<Vec<PathBuf>, String>> = ir
+pub fn cargo_build_result(ir: &HarvestIR) -> Result<&Vec<Artifact>, String> {
+    let build_results: Vec<_> = ir
         .get_by_representation::<CargoBuildResult>()
-        .map(|(_, r)| r.result.clone())
+        .map(|(_, r)| &r.artifacts)
         .collect();
 
     match build_results.len() {
         0 => Err("No artifacts built".into()),
-        1 => build_results[0].clone(),
+        1 => Ok(build_results[0]),
         n => Err(format!("Found {} build results, expected at most 1", n)),
     }
 }

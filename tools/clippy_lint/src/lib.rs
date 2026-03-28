@@ -43,7 +43,9 @@ fn parse_linted_artifacts(stdout: &[u8]) -> Result<Vec<String>, Box<dyn std::err
     Ok(linter_messages)
 }
 
-fn clippy_error_output(output: &std::process::Output) -> Result<LintResult, Box<dyn std::error::Error>> {
+fn clippy_error_output(
+    output: &std::process::Output,
+) -> Result<LintResult, Box<dyn std::error::Error>> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let compiler_messages = parse_linter_messages(&output.stdout)?;
     let error_message = format!("{}\n{}", compiler_messages, stderr);
@@ -76,7 +78,7 @@ fn try_clippy_lint(project_path: &PathBuf) -> Result<LintResult, Box<dyn std::er
                 e
             )
         })?;
-    
+
     if !fix_output.status.success() {
         return clippy_error_output(&fix_output);
     }

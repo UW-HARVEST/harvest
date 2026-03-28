@@ -8,6 +8,7 @@ pub mod util;
 
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
+use clippy_lint::TryClippyLint;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -19,7 +20,6 @@ use scheduler::Scheduler;
 use std::sync::Arc;
 use tracing::{error, info};
 use try_cargo_build::TryCargoBuild;
-use clippy_lint::TryClippyLint;
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {

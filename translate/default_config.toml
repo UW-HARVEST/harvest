@@ -19,5 +19,5 @@ max_tokens = 10000
 
 [tools.agentic]
 do_translate = true
-do_verify = false
+do_verify = true
 

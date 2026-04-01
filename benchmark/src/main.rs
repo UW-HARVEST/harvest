@@ -81,6 +81,7 @@ pub fn translate_c_directory_to_rust_project(
         config: config_overrides.to_vec(),
         force: false,
         modular,
+        agentic: false,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");

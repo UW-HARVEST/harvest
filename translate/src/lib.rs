@@ -6,6 +6,7 @@ mod runner;
 mod scheduler;
 pub mod util;
 
+use agentic::AgenticTool;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
@@ -34,7 +35,9 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
-    let translate = if config.modular {
+    let translate = if config.agentic {
+        scheduler.queue_after(AgenticTool, &[load_src, project_spec])
+    } else if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
         scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
     } else {

@@ -18,8 +18,12 @@ pub struct Args {
     pub output_dir: PathBuf,
 
     /// Use modular translation rather than standard all-at-once translation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
+
+    /// Use the agentic translation tool (kiro-cli agent workflow).
+    #[arg(long, conflicts_with = "modular")]
+    pub agentic: bool,
 
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]

@@ -73,6 +73,7 @@ pub fn translate_c_directory_to_rust_project(
     output_dir: &Path,
     config_overrides: &[String],
     modular: bool,
+    agentic: bool,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -81,7 +82,7 @@ pub fn translate_c_directory_to_rust_project(
         config: config_overrides.to_vec(),
         force: false,
         modular,
-        agentic: false,
+        agentic,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -129,6 +130,7 @@ pub fn run_all_benchmarks(
     config_overrides: &[String],
     timeout: u64,
     modular: bool,
+    agentic: bool,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -140,7 +142,7 @@ pub fn run_all_benchmarks(
         log::info!("{}", "=".repeat(80));
 
         let result =
-            benchmark_single_program(program_dir, output_dir, config_overrides, timeout, modular);
+            benchmark_single_program(program_dir, output_dir, config_overrides, timeout, modular, agentic);
 
         results.push(result);
     }
@@ -224,6 +226,7 @@ fn benchmark_single_program(
     config_overrides: &[String],
     timeout: u64,
     modular: bool,
+    agentic: bool,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -277,6 +280,7 @@ fn benchmark_single_program(
         &output_dir,
         config_overrides,
         modular,
+        agentic,
     );
 
     result.translation_success = translation_result.translation_success;
@@ -467,6 +471,7 @@ fn run(args: Args) -> HarvestResult<()> {
         &args.config,
         args.timeout,
         args.modular,
+        args.agentic,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

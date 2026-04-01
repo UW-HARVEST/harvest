@@ -22,11 +22,11 @@ pub struct Args {
     pub force: bool,
 
     /// Use modular translation rather than standard all-at-once translation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
 
     /// Use the agentic translation tool (kiro-cli agent workflow).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "modular")]
     pub agentic: bool,
 
     /// Path to the directory containing the C code to translate.

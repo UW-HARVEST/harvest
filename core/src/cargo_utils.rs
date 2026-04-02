@@ -68,11 +68,16 @@ impl CargoToml {
     /// Ensures `"cdylib"` appears in `[lib].crate-type`, preserving any other crate types.
     /// Creates the `[lib]` section if it does not exist.
     pub fn ensure_cdylib(&mut self) {
-        let lib = self.doc.entry("lib").or_insert(Item::Table(Table::new()));
-        let Some(lib_table) = lib.as_table_mut() else {
-            return;
-        };
+        let needs_lib_table = !matches!(self.doc.get("lib"), Some(Item::Table(_)));
+        if needs_lib_table {
+            self.doc.insert("lib", Item::Table(Table::new()));
+        }
 
+        let lib_table = self
+            .doc
+            .get_mut("lib")
+            .and_then(Item::as_table_mut)
+            .expect("`lib` was just created as a table");
         if let Some(ct) = lib_table.get("crate-type") {
             if let Some(arr) = ct.as_array() {
                 if arr.iter().any(|v| v.as_str() == Some("cdylib")) {

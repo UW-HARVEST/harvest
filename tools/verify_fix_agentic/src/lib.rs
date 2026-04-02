@@ -1,11 +1,10 @@
-//! Agentic verify-and-fix tool for HARVEST.
+//! Agentic verify-and-fix tool.
 //!
 //! After an initial translation, this tool materializes the [`CargoPackage`](full_source::CargoPackage)
-//! produced by [`translate_agentic`] into a fresh working directory, then invokes an external agent
-//! to review the Rust output against the original C source and fix any issues it finds.
-//!
-//! Because the input `CargoPackage` is an immutable IR snapshot, this tool always starts from a
-//! clean slate — no filesystem-level `_original` backup is needed.
+//! into a fresh working directory alongside the original C source, then invokes an external agent.
+//! The agent compiles and runs both the C and Rust implementations against generated test inputs,
+//! compares their outputs, and iteratively fixes the Rust code until the two agree (or the agent
+//! gives up). This is dynamic, execution-based verification, not a static or formal analysis.
 
 use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
@@ -59,12 +58,9 @@ impl Tool for VerifyFixAgentic {
             .transpose()?
             .unwrap_or_else(|| PROMPT_VERIFY.to_owned());
 
-        // Set up a working directory. The input CargoPackage is the clean snapshot — materializing
-        // it gives a fresh starting state without needing a filesystem _original copy.
-        //
-        //   case_dir/
-        //     translated_rust/          <- materialized CargoPackage
-        //       c_src/                  <- materialized RawSource (for agent reference)
+        // case_dir/
+        //   translated_rust/          <- materialized CargoPackage
+        //     c_src/                  <- materialized RawSource (for agent reference)
         let work_dir = tempfile::tempdir()?;
         let case_dir = work_dir.path();
         let translated = case_dir.join("translated_rust");
@@ -78,8 +74,8 @@ impl Tool for VerifyFixAgentic {
 
         let cmake_flags = extract_cmake_flags(case_dir);
         let prompt = verify_prompt
-            .replace("CASE_DIR_PLACEHOLDER", &case_dir.to_string_lossy())
-            .replace("CMAKE_BUILD_FLAGS", &cmake_flags);
+            .replace("{CASE_DIR}", &case_dir.to_string_lossy())
+            .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
         invoke_agent(case_dir, &prompt, config.timeout_secs)?;
         info!("Verification complete");
@@ -139,6 +135,7 @@ fn invoke_agent(
 /// These flags are injected into the verify prompt so the agent knows which build configuration
 /// was active for this case.
 fn extract_cmake_flags(case_dir: &Path) -> String {
+    // TODO: This is a hack for sphincs-plus
     let presets = case_dir.join("translated_rust/c_src/CMakePresets.json");
     let content = match fs::read_to_string(&presets) {
         Ok(c) => c,

@@ -2,7 +2,7 @@
 You are testing a C-to-Rust translation for correctness. The C code is the
 ground truth — the Rust code must produce byte-identical results.
 
-Working directory: CASE_DIR_PLACEHOLDER
+Working directory: {CASE_DIR}
 
 - `translated_rust/c_src/` contains the original C source code
 - `translated_rust/src/` contains the Rust translation
@@ -10,7 +10,7 @@ Working directory: CASE_DIR_PLACEHOLDER
   to understand the build system. Build it with:
   ```
   cd translated_rust/c_src && mkdir -p build && cd build && \
-  cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON CMAKE_BUILD_FLAGS && \
+  cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON {CMAKE_BUILD_FLAGS} && \
   cmake --build .
   ```
 - Find the resulting .so files in the build output

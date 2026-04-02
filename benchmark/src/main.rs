@@ -144,8 +144,15 @@ pub fn run_all_benchmarks(
         log::info!("Processing example {} of {}", i + 1, total_examples);
         log::info!("{}", "=".repeat(80));
 
-        let result =
-            benchmark_single_program(program_dir, output_dir, config_overrides, timeout, modular, agentic, agentic_verify);
+        let result = benchmark_single_program(
+            program_dir,
+            output_dir,
+            config_overrides,
+            timeout,
+            modular,
+            agentic,
+            agentic_verify,
+        );
 
         results.push(result);
     }

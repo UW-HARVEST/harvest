@@ -10,7 +10,6 @@ harvest_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-toml_edit.workspace = true
 tracing.workspace = true
 
 [lints]

@@ -7,11 +7,9 @@
 //! The translated project is stored in the IR as a [`CargoPackage`](full_source::CargoPackage),
 //! which acts as an immutable snapshot that the optional [`verify_fix_agentic`] tool can consume.
 
-mod cargo_toml;
-
 use build_project_spec::{ProjectKind, ProjectSpec};
-use cargo_toml::{self as ct, CargoToml};
 use full_source::{CargoPackage, RawSource};
+use harvest_core::cargo_utils::{CargoToml, strip_for_lib};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
@@ -141,20 +139,17 @@ fn post_process(
     translated: &Path,
     project_kind: &ProjectKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let cargo_path = translated.join("Cargo.toml");
-    let mut cargo = CargoToml::open(&cargo_path)?;
-
+    let mut cargo = CargoToml::open(&translated.join("Cargo.toml"))?;
     cargo.add_workspace();
-
     match project_kind {
         ProjectKind::Library => {
             cargo.remove_bin();
-            // Use the package name already chosen by the agent as the library name.
-            if let Some(name) = read_package_name(&cargo_path) {
+            // Read the package name from the in-memory doc before overwriting [lib].
+            if let Some(name) = cargo.package_name() {
                 cargo.set_lib(&name);
             }
             cargo.save()?;
-            ct::strip_for_lib(translated)?;
+            strip_for_lib(translated)?;
         }
         ProjectKind::Executable => {
             cargo.set_bin_driver();
@@ -162,16 +157,6 @@ fn post_process(
         }
     }
     Ok(())
-}
-
-/// Reads `[package].name` from a Cargo.toml. Returns `None` on any failure.
-fn read_package_name(manifest: &Path) -> Option<String> {
-    let contents = fs::read_to_string(manifest).ok()?;
-    let doc: toml_edit::DocumentMut = contents.parse().ok()?;
-    doc.get("package")?
-        .get("name")?
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 /// Loads the translate prompt for the given project kind.

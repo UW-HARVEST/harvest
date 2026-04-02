@@ -3,9 +3,7 @@
 //! Translates a C project (as a [`RawSource`](full_source::RawSource)) into a Rust Cargo project
 //! by invoking an external agent. After the agent finishes, the generated `Cargo.toml` is
 //! post-processed to satisfy downstream tool expectations.
-//!
-//! The translated project is stored in the IR as a [`CargoPackage`](full_source::CargoPackage),
-//! which acts as an immutable snapshot that the optional [`verify_fix_agentic`] tool can consume.
+//! The translated project is stored in the IR as a [`CargoPackage`](full_source::CargoPackage).
 
 use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
@@ -23,9 +21,6 @@ use tracing::{info, warn};
 
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
-
-/// Default translation agent timeout in seconds (30 minutes).
-const TRANSLATE_TIMEOUT_SECS: u64 = 1800;
 
 pub struct TranslateAgentic;
 
@@ -75,7 +70,7 @@ impl Tool for TranslateAgentic {
         info!("Working directory: {}", case_dir.display());
 
         let translated = case_dir.join("translated_rust");
-        invoke_agent(&translated, &translate_prompt, TRANSLATE_TIMEOUT_SECS)?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs)?;
 
         if !translated.join("Cargo.toml").exists() {
             return Err("Agent did not produce a Cargo.toml".into());
@@ -184,8 +179,16 @@ pub struct Config {
     /// Override path for the library translation prompt.
     pub prompt_library: Option<PathBuf>,
 
+    /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,
+}
+
+fn default_timeout_secs() -> u64 {
+    1800
 }
 
 impl Config {

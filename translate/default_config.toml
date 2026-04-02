@@ -18,3 +18,8 @@ backend = "ollama"
 model = "codellama:7b"
 max_tokens = 10000
 
+[tools.translate_agentic]
+timeout_secs = 1800
+
+[tools.verify_fix_agentic]
+timeout_secs = 2700

@@ -21,9 +21,6 @@ use tracing::{info, warn};
 
 const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
 
-/// Default verification agent timeout in seconds (45 minutes).
-const VERIFY_TIMEOUT_SECS: u64 = 2700;
-
 pub struct VerifyFixAgentic;
 
 impl Tool for VerifyFixAgentic {
@@ -84,7 +81,7 @@ impl Tool for VerifyFixAgentic {
             .replace("CASE_DIR_PLACEHOLDER", &case_dir.to_string_lossy())
             .replace("CMAKE_BUILD_FLAGS", &cmake_flags);
 
-        invoke_agent(case_dir, &prompt, VERIFY_TIMEOUT_SECS)?;
+        invoke_agent(case_dir, &prompt, config.timeout_secs)?;
         info!("Verification complete");
 
         // Remove artifacts that should not be carried into the IR.
@@ -172,8 +169,16 @@ pub struct Config {
     /// Override path for the verification prompt.
     pub prompt_verify: Option<PathBuf>,
 
+    /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,
+}
+
+fn default_timeout_secs() -> u64 {
+    2700
 }
 
 impl Config {

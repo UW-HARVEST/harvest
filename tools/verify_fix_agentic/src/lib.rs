@@ -1,0 +1,183 @@
+//! Agentic verify-and-fix tool for HARVEST.
+//!
+//! After an initial translation, this tool materializes the [`CargoPackage`](full_source::CargoPackage)
+//! produced by [`translate_agentic`] into a fresh working directory, then invokes an external agent
+//! to review the Rust output against the original C source and fix any issues it finds.
+//!
+//! Because the input `CargoPackage` is an immutable IR snapshot, this tool always starts from a
+//! clean slate — no filesystem-level `_original` backup is needed.
+
+use full_source::{CargoPackage, RawSource};
+use harvest_core::config::unknown_field_warning;
+use harvest_core::fs::RawDir;
+use harvest_core::tools::{RunContext, Tool};
+use harvest_core::{Id, Representation};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs::{self, read_dir};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use tracing::{info, warn};
+
+const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
+
+/// Default verification agent timeout in seconds (45 minutes).
+const VERIFY_TIMEOUT_SECS: u64 = 2700;
+
+pub struct VerifyFixAgentic;
+
+impl Tool for VerifyFixAgentic {
+    fn name(&self) -> &'static str {
+        "verify_fix_agentic"
+    }
+
+    fn run(
+        self: Box<Self>,
+        context: RunContext,
+        inputs: Vec<Id>,
+    ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
+        let default_config = serde_json::Value::Object(Default::default());
+        let config = Config::deserialize(
+            context
+                .config
+                .tools
+                .get("verify_fix_agentic")
+                .unwrap_or(&default_config),
+        )?;
+        config.validate();
+
+        let cargo_package = context
+            .ir_snapshot
+            .get::<CargoPackage>(inputs[0])
+            .ok_or("No CargoPackage representation found in IR")?;
+        let raw_source = context
+            .ir_snapshot
+            .get::<RawSource>(inputs[1])
+            .ok_or("No RawSource representation found in IR")?;
+
+        let verify_prompt = config
+            .prompt_verify
+            .as_ref()
+            .map(fs::read_to_string)
+            .transpose()?
+            .unwrap_or_else(|| PROMPT_VERIFY.to_owned());
+
+        // Set up a working directory. The input CargoPackage is the clean snapshot — materializing
+        // it gives a fresh starting state without needing a filesystem _original copy.
+        //
+        //   case_dir/
+        //     translated_rust/          <- materialized CargoPackage
+        //       c_src/                  <- materialized RawSource (for agent reference)
+        let work_dir = tempfile::tempdir()?;
+        let case_dir = work_dir.path();
+        let translated = case_dir.join("translated_rust");
+        cargo_package.dir.materialize(&translated)?;
+
+        let c_src_dir = translated.join("c_src");
+        fs::create_dir_all(&c_src_dir)?;
+        raw_source.dir.materialize(&c_src_dir)?;
+
+        info!("Working directory: {}", case_dir.display());
+
+        let cmake_flags = extract_cmake_flags(case_dir);
+        let prompt = verify_prompt
+            .replace("CASE_DIR_PLACEHOLDER", &case_dir.to_string_lossy())
+            .replace("CMAKE_BUILD_FLAGS", &cmake_flags);
+
+        invoke_agent(case_dir, &prompt, VERIFY_TIMEOUT_SECS)?;
+        info!("Verification complete");
+
+        // Remove artifacts that should not be carried into the IR.
+        let c_src_out = translated.join("c_src");
+        if c_src_out.exists() {
+            fs::remove_dir_all(&c_src_out)?;
+        }
+        let target_out = translated.join("target");
+        if target_out.exists() {
+            fs::remove_dir_all(&target_out)?;
+        }
+
+        let (dir, directories, files) = RawDir::populate_from(read_dir(&translated)?)?;
+        info!("Produced CargoPackage with {directories} directories and {files} files");
+
+        Ok(Box::new(CargoPackage { dir }))
+    }
+}
+
+/// Invokes the verification agent in `work_dir` with the given prompt and timeout.
+fn invoke_agent(
+    work_dir: &Path,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Invoking verification agent (timeout={}s)", timeout_secs);
+
+    let logs_dir = work_dir.join("logs");
+    fs::create_dir_all(&logs_dir)?;
+    let log_path = logs_dir.join("verify.log");
+
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "timeout {timeout_secs} kiro-cli chat \
+             --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
+        ))
+        .env("PROMPT", prompt)
+        .env("LOG", &log_path)
+        .env(
+            "OPENSSL_DIR",
+            std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into()),
+        )
+        .current_dir(work_dir)
+        .status()?;
+
+    if !status.success() {
+        warn!("Verification agent exited with {status}");
+    }
+    Ok(())
+}
+
+/// Extracts CMake cache variable flags from `CMakePresets.json`, if present.
+///
+/// These flags are injected into the verify prompt so the agent knows which build configuration
+/// was active for this case.
+fn extract_cmake_flags(case_dir: &Path) -> String {
+    let presets = case_dir.join("translated_rust/c_src/CMakePresets.json");
+    let content = match fs::read_to_string(&presets) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    let Some(cv) = data
+        .pointer("/configurePresets/1/cacheVariables")
+        .and_then(|v| v.as_object())
+    else {
+        return String::new();
+    };
+
+    cv.iter()
+        .filter(|(k, _)| *k != "CMAKE_C_STANDARD" && *k != "CMAKE_BUILD_TYPE")
+        .map(|(k, v)| format!("-D{}={}", k, v.as_str().unwrap_or("")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    /// Override path for the verification prompt.
+    pub prompt_verify: Option<PathBuf>,
+
+    #[serde(flatten)]
+    unknown: HashMap<String, serde_json::Value>,
+}
+
+impl Config {
+    fn validate(&self) {
+        unknown_field_warning("tools.verify_fix_agentic", &self.unknown);
+    }
+}

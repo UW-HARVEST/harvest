@@ -32,9 +32,12 @@ pub struct Config {
     // If false, use standard all-at-once translation.
     pub modular: bool,
 
-    /// If true, use the agentic translation tool (kiro-cli agent workflow) instead of the
-    /// direct LLM translation tools.
+    /// If true, use the agentic translation tool instead of the direct LLM translation tools.
     pub agentic: bool,
+
+    /// If true, run the agentic verify-and-fix stage after translation (requires `agentic = true`).
+    #[serde(default)]
+    pub agentic_verify: bool,
 
     /// Filter describing which log messages should be output to stdout. This is in the
     /// `tracing_subscriber::filter::EnvFilter` format.
@@ -61,6 +64,7 @@ impl Config {
             force: false,
             modular: false,
             agentic: false,
+            agentic_verify: false,
             log_filter: "off".to_owned(),
             tools: Default::default(),
             unknown: Default::default(),
@@ -71,7 +75,8 @@ impl Config {
     /// Printed at the start of translation and benchmarking runs to aid in reproduction of results.
     pub fn model_info(&self) -> Option<String> {
         if self.agentic {
-            return Some("agentic (kiro-cli)".to_owned());
+            let suffix = if self.agentic_verify { " + verify" } else { "" };
+            return Some(format!("agentic{suffix}"));
         }
         let tool_name = if self.modular {
             "modular_translation_llm"

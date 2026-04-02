@@ -4,6 +4,7 @@ force = false
 log_filter = "info"
 modular = false
 agentic = false
+agentic_verify = false
 
 [tools.raw_source_to_cargo_llm]
 address = "http://localhost:11434"
@@ -16,8 +17,4 @@ address = "http://localhost:11434"
 backend = "ollama"
 model = "codellama:7b"
 max_tokens = 10000
-
-[tools.agentic]
-do_translate = true
-do_verify = true
 

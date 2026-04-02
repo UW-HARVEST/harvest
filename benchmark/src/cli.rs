@@ -21,9 +21,13 @@ pub struct Args {
     #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
 
-    /// Use the agentic translation tool (kiro-cli agent workflow).
+    /// Use the agentic translation tool.
     #[arg(long, conflicts_with = "modular")]
     pub agentic: bool,
+
+    /// Run the agentic verify-and-fix stage after translation (requires --agentic).
+    #[arg(long, requires = "agentic")]
+    pub agentic_verify: bool,
 
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]

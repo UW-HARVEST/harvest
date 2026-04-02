@@ -2,7 +2,7 @@
 //! it to a tempdir and running `cargo build --release`.
 pub use cargo_metadata::{Artifact, CompilerMessage};
 use full_source::CargoPackage;
-use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
+use harvest_core::cargo_utils::CargoToml;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use std::path::{Path, PathBuf};
@@ -22,10 +22,10 @@ pub type BuildResult = Result<Vec<PathBuf>, Vec<CompilerMessage>>;
 fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
-    // Prevent accidentally picking up a parent workspace by marking this project as its own root.
-    add_workspace_guard(&project_path.join("Cargo.toml"))?;
-    // Normalize the package name to match the output directory so shared library names align with runner expectations.
-    normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
+    let mut cargo = CargoToml::open(&project_path.join("Cargo.toml"))?;
+    cargo.add_workspace();
+    cargo.normalize_name(project_path);
+    cargo.save()?;
 
     // Run cargo build in the project directory
     let output = Command::new("cargo")

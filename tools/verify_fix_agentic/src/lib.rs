@@ -112,7 +112,7 @@ fn invoke_agent(
     let status = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "timeout {timeout_secs} kiro-cli chat \
+            "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
              --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
         ))
         .env("PROMPT", prompt)

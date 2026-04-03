@@ -84,10 +84,23 @@ pub fn run_library_validation(
     // === Library-specific preparation ===
 
     // Add workspace guard and ensure cdylib
-    let mut cargo = CargoToml::open(&output_dir.join("Cargo.toml"))?;
+    let manifest_path = output_dir.join("Cargo.toml");
+    let mut cargo = CargoToml::open(&manifest_path).map_err(|e| {
+        format!(
+            "Failed to open Cargo manifest during workspace-guard/cdylib preparation at {}: {}",
+            manifest_path.display(),
+            e
+        )
+    })?;
     cargo.add_workspace();
     cargo.ensure_cdylib();
-    cargo.save()?;
+    cargo.save().map_err(|e| {
+        format!(
+            "Failed to save Cargo manifest during workspace-guard/cdylib preparation at {}: {}",
+            manifest_path.display(),
+            e
+        )
+    })?;
 
     // Copy runner directory for cando2 testing
     cargo_utils::copy_directory_recursive(&input_dir.join("runner"), &output_dir.join("runner"))

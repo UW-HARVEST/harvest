@@ -1,120 +1,264 @@
 //! Utilities for working with Cargo manifests and projects.
 //!
-//! This module provides a collection of utilities for manipulating Cargo manifest files
-//! (Cargo.toml) and managing Rust project structures. It uses the `toml_edit` crate to
-//! preserve formatting and comments when modifying TOML documents.
+//! The primary interface is [`CargoToml`]: an in-memory handle to a `Cargo.toml` file that
+//! supports batching multiple edits before a single write-back.
 
 use std::fs;
 use std::path::Path;
-use toml_edit::{DocumentMut, Item, Table, Value};
+use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Extracts the package name from a Cargo.toml file.
+// CargoToml
+
+/// In-memory handle to a `Cargo.toml` file.
 ///
-/// # Returns
-/// The package name if found, or `None` if parsing fails or the field doesn't exist.
+/// Call the editing methods in any order, then [`save`](CargoToml::save) once.
 ///
 /// # Example
-/// ```toml
-/// [package]
-/// name = "my-library"
+/// ```no_run
+/// # use std::path::Path;
+/// # use harvest_core::cargo_utils::CargoToml;
+/// let mut cargo = CargoToml::open(Path::new("Cargo.toml")).unwrap();
+/// cargo.add_workspace();
+/// cargo.set_bin_driver();
+/// cargo.save().unwrap();
 /// ```
-/// Returns: `Some("my-library")`
-pub fn read_package_name(manifest: &Path) -> Option<String> {
-    let contents = fs::read_to_string(manifest).ok()?;
-    let doc = contents.parse::<DocumentMut>().ok()?;
-
-    doc.get("package")?
-        .get("name")?
-        .as_str()
-        .map(|s| s.to_string())
+pub struct CargoToml {
+    doc: DocumentMut,
+    path: std::path::PathBuf,
 }
 
-fn cdylib_array() -> toml_edit::Array {
-    let mut array = toml_edit::Array::new();
-    array.push("cdylib");
-    array
-}
-
-/// Ensures a Cargo.toml has `"cdylib"` in its `[lib]` section's `crate-type` array.
-///
-/// This is required for library projects to generate dynamically loadable shared libraries
-/// that can be called via FFI from test runners.
-///
-/// If the manifest already has `"cdylib"` in the `crate-type` array, this function does
-/// nothing. If `crate-type` exists but doesn't contain `"cdylib"`, it adds `"cdylib"` to
-/// the existing array while preserving other crate types. If no `crate-type` exists, it
-/// creates `crate-type = ["cdylib"]`.
-///
-/// # Examples
-/// - `crate-type = ["rlib"]` -> `crate-type = ["rlib", "cdylib"]`
-/// - `crate-type = ["cdylib"]` -> no change
-/// - `crate-type = "rlib"` -> `crate-type = ["rlib", "cdylib"]`
-/// - No crate-type -> creates `crate-type = ["cdylib"]`
-///
-/// # Errors
-/// Returns an error if the manifest doesn't exist or cannot be read/written.
-pub fn ensure_cdylib(manifest: &Path) -> Result<()> {
-    if !manifest.exists() {
-        return Err(format!("Cargo.toml not found at {}", manifest.display()).into());
+impl CargoToml {
+    /// Opens and parses the `Cargo.toml` at `path`.
+    pub fn open(path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let doc: DocumentMut = content
+            .parse()
+            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+        Ok(Self {
+            doc,
+            path: path.to_path_buf(),
+        })
     }
 
-    let contents = fs::read_to_string(manifest)?;
-    let mut doc = contents
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
+    /// Writes the in-memory document back to disk.
+    pub fn save(&self) -> Result<()> {
+        fs::write(&self.path, self.doc.to_string())?;
+        Ok(())
+    }
 
-    let lib = doc
-        .entry("lib")
-        .or_insert(Item::Table(Table::new()))
-        .as_table_mut()
-        .ok_or("Failed to access [lib] section")?;
+    /// Returns the value of `[package].name` from the in-memory document.
+    pub fn package_name(&self) -> Option<String> {
+        self.doc
+            .get("package")?
+            .get("name")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
 
-    if let Some(crate_type_item) = lib.get("crate-type") {
-        if let Some(array) = crate_type_item.as_array() {
-            let has_cdylib = array
-                .iter()
-                .any(|v| v.as_str().map(|s| s == "cdylib").unwrap_or(false));
-
-            if has_cdylib {
-                return Ok(());
-            }
-
-            let mut new_array = array.clone();
-            new_array.push("cdylib");
-            lib.insert("crate-type", Item::Value(Value::Array(new_array)));
-        } else if let Some(s) = crate_type_item.as_str() {
-            if s == "cdylib" {
-                return Ok(());
-            }
-            let mut array = toml_edit::Array::new();
-            array.push(s);
-            array.push("cdylib");
-            lib.insert("crate-type", Item::Value(Value::Array(array)));
-        } else {
-            lib.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
+    /// Adds an empty `[workspace]` section if not already present, preventing Cargo from
+    /// searching parent directories for a workspace root.
+    pub fn add_workspace(&mut self) {
+        if self.doc.get("workspace").is_none() {
+            self.doc.insert("workspace", Item::Table(Table::new()));
         }
-    } else {
-        lib.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
     }
 
-    fs::write(manifest, doc.to_string())?;
+    /// Ensures `"cdylib"` appears in `[lib].crate-type`, preserving any other crate types.
+    /// Creates the `[lib]` section if it does not exist.
+    pub fn ensure_cdylib(&mut self) {
+        let needs_lib_table = !matches!(self.doc.get("lib"), Some(Item::Table(_)));
+        if needs_lib_table {
+            self.doc.insert("lib", Item::Table(Table::new()));
+        }
+
+        let lib_table = self
+            .doc
+            .get_mut("lib")
+            .and_then(Item::as_table_mut)
+            .expect("`lib` was just created as a table");
+        if let Some(ct) = lib_table.get("crate-type") {
+            if let Some(arr) = ct.as_array() {
+                if arr.iter().any(|v| v.as_str() == Some("cdylib")) {
+                    return;
+                }
+                let mut new_arr = arr.clone();
+                new_arr.push("cdylib");
+                lib_table.insert("crate-type", Item::Value(Value::Array(new_arr)));
+            } else if let Some(s) = ct.as_str() {
+                if s == "cdylib" {
+                    return;
+                }
+                let mut arr = Array::new();
+                arr.push(s);
+                arr.push("cdylib");
+                lib_table.insert("crate-type", Item::Value(Value::Array(arr)));
+            } else {
+                lib_table.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
+            }
+        } else {
+            lib_table.insert("crate-type", Item::Value(Value::Array(cdylib_array())));
+        }
+    }
+
+    /// Sets `[lib]` with the given `name` and `crate-type = ["cdylib"]`, overwriting any
+    /// existing `crate-type`. Use [`ensure_cdylib`](CargoToml::ensure_cdylib) instead when
+    /// other crate types must be preserved.
+    pub fn set_lib(&mut self, name: &str) {
+        let lib = self
+            .doc
+            .entry("lib")
+            .or_insert_with(|| Item::Table(Table::new()));
+        if let Some(t) = lib.as_table_mut() {
+            t.insert("name", toml_edit::value(name));
+            t.insert("crate-type", toml_edit::value(cdylib_array()));
+        }
+    }
+
+    /// Ensures there is a `[[bin]]` entry with `name = "driver"`.
+    /// If a `[[bin]]` section already exists it is renamed; otherwise a new one is added.
+    pub fn set_bin_driver(&mut self) {
+        if let Some(bins) = self
+            .doc
+            .get_mut("bin")
+            .and_then(|b| b.as_array_of_tables_mut())
+            && let Some(bin) = bins.iter_mut().next()
+        {
+            bin.insert("name", toml_edit::value("driver"));
+            return;
+        }
+        let mut bin = Table::new();
+        bin.insert("name", toml_edit::value("driver"));
+        bin.insert("path", toml_edit::value("src/main.rs"));
+        let mut arr = toml_edit::ArrayOfTables::new();
+        arr.push(bin);
+        self.doc.insert("bin", Item::ArrayOfTables(arr));
+    }
+
+    /// Removes all `[[bin]]` sections.
+    pub fn remove_bin(&mut self) {
+        self.doc.remove("bin");
+    }
+
+    /// Updates the `path` field for a dependency in `[dependencies]`.
+    /// Does nothing if the dependency does not exist or has no `path` field.
+    pub fn update_dependency_path(&mut self, dep_name: &str, new_path: &str) {
+        let Some(deps) = self
+            .doc
+            .get_mut("dependencies")
+            .and_then(|d| d.as_table_mut())
+        else {
+            return;
+        };
+        let Some(dep) = deps.get_mut(dep_name) else {
+            return;
+        };
+        if let Some(t) = dep.as_inline_table_mut() {
+            if t.contains_key("path") {
+                t.insert("path", Value::from(new_path));
+            }
+        } else if let Some(t) = dep.as_table_mut()
+            && t.contains_key("path")
+        {
+            t.insert("path", Item::Value(Value::from(new_path)));
+        }
+    }
+
+    /// Sets `[package].name` (and `[lib].name` if present) to match the last component of
+    /// `project_dir`, sanitized to a valid Cargo package name. Does nothing if the name is
+    /// already correct or the directory name cannot be determined.
+    pub fn normalize_name(&mut self, project_dir: &Path) {
+        let desired_raw = project_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if desired_raw.is_empty() {
+            return;
+        }
+        let desired = sanitize_package_name(&desired_raw);
+        if desired.is_empty() {
+            return;
+        }
+
+        if let Some(pkg) = self.doc.get_mut("package").and_then(|p| p.as_table_mut())
+            && pkg.get("name").and_then(|n| n.as_str()) != Some(&desired)
+        {
+            pkg.insert("name", Item::Value(Value::from(&desired)));
+        }
+        if let Some(lib) = self.doc.get_mut("lib").and_then(|l| l.as_table_mut())
+            && lib.get("name").and_then(|n| n.as_str()) != Some(&desired)
+        {
+            lib.insert("name", Item::Value(Value::from(&desired)));
+        }
+    }
+
+    /// Sets `[features].default` to the given list. Reserved for multi-config support.
+    #[allow(dead_code)]
+    pub fn set_default_features(&mut self, features: &[String]) {
+        let feat = self
+            .doc
+            .entry("features")
+            .or_insert_with(|| Item::Table(Table::new()));
+        if let Some(t) = feat.as_table_mut() {
+            let mut arr = Array::new();
+            for f in features {
+                arr.push(f.as_str());
+            }
+            t.insert("default", toml_edit::value(arr));
+        }
+    }
+}
+
+fn cdylib_array() -> Array {
+    let mut arr = Array::new();
+    arr.push("cdylib");
+    arr
+}
+
+// Standalone utilities
+
+/// Sanitizes a string into a valid Cargo package name:
+/// - replaces invalid characters with `_`
+/// - prefixes with `_` if the name starts with a digit or `-`
+pub fn sanitize_package_name(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
+            _ => '_',
+        })
+        .collect();
+    if s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+        s.insert(0, '_');
+    }
+    s
+}
+
+/// Removes `src/main.rs` and the `tests/` directory from a translated library project.
+///
+/// These files are not needed in a library crate and may cause build errors if left in.
+pub fn strip_for_lib(translated_rust_dir: &Path) -> Result<()> {
+    let main_rs = translated_rust_dir.join("src/main.rs");
+    if main_rs.exists() {
+        fs::remove_file(&main_rs)?;
+    }
+    let tests_dir = translated_rust_dir.join("tests");
+    if tests_dir.exists() {
+        fs::remove_dir_all(&tests_dir)?;
+    }
     Ok(())
 }
 
-/// Recursively copies a directory tree from source to destination.
+/// Recursively copies a directory tree from `src` to `dst`.
 ///
-/// This function silently succeeds if the source directory doesn't exist, making it
-/// useful for copying optional directories.
-///
-/// # Errors
-/// Returns an error if I/O operations fail during the copy process.
+/// Silently succeeds if `src` does not exist. Symlinks are skipped.
 pub fn copy_directory_recursive(src: &Path, dst: &Path) -> Result<()> {
     if !src.exists() {
         return Ok(());
     }
-    fn recurse(src: &Path, dst: &Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn recurse(src: &Path, dst: &Path) -> Result<()> {
         fs::create_dir_all(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
@@ -134,326 +278,104 @@ pub fn copy_directory_recursive(src: &Path, dst: &Path) -> Result<()> {
     recurse(src, dst)
 }
 
-/// Adds a `[workspace]` section to a Cargo.toml to prevent parent workspace interference.
-///
-/// When cargo builds a crate, it searches up the directory tree for workspace roots.
-/// If it finds one, it treats the crate as a workspace member, which can break
-/// path dependencies. Adding an empty `[workspace]` section declares the crate
-/// as its own workspace root, stopping the upward search.
-///
-/// # Errors
-/// Returns an error if the manifest cannot be read or written.
-pub fn add_workspace_guard(manifest: &Path) -> Result<()> {
-    if !manifest.exists() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(manifest)?;
-    let mut doc = contents
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
-
-    if doc.contains_key("workspace") {
-        return Ok(());
-    }
-
-    doc.insert("workspace", Item::Table(Table::new()));
-
-    fs::write(manifest, doc.to_string())?;
-    Ok(())
-}
-
-/// Updates a dependency's path in a Cargo.toml file.
-///
-/// This function updates the path for a dependency in the [dependencies] section.
-/// The dependency must be specified as an inline table with a path field.
-///
-/// # Errors
-/// Returns an error if the manifest cannot be read or written, or if TOML parsing fails.
-///
-/// # Example
-/// Updates: `cando2 = { path = "../../../../tools/cando2" }`
-/// To:      `cando2 = { path = "../translated_tools/cando2" }`
-pub fn update_dependency_path(manifest: &Path, dep_name: &str, new_path: &str) -> Result<()> {
-    if !manifest.exists() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(manifest)?;
-    let mut doc = contents
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
-
-    let Some(deps) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) else {
-        return Ok(());
-    };
-
-    let Some(dep) = deps.get_mut(dep_name) else {
-        return Ok(());
-    };
-
-    if let Some(dep_table) = dep.as_inline_table_mut()
-        && dep_table.contains_key("path")
-    {
-        dep_table.insert("path", Value::from(new_path));
-        fs::write(manifest, doc.to_string())?;
-    } else if let Some(dep_table) = dep.as_table_mut()
-        && dep_table.contains_key("path")
-    {
-        dep_table.insert("path", Item::Value(Value::from(new_path)));
-        fs::write(manifest, doc.to_string())?;
-    }
-
-    Ok(())
-}
-
-/// Force the package name to match the output directory name (sanitized). This keeps the
-/// produced `lib<name>.so` aligned with the test runner's expected library stem and avoids
-/// Cargo name errors.
-///
-/// Updates both `[package].name` and `[lib].name` (if present) to ensure the library
-/// artifact filename matches expectations.
-///
-/// # Errors
-/// Returns an error if the manifest cannot be read or written, or if TOML parsing fails.
-pub fn normalize_package_name(manifest: &Path, project_dir: &Path) -> Result<()> {
-    if !manifest.exists() {
-        return Ok(());
-    }
-    let desired_raw = project_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-    if desired_raw.is_empty() {
-        return Ok(());
-    }
-    let desired = sanitize_package_name(&desired_raw);
-    if desired.is_empty() {
-        return Ok(());
-    }
-
-    let contents = fs::read_to_string(manifest)?;
-    let mut doc = contents
-        .parse::<DocumentMut>()
-        .map_err(|e| format!("Failed to parse Cargo.toml: {}", e))?;
-
-    let mut changed = false;
-
-    #[allow(clippy::collapsible_if)]
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if let Some(current_name) = package.get("name").and_then(|n| n.as_str()) {
-            if current_name != desired {
-                package.insert("name", Item::Value(Value::from(&desired)));
-                changed = true;
-            }
-        }
-    }
-
-    if let Some(lib) = doc.get_mut("lib").and_then(|l| l.as_table_mut()) {
-        let needs_update = if let Some(current_lib_name) = lib.get("name").and_then(|n| n.as_str())
-        {
-            current_lib_name != desired
-        } else {
-            true
-        };
-
-        if needs_update {
-            lib.insert("name", Item::Value(Value::from(&desired)));
-            changed = true;
-        }
-    }
-
-    if changed {
-        fs::write(manifest, doc.to_string())?;
-    }
-
-    Ok(())
-}
-
-/// Sanitize a package name so Cargo accepts it:
-/// - replace invalid chars with `_`
-/// - if it starts with a digit or `-`, prefix with `_`
-pub fn sanitize_package_name(raw: &str) -> String {
-    let mut s: String = raw
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
-            _ => '_',
-        })
-        .collect();
-    if s.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
-        s.insert(0, '_');
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_read_package_name_valid() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "test-package"
-version = "0.1.0"
-"#
-        )
-        .unwrap();
-
-        let name = read_package_name(temp_file.path());
-        assert_eq!(name, Some("test-package".to_string()));
+    fn write_temp(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_read_package_name_missing_file() {
-        let name = read_package_name(Path::new("/nonexistent/Cargo.toml"));
-        assert_eq!(name, None);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_read_package_name_no_package() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, r#"[workspace]"#).unwrap();
-
-        let name = read_package_name(temp_file.path());
-        assert_eq!(name, None);
+    fn test_package_name_from_in_memory() {
+        let f = write_temp("[package]\nname = \"hello\"\n");
+        let cargo = CargoToml::open(f.path()).unwrap();
+        assert_eq!(cargo.package_name(), Some("hello".to_string()));
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ensure_cdylib_adds_when_missing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "mylib"
-
-[lib]
-crate-type = ["rlib"]
-"#
-        )
-        .unwrap();
-
-        ensure_cdylib(temp_file.path()).unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
-        assert!(contents.contains("cdylib"));
+        let f = write_temp("[package]\nname = \"mylib\"\n\n[lib]\ncrate-type = [\"rlib\"]\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.ensure_cdylib();
+        cargo.save().unwrap();
+        assert!(fs::read_to_string(f.path()).unwrap().contains("cdylib"));
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ensure_cdylib_no_duplicate() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "mylib"
-
-[lib]
-crate-type = ["cdylib"]
-"#
-        )
-        .unwrap();
-
-        ensure_cdylib(temp_file.path()).unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
-        let count = contents.matches("cdylib").count();
-        assert_eq!(count, 1);
+        let f = write_temp("[package]\nname = \"mylib\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.ensure_cdylib();
+        cargo.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(f.path())
+                .unwrap()
+                .matches("cdylib")
+                .count(),
+            1
+        );
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ensure_cdylib_creates_lib_section() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "mylib"
-"#
-        )
-        .unwrap();
-
-        ensure_cdylib(temp_file.path()).unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
+        let f = write_temp("[package]\nname = \"mylib\"\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.ensure_cdylib();
+        cargo.save().unwrap();
+        let contents = fs::read_to_string(f.path()).unwrap();
         assert!(contents.contains("[lib]"));
         assert!(contents.contains("cdylib"));
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_add_workspace_guard() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "test"
-"#
-        )
-        .unwrap();
-
-        add_workspace_guard(temp_file.path()).unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
-        assert!(contents.contains("[workspace]"));
+    fn test_add_workspace() {
+        let f = write_temp("[package]\nname = \"test\"\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.add_workspace();
+        cargo.save().unwrap();
+        assert!(
+            fs::read_to_string(f.path())
+                .unwrap()
+                .contains("[workspace]")
+        );
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_add_workspace_guard_no_duplicate() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "test"
-
-[workspace]
-"#
-        )
-        .unwrap();
-
-        add_workspace_guard(temp_file.path()).unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
-        let count = contents.matches("[workspace]").count();
-        assert_eq!(count, 1);
+    fn test_add_workspace_no_duplicate() {
+        let f = write_temp("[package]\nname = \"test\"\n\n[workspace]\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.add_workspace();
+        cargo.save().unwrap();
+        assert_eq!(
+            fs::read_to_string(f.path())
+                .unwrap()
+                .matches("[workspace]")
+                .count(),
+            1
+        );
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_update_dependency_path() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "test"
-
-[dependencies]
-cando2 = {{ path = "../old/path" }}
-"#
-        )
-        .unwrap();
-
-        update_dependency_path(temp_file.path(), "cando2", "../new/path").unwrap();
-
-        let contents = fs::read_to_string(temp_file.path()).unwrap();
+        let f = write_temp(
+            "[package]\nname = \"test\"\n\n[dependencies]\ncando2 = { path = \"../old/path\" }\n",
+        );
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.update_dependency_path("cando2", "../new/path");
+        cargo.save().unwrap();
+        let contents = fs::read_to_string(f.path()).unwrap();
         assert!(contents.contains("../new/path"));
         assert!(!contents.contains("../old/path"));
     }
@@ -461,19 +383,17 @@ cando2 = {{ path = "../old/path" }}
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_update_dependency_path_missing_dep() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(
-            temp_file,
-            r#"
-[package]
-name = "test"
+        let f = write_temp("[package]\nname = \"test\"\n\n[dependencies]\n");
+        let mut cargo = CargoToml::open(f.path()).unwrap();
+        cargo.update_dependency_path("nonexistent", "../path"); // must not panic
+        cargo.save().unwrap();
+    }
 
-[dependencies]
-"#
-        )
-        .unwrap();
-
-        let result = update_dependency_path(temp_file.path(), "nonexistent", "../path");
-        assert!(result.is_ok());
+    #[test]
+    fn test_sanitize_package_name() {
+        assert_eq!(sanitize_package_name("hello-world"), "hello-world");
+        assert_eq!(sanitize_package_name("123abc"), "_123abc");
+        assert_eq!(sanitize_package_name("-foo"), "_-foo");
+        assert_eq!(sanitize_package_name("a b.c"), "a_b_c");
     }
 }

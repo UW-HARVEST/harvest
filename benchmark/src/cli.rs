@@ -18,8 +18,16 @@ pub struct Args {
     pub output_dir: PathBuf,
 
     /// Use modular translation rather than standard all-at-once translation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
+
+    /// Use the agentic translation tool.
+    #[arg(long, conflicts_with = "modular")]
+    pub agentic: bool,
+
+    /// Run the agentic verify-and-fix stage after translation (requires --agentic).
+    #[arg(long, requires = "agentic")]
+    pub agentic_verify: bool,
 
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]

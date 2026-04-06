@@ -5,23 +5,17 @@ use harvest_core::HarvestIR;
 use full_source::{CargoPackage, RawSource};
 use try_cargo_build::{Artifact, CargoBuildResult};
 
-/// Extract a single CargoPackage representation from the IR.
-/// Returns an error if there are 0 or multiple CargoPackage representations.
+/// Extract the final CargoPackage representation from the IR.
+///
+/// When multiple tools in a pipeline each produce a `CargoPackage` (e.g. `translate_agentic`
+/// followed by `verify_fix_agentic`), the IR holds one per tool. Because `HarvestIR` is backed by
+/// a `BTreeMap<Id, ...>` and `Id`s are monotonically increasing, the last entry is always the most
+/// recently produced.
 pub fn raw_cargo_package(ir: &HarvestIR) -> HarvestResult<&RawDir> {
-    let cargo_packages: Vec<&RawDir> = ir
-        .get_by_representation::<CargoPackage>()
+    ir.get_by_representation::<CargoPackage>()
+        .last()
         .map(|(_, r)| &r.dir)
-        .collect();
-
-    match cargo_packages.len() {
-        0 => Err("No CargoPackage representation found in IR".into()),
-        1 => Ok(cargo_packages[0]),
-        n => Err(format!(
-            "Found {} CargoPackage representations, expected at most 1",
-            n
-        )
-        .into()),
-    }
+        .ok_or_else(|| "No CargoPackage representation found in IR".into())
 }
 
 /// Extract a single RawSource representation from the IR.

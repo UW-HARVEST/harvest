@@ -18,7 +18,9 @@ use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
 use tracing::{error, info};
+use translate_agentic::TranslateAgentic;
 use try_cargo_build::TryCargoBuild;
+use verify_fix_agentic::VerifyFixAgentic;
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {
@@ -34,7 +36,14 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
-    let translate = if config.modular {
+    let translate = if config.agentic {
+        let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
+        if config.agentic_verify {
+            scheduler.queue_after(VerifyFixAgentic, &[t, load_src])
+        } else {
+            t
+        }
+    } else if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
         scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
     } else {

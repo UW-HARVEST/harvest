@@ -22,8 +22,16 @@ pub struct Args {
     pub force: bool,
 
     /// Use modular translation rather than standard all-at-once translation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
+
+    /// Use the agentic translation tool.
+    #[arg(long, conflicts_with = "modular")]
+    pub agentic: bool,
+
+    /// Run the agentic verify-and-fix stage after translation (requires --agentic).
+    #[arg(long, requires = "agentic")]
+    pub agentic_verify: bool,
 
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
@@ -93,6 +101,18 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     if args.modular {
         settings = settings
             .set_override("modular", "true")
+            .expect("settings override failed");
+    }
+
+    if args.agentic {
+        settings = settings
+            .set_override("agentic", "true")
+            .expect("settings override failed");
+    }
+
+    if args.agentic_verify {
+        settings = settings
+            .set_override("agentic_verify", "true")
             .expect("settings override failed");
     }
 

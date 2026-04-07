@@ -8,7 +8,7 @@
 use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::cargo_utils::{CargoToml, strip_for_lib};
-use harvest_core::config::unknown_field_warning;
+use harvest_core::config::{AgentKind, unknown_field_warning};
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
+const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
 
 pub struct TranslateAgentic;
 
@@ -53,11 +54,8 @@ impl Tool for TranslateAgentic {
             .get::<ProjectSpec>(inputs[1])
             .ok_or("No ProjectSpec representation found in IR")?;
 
-        let translate_prompt = load_prompt(
-            &config.prompt_executable,
-            &config.prompt_library,
-            &project_spec.kind,
-        )?;
+        let agent = context.config.agentic_agent;
+        let translate_prompt = load_prompt(&config, &project_spec.kind, agent)?;
 
         // Set up a working directory that mirrors the layout the agent expects:
         //   case_dir/translated_rust/c_src/  <- materialized C source
@@ -70,7 +68,11 @@ impl Tool for TranslateAgentic {
         info!("Working directory: {}", case_dir.display());
 
         let translated = case_dir.join("translated_rust");
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs)?;
+
+        if agent == AgentKind::Claude {
+            write_claude_sandbox(case_dir)?;
+        }
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
 
         if !translated.join("Cargo.toml").exists() {
             return Err("Agent did not produce a Cargo.toml".into());
@@ -101,31 +103,67 @@ fn invoke_agent(
     work_dir: &Path,
     prompt: &str,
     timeout_secs: u64,
+    agent: AgentKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking translation agent (timeout={}s)", timeout_secs);
+    info!("Invoking translation agent ({agent}, timeout={timeout_secs}s)");
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("translation.log");
+    let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
 
-    let status = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
-             --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
-        ))
-        .env("PROMPT", prompt)
-        .env("LOG", &log_path)
-        .env(
-            "OPENSSL_DIR",
-            std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into()),
-        )
-        .current_dir(work_dir)
-        .status()?;
+    let status = match agent {
+        AgentKind::Kiro => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
+                 --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+        AgentKind::Claude => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                 --max-turns 50 \
+                 --output-format stream-json \
+                 < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+    };
 
     if !status.success() {
         warn!("Translation agent exited with {status}");
     }
+    Ok(())
+}
+
+/// Writes `.claude/settings.json` to sandbox Claude within the working directory.
+fn write_claude_sandbox(case_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let claude_dir = case_dir.join(".claude");
+    fs::create_dir_all(&claude_dir)?;
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "allowUnsandboxedCommands": false,
+                "filesystem": {
+                    "allowRead": [case_dir.to_string_lossy()],
+                    "allowWrite": [case_dir.to_string_lossy()]
+                }
+            }
+        })
+        .to_string(),
+    )?;
     Ok(())
 }
 
@@ -154,30 +192,41 @@ fn post_process(
     Ok(())
 }
 
-/// Loads the translate prompt for the given project kind.
+/// Loads the translate prompt, selecting between Kiro (per-kind) and Claude (unified) variants.
 fn load_prompt(
-    prompt_executable: &Option<PathBuf>,
-    prompt_library: &Option<PathBuf>,
+    config: &Config,
     kind: &ProjectKind,
+    agent: AgentKind,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let (config_path, builtin) = match kind {
-        ProjectKind::Executable => (prompt_executable, PROMPT_EXECUTABLE),
-        ProjectKind::Library => (prompt_library, PROMPT_LIBRARY),
-    };
-    match config_path {
-        Some(p) => Ok(fs::read_to_string(p)?),
-        None => Ok(builtin.to_owned()),
+    match agent {
+        AgentKind::Claude => match &config.prompt_claude_translate {
+            Some(p) => Ok(fs::read_to_string(p)?),
+            None => Ok(PROMPT_CLAUDE_TRANSLATE.to_owned()),
+        },
+        AgentKind::Kiro => {
+            let (config_path, builtin) = match kind {
+                ProjectKind::Executable => (&config.prompt_executable, PROMPT_EXECUTABLE),
+                ProjectKind::Library => (&config.prompt_library, PROMPT_LIBRARY),
+            };
+            match config_path {
+                Some(p) => Ok(fs::read_to_string(p)?),
+                None => Ok(builtin.to_owned()),
+            }
+        }
     }
 }
 
 /// Tool-specific configuration, read from `[tools.translate_agentic]` in the HARVEST config.
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Override path for the executable translation prompt.
+    /// Override path for the Kiro executable translation prompt.
     pub prompt_executable: Option<PathBuf>,
 
-    /// Override path for the library translation prompt.
+    /// Override path for the Kiro library translation prompt.
     pub prompt_library: Option<PathBuf>,
+
+    /// Override path for the Claude unified translation prompt.
+    pub prompt_claude_translate: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]

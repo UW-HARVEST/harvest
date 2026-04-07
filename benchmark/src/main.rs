@@ -68,6 +68,7 @@ impl TranspilationResult {
 }
 
 /// Translates a C source directory to a Rust Cargo project using harvest_translate
+#[allow(clippy::too_many_arguments)]
 pub fn translate_c_directory_to_rust_project(
     input_dir: &Path,
     output_dir: &Path,
@@ -75,6 +76,7 @@ pub fn translate_c_directory_to_rust_project(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -85,6 +87,7 @@ pub fn translate_c_directory_to_rust_project(
         modular,
         agentic,
         agentic_verify,
+        agentic_agent,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -126,6 +129,7 @@ pub fn translate_c_directory_to_rust_project(
 }
 
 /// Run all benchmarks for a list of programs
+#[allow(clippy::too_many_arguments)]
 pub fn run_all_benchmarks(
     program_dirs: &[PathBuf],
     output_dir: &Path,
@@ -134,6 +138,7 @@ pub fn run_all_benchmarks(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -152,6 +157,7 @@ pub fn run_all_benchmarks(
             modular,
             agentic,
             agentic_verify,
+            agentic_agent,
         );
 
         results.push(result);
@@ -230,6 +236,7 @@ fn run_test_validation(
 }
 
 /// Run all benchmarks for a single program
+#[allow(clippy::too_many_arguments)]
 fn benchmark_single_program(
     program_dir: &Path,
     output_root_dir: &Path,
@@ -238,6 +245,7 @@ fn benchmark_single_program(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -293,6 +301,7 @@ fn benchmark_single_program(
         modular,
         agentic,
         agentic_verify,
+        agentic_agent,
     );
 
     result.translation_success = translation_result.translation_success;
@@ -477,6 +486,14 @@ fn run(args: Args) -> HarvestResult<()> {
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs
+    let agentic_agent = args
+        .agentic_agent
+        .as_deref()
+        .map(|s| match s.to_lowercase().as_str() {
+            "kiro" => harvest_core::config::AgentKind::Kiro,
+            "claude" => harvest_core::config::AgentKind::Claude,
+            other => panic!("unknown agent kind: {other}"),
+        });
     let results = run_all_benchmarks(
         &program_dirs,
         &args.output_dir,
@@ -485,6 +502,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.modular,
         args.agentic,
         args.agentic_verify,
+        agentic_agent,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

@@ -52,6 +52,9 @@ impl Tool for RawSourceToCargoLlm {
         let (config_prompt, builtin_prompt) = match project_kind {
             ProjectKind::Executable => (config.prompt_executable, SYSTEM_PROMPT_EXECUTABLE),
             ProjectKind::Library => (config.prompt_library, SYSTEM_PROMPT_LIBRARY),
+            ProjectKind::Configurable => {
+                return Err("raw_source_to_cargo_llm does not support Configurable projects; use translate_agentic instead".into());
+            }
         };
         let system_prompt = config_prompt
             .map(read_to_string)

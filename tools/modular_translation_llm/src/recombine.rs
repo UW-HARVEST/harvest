@@ -54,6 +54,7 @@ pub fn recombine_decls(
     let source_file = match project_kind {
         ProjectKind::Executable => "src/main.rs",
         ProjectKind::Library => "src/lib.rs",
+        ProjectKind::Configurable => "src/lib.rs",
     };
 
     // Create the directory structure

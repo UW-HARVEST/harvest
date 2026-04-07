@@ -8,6 +8,7 @@ use harvest_core::tools::{RunContext, Tool};
 pub enum ProjectKind {
     Library,
     Executable,
+    Configurable,
 }
 
 impl Display for ProjectKind {
@@ -15,6 +16,7 @@ impl Display for ProjectKind {
         match self {
             ProjectKind::Library => write!(f, "Library"),
             ProjectKind::Executable => write!(f, "Executable"),
+            ProjectKind::Configurable => write!(f, "Configurable"),
         }
     }
 }
@@ -52,6 +54,13 @@ impl Tool for BuildProjectSpec {
             .ir_snapshot
             .get::<RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
+
+        // CMakePresets.json signals a build-time configurable project (e.g. sphincs).
+        if repr.dir.get_file("CMakePresets.json").is_ok() {
+            return Ok(Box::new(ProjectSpec {
+                kind: ProjectKind::Configurable,
+            }));
+        }
 
         if let Ok(cmakelists) = repr.dir.get_file("CMakeLists.txt") {
             if String::from_utf8_lossy(cmakelists)

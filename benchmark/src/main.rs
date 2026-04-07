@@ -453,6 +453,8 @@ fn run(args: Args) -> HarvestResult<()> {
         "Using {} Translation",
         if args.modular {
             "Modular"
+        } else if args.agentic {
+            "Agentic"
         } else {
             "All-at-once"
         }

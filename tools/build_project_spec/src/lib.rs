@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::path::Path;
 
 use full_source::RawSource;
 use harvest_core::Id;
@@ -37,6 +38,37 @@ impl Representation for ProjectSpec {
     }
 }
 
+/// Core detection logic shared by [`detect_project_kind`] and [`BuildProjectSpec::run`].
+///
+/// Examines the top-level `CMakeLists.txt` content to classify the project:
+/// - `add_executable(` at line start -> Executable
+/// - `add_library(` at line start -> Library
+/// - `add_subdirectory(` at line start (with neither of the above) -> Configurable
+///   (e.g. sphincs, where the real targets live in sub-CMakeLists)
+fn kind_from_cmakelists(cmakelists: &[u8]) -> Option<ProjectKind> {
+    let text = String::from_utf8_lossy(cmakelists);
+    if text.lines().any(|l| l.starts_with("add_executable(")) {
+        return Some(ProjectKind::Executable);
+    }
+    if text.lines().any(|l| l.starts_with("add_library(")) {
+        return Some(ProjectKind::Library);
+    }
+    if text.lines().any(|l| l.starts_with("add_subdirectory(")) {
+        return Some(ProjectKind::Configurable);
+    }
+    None
+}
+
+/// Detect the project kind from a source directory on the filesystem.
+///
+/// Useful for callers (e.g. the benchmark harness) that need the project kind
+/// before or outside of a full tool pipeline.  Returns `None` if the kind
+/// cannot be determined.
+pub fn detect_project_kind(dir: &Path) -> Option<ProjectKind> {
+    let cmakelists = std::fs::read(dir.join("CMakeLists.txt")).ok()?;
+    kind_from_cmakelists(&cmakelists)
+}
+
 pub struct BuildProjectSpec;
 
 impl Tool for BuildProjectSpec {
@@ -49,37 +81,18 @@ impl Tool for BuildProjectSpec {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        // Get RawSource representation (the first and only arg of build_project_spec)
         let repr = context
             .ir_snapshot
             .get::<RawSource>(inputs[0])
             .ok_or("No RawSource representation found in IR")?;
 
-        // CMakePresets.json signals a build-time configurable project (e.g. sphincs).
-        if repr.dir.get_file("CMakePresets.json").is_ok() {
-            return Ok(Box::new(ProjectSpec {
-                kind: ProjectKind::Configurable,
-            }));
-        }
+        let cmakelists = repr.dir.get_file("CMakeLists.txt").map_err(
+            |_| "Could not identify project kind from CMakeLists.txt (or could not find it)",
+        )?;
+        let kind = kind_from_cmakelists(cmakelists).ok_or(
+            "CMakeLists.txt found but contains no add_executable, add_library, or add_subdirectory",
+        )?;
 
-        if let Ok(cmakelists) = repr.dir.get_file("CMakeLists.txt") {
-            if String::from_utf8_lossy(cmakelists)
-                .lines()
-                .any(|line| line.starts_with("add_executable("))
-            {
-                return Ok(Box::new(ProjectSpec {
-                    kind: ProjectKind::Executable,
-                }));
-            } else if String::from_utf8_lossy(cmakelists)
-                .lines()
-                .any(|line| line.starts_with("add_library("))
-            {
-                return Ok(Box::new(ProjectSpec {
-                    kind: ProjectKind::Library,
-                }));
-            }
-        }
-
-        Err("Could not identify project kind from CMakeLists.txt (or could not find it)".into())
+        Ok(Box::new(ProjectSpec { kind }))
     }
 }

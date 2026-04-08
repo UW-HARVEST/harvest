@@ -204,7 +204,13 @@ impl ModularTranslationLLM {
         let project_kind_str = match project_kind {
             ProjectKind::Executable => "executable",
             ProjectKind::Library => "library",
-            ProjectKind::Configurable => "configurable",
+            ProjectKind::Configurable => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "modular translation does not yet support ProjectKind::Configurable",
+                )
+                .into())
+            }
         };
 
         let request = build_request(

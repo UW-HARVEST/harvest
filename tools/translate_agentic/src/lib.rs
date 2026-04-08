@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
+const PROMPT_CONFIGURABLE: &str = include_str!("prompt_configurable.md");
 
 pub struct TranslateAgentic;
 
@@ -56,6 +57,7 @@ impl Tool for TranslateAgentic {
         let translate_prompt = load_prompt(
             &config.prompt_executable,
             &config.prompt_library,
+            &config.prompt_configurable,
             &project_spec.kind,
         )?;
 
@@ -150,6 +152,11 @@ fn post_process(
             cargo.set_bin_driver();
             cargo.save()?;
         }
+        ProjectKind::Configurable => {
+            // The configurable prompt instructs the agent to produce both [lib] and [[bin]].
+            // Only ensure workspace is present (already added above); leave the rest intact.
+            cargo.save()?;
+        }
     }
     Ok(())
 }
@@ -158,11 +165,13 @@ fn post_process(
 fn load_prompt(
     prompt_executable: &Option<PathBuf>,
     prompt_library: &Option<PathBuf>,
+    prompt_configurable: &Option<PathBuf>,
     kind: &ProjectKind,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let (config_path, builtin) = match kind {
         ProjectKind::Executable => (prompt_executable, PROMPT_EXECUTABLE),
         ProjectKind::Library => (prompt_library, PROMPT_LIBRARY),
+        ProjectKind::Configurable => (prompt_configurable, PROMPT_CONFIGURABLE),
     };
     match config_path {
         Some(p) => Ok(fs::read_to_string(p)?),
@@ -178,6 +187,9 @@ pub struct Config {
 
     /// Override path for the library translation prompt.
     pub prompt_library: Option<PathBuf>,
+
+    /// Override path for the configurable translation prompt.
+    pub prompt_configurable: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]

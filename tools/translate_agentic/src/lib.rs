@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
+const PROMPT_CONFIGURABLE: &str = include_str!("prompt_configurable.md");
 const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
 
 pub struct TranslateAgentic;
@@ -188,6 +189,11 @@ fn post_process(
             cargo.set_bin_driver();
             cargo.save()?;
         }
+        ProjectKind::Configurable => {
+            // The configurable prompt instructs the agent to produce both [lib] and [[bin]].
+            // Only ensure workspace is present (already added above); leave the rest intact.
+            cargo.save()?;
+        }
     }
     Ok(())
 }
@@ -207,6 +213,7 @@ fn load_prompt(
             let (config_path, builtin) = match kind {
                 ProjectKind::Executable => (&config.prompt_executable, PROMPT_EXECUTABLE),
                 ProjectKind::Library => (&config.prompt_library, PROMPT_LIBRARY),
+                ProjectKind::Configurable => (&config.prompt_configurable, PROMPT_CONFIGURABLE),
             };
             match config_path {
                 Some(p) => Ok(fs::read_to_string(p)?),
@@ -224,6 +231,9 @@ pub struct Config {
 
     /// Override path for the Kiro library translation prompt.
     pub prompt_library: Option<PathBuf>,
+
+    /// Override path for the configurable translation prompt.
+    pub prompt_configurable: Option<PathBuf>,
 
     /// Override path for the Claude unified translation prompt.
     pub prompt_claude_translate: Option<PathBuf>,

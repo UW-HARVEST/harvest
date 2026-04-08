@@ -209,7 +209,7 @@ impl ModularTranslationLLM {
                     std::io::ErrorKind::Unsupported,
                     "modular translation does not yet support ProjectKind::Configurable",
                 )
-                .into())
+                .into());
             }
         };
 

@@ -154,7 +154,7 @@ fn invoke_agent(
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --output-format stream-json \
+                 --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))
             .env("PROMPT", prompt)

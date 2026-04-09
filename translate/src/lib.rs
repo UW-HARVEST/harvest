@@ -6,14 +6,14 @@ mod runner;
 mod scheduler;
 pub mod util;
 
-use build_project_spec::BuildProjectSpec;
+use build_project_spec::{BuildProjectSpec, ProjectSpec};
 use c_ast::ParseToAst;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
-use raw_source_to_cargo_llm::RawSourceToCargoLlm;
+use normalize_cargo::NormalizeCargo;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -36,21 +36,26 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
-    let translate = if config.agentic {
-        let mut t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
-        if config.agentic_verify {
-            t = scheduler.queue_after(VerifyFixAgentic, &[t, load_src]);
+    scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+    let spec = ir
+        .get::<ProjectSpec>(project_spec)
+        .ok_or("No ProjectSpec representation found in IR")?;
+    let translate = match spec.kind {
+        build_project_spec::ProjectKind::Library | build_project_spec::ProjectKind::Executable => {
+            let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
+            let t =
+                scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec]);
+            let t = scheduler.queue_after(NormalizeCargo, &[t]);
+            scheduler.queue_after(TryCargoBuild, &[t]);
+            t
         }
-        t
-    } else if config.modular {
-        let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        let t = scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec]);
-        scheduler.queue_after(TryCargoBuild, &[t]);
-        t
-    } else {
-        let t = scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec]);
-        scheduler.queue_after(TryCargoBuild, &[t]);
-        t
+        build_project_spec::ProjectKind::Configurable => {
+            let mut t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
+            if config.agentic_verify {
+                t = scheduler.queue_after(VerifyFixAgentic, &[t, load_src]);
+            }
+            t
+        }
     };
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`

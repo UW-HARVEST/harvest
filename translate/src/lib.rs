@@ -37,22 +37,27 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
     let translate = if config.agentic {
-        let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
+        let mut t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {
-            scheduler.queue_after(VerifyFixAgentic, &[t, load_src])
-        } else {
-            t
+            t = scheduler.queue_after(VerifyFixAgentic, &[t, load_src]);
         }
+        t
     } else if config.modular {
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
+        let t = scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec]);
+        scheduler.queue_after(TryCargoBuild, &[t]);
+        t
     } else {
-        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
+        let t = scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec]);
+        scheduler.queue_after(TryCargoBuild, &[t]);
+        t
     };
-    let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
-    let result = scheduler.run_all(&mut runner, &mut ir, config);
+    let result = scheduler.run_all(&mut runner, &mut ir, config.clone());
+    ir.get_representation(translate)
+        .ok_or("No CargoPackage representation found in IR")?
+        .materialize(&config.output)?;
     drop(scheduler);
     drop(runner);
     collector.diagnostics(); // TODO: Return this value (see issue 51)

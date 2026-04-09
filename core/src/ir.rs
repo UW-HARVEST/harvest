@@ -76,6 +76,11 @@ impl HarvestIR {
     }
 
     /// Returns the representation with the given ID, if it is of the expected type.
+    pub fn get_representation(&self, id: Id) -> Option<&dyn Representation> {
+        self.representations.get(&id).map(|v| &**v)
+    }
+
+    /// Returns the representation with the given ID, if it is of the expected type.
     pub fn get<R: Representation>(&self, id: Id) -> Option<&R> {
         self.representations
             .get(&id)

@@ -19,7 +19,7 @@ pub type BuildResult = Result<Vec<PathBuf>, Vec<CompilerMessage>>;
 /// - If the project builds successfully, it returns Ok(Ok(artifact_filenames)).
 /// - If the project fails to build, it returns Ok(Err(error_message)).
 /// - If there is an error running cargo, it returns Err.
-fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
+fn try_cargo_build(project_path: &Path) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
     let mut cargo = CargoToml::open(&project_path.join("Cargo.toml"))?;
@@ -90,11 +90,11 @@ impl Tool for TryCargoBuild {
             .ir_snapshot
             .get::<CargoPackage>(inputs[0])
             .ok_or("No CargoPackage representation found in IR")?;
-        let output_path = context.config.output.clone();
-        cargo_package.materialize(&output_path)?;
+        let output_path = harvest_core::fs::temp_working_dir()?;
+        cargo_package.materialize(output_path.as_ref())?;
 
         // Validate that the Rust project builds
-        Ok(Box::new(try_cargo_build(&output_path)?))
+        Ok(Box::new(try_cargo_build(output_path.as_ref())?))
     }
 }
 

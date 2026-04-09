@@ -672,3 +672,7 @@ fn resolve_file_path(path: &Path) -> Result<(Vec<&OsStr>, &OsStr), GetFileError>
     };
     Ok((segments, file_name))
 }
+
+pub fn temp_working_dir() -> std::io::Result<impl AsRef<Path>> {
+    TempDir::new()
+}

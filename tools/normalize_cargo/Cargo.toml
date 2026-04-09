@@ -1,13 +1,12 @@
 [package]
-name = "try_cargo_build"
+name = "normalize_cargo"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cargo_metadata = "0.23.1"
 full_source.workspace = true
 harvest_core.workspace = true
-tracing.workspace = true
+toml_edit = { workspace = true }
 
 [lints]
 workspace = true

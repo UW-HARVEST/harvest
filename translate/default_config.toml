@@ -5,6 +5,7 @@ log_filter = "info"
 modular = false
 agentic = false
 agentic_verify = false
+agentic_agent = "kiro"
 
 [tools.raw_source_to_cargo_llm]
 address = "http://localhost:11434"
@@ -19,7 +20,7 @@ model = "codellama:7b"
 max_tokens = 10000
 
 [tools.translate_agentic]
-timeout_secs = 1800
+timeout_secs = 7200
 
 [tools.verify_fix_agentic]
 timeout_secs = 2700

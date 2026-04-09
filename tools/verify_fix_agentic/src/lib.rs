@@ -7,7 +7,7 @@
 //! gives up). This is dynamic, execution-based verification, not a static or formal analysis.
 
 use full_source::{CargoPackage, RawSource};
-use harvest_core::config::unknown_field_warning;
+use harvest_core::config::{AgentKind, unknown_field_warning};
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
@@ -19,6 +19,7 @@ use std::process::Command;
 use tracing::{info, warn};
 
 const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
+const PROMPT_CLAUDE_VERIFY: &str = include_str!("prompt_claude_verify.md");
 
 pub struct VerifyFixAgentic;
 
@@ -42,6 +43,8 @@ impl Tool for VerifyFixAgentic {
         )?;
         config.validate();
 
+        let agent = context.config.agentic_agent;
+
         let cargo_package = context
             .ir_snapshot
             .get::<CargoPackage>(inputs[0])
@@ -50,13 +53,6 @@ impl Tool for VerifyFixAgentic {
             .ir_snapshot
             .get::<RawSource>(inputs[1])
             .ok_or("No RawSource representation found in IR")?;
-
-        let verify_prompt = config
-            .prompt_verify
-            .as_ref()
-            .map(fs::read_to_string)
-            .transpose()?
-            .unwrap_or_else(|| PROMPT_VERIFY.to_owned());
 
         // case_dir/
         //   translated_rust/          <- materialized CargoPackage
@@ -73,11 +69,24 @@ impl Tool for VerifyFixAgentic {
         info!("Working directory: {}", case_dir.display());
 
         let cmake_flags = extract_cmake_flags(case_dir);
-        let prompt = verify_prompt
-            .replace("{CASE_DIR}", &case_dir.to_string_lossy())
-            .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
+        let prompt =
+            load_verify_prompt(&config, agent)?.replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
-        invoke_agent(case_dir, &prompt, config.timeout_secs)?;
+        // Kiro runs in case_dir (references translated_rust/ in prompt paths).
+        // Claude runs in translated_rust/ directly (references c_src/ and src/).
+        let agent_work_dir = match agent {
+            AgentKind::Kiro => {
+                let p = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
+                invoke_agent(case_dir, &p, config.timeout_secs, agent)?;
+                case_dir.to_path_buf()
+            }
+            AgentKind::Claude => {
+                write_claude_sandbox(case_dir)?;
+                invoke_agent(&translated, &prompt, config.timeout_secs, agent)?;
+                translated.clone()
+            }
+        };
+        let _ = agent_work_dir;
         info!("Verification complete");
 
         // Remove artifacts that should not be carried into the IR.
@@ -97,36 +106,88 @@ impl Tool for VerifyFixAgentic {
     }
 }
 
+/// Loads the verify prompt for the given agent kind.
+fn load_verify_prompt(
+    config: &Config,
+    agent: AgentKind,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match agent {
+        AgentKind::Claude => match &config.prompt_claude_verify {
+            Some(p) => Ok(fs::read_to_string(p)?),
+            None => Ok(PROMPT_CLAUDE_VERIFY.to_owned()),
+        },
+        AgentKind::Kiro => match &config.prompt_verify {
+            Some(p) => Ok(fs::read_to_string(p)?),
+            None => Ok(PROMPT_VERIFY.to_owned()),
+        },
+    }
+}
+
 /// Invokes the verification agent in `work_dir` with the given prompt and timeout.
 fn invoke_agent(
     work_dir: &Path,
     prompt: &str,
     timeout_secs: u64,
+    agent: AgentKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking verification agent (timeout={}s)", timeout_secs);
+    info!("Invoking verification agent ({agent}, timeout={timeout_secs}s)");
 
-    let logs_dir = work_dir.join("logs");
+    let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("verify.log");
+    let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
 
-    let status = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
-             --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
-        ))
-        .env("PROMPT", prompt)
-        .env("LOG", &log_path)
-        .env(
-            "OPENSSL_DIR",
-            std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into()),
-        )
-        .current_dir(work_dir)
-        .status()?;
+    let status = match agent {
+        AgentKind::Kiro => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
+                 --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+        AgentKind::Claude => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                 --output-format stream-json --verbose \
+                 < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+    };
 
     if !status.success() {
         warn!("Verification agent exited with {status}");
     }
+    Ok(())
+}
+
+/// Writes `.claude/settings.json` to sandbox Claude within the working directory.
+fn write_claude_sandbox(case_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let claude_dir = case_dir.join(".claude");
+    fs::create_dir_all(&claude_dir)?;
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "allowUnsandboxedCommands": false,
+                "filesystem": {
+                    "allowRead": [case_dir.to_string_lossy()],
+                    "allowWrite": [case_dir.to_string_lossy()]
+                }
+            }
+        })
+        .to_string(),
+    )?;
     Ok(())
 }
 
@@ -135,7 +196,6 @@ fn invoke_agent(
 /// These flags are injected into the verify prompt so the agent knows which build configuration
 /// was active for this case.
 fn extract_cmake_flags(case_dir: &Path) -> String {
-    // TODO: This is a hack for sphincs-plus
     let presets = case_dir.join("translated_rust/c_src/CMakePresets.json");
     let content = match fs::read_to_string(&presets) {
         Ok(c) => c,
@@ -163,8 +223,11 @@ fn extract_cmake_flags(case_dir: &Path) -> String {
 /// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Override path for the verification prompt.
+    /// Override path for the Kiro verification prompt.
     pub prompt_verify: Option<PathBuf>,
+
+    /// Override path for the Claude verification prompt.
+    pub prompt_claude_verify: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
     #[serde(default = "default_timeout_secs")]

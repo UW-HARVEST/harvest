@@ -18,6 +18,7 @@ use crate::io::{
 use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
+use build_project_spec::{detect_project_kind, ProjectKind};
 use clap::Parser;
 use harvest_core::utils::get_version;
 use harvest_core::HarvestIR;
@@ -68,6 +69,7 @@ impl TranspilationResult {
 }
 
 /// Translates a C source directory to a Rust Cargo project using harvest_translate
+#[allow(clippy::too_many_arguments)]
 pub fn translate_c_directory_to_rust_project(
     input_dir: &Path,
     output_dir: &Path,
@@ -75,6 +77,7 @@ pub fn translate_c_directory_to_rust_project(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -85,6 +88,7 @@ pub fn translate_c_directory_to_rust_project(
         modular,
         agentic,
         agentic_verify,
+        agentic_agent,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -126,6 +130,7 @@ pub fn translate_c_directory_to_rust_project(
 }
 
 /// Run all benchmarks for a list of programs
+#[allow(clippy::too_many_arguments)]
 pub fn run_all_benchmarks(
     program_dirs: &[PathBuf],
     output_dir: &Path,
@@ -134,6 +139,7 @@ pub fn run_all_benchmarks(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -152,6 +158,7 @@ pub fn run_all_benchmarks(
             modular,
             agentic,
             agentic_verify,
+            agentic_agent,
         );
 
         results.push(result);
@@ -230,6 +237,7 @@ fn run_test_validation(
 }
 
 /// Run all benchmarks for a single program
+#[allow(clippy::too_many_arguments)]
 fn benchmark_single_program(
     program_dir: &Path,
     output_root_dir: &Path,
@@ -238,6 +246,7 @@ fn benchmark_single_program(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    agentic_agent: Option<harvest_core::config::AgentKind>,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -249,11 +258,6 @@ fn benchmark_single_program(
 
     log::info!("Translating program: {}", program_name);
     log::info!("Input directory: {}", program_dir.display());
-    let is_lib = program_name.ends_with("_lib");
-    log::info!(
-        "Detected project type: {}",
-        if is_lib { "library" } else { "executable" }
-    );
 
     // Get program output directory
     let output_dir = output_root_dir.join(&program_name);
@@ -268,6 +272,16 @@ fn benchmark_single_program(
             return result;
         }
     };
+
+    // Detect project kind from the C source root (same heuristic as build_project_spec).
+    let project_kind = detect_project_kind(&test_case_dir);
+    log::info!(
+        "Detected project type: {}",
+        project_kind
+            .as_ref()
+            .map(|k| k.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
 
     // Parse test vectors
     let test_cases = match parse_test_vectors(test_vectors_dir) {
@@ -293,6 +307,7 @@ fn benchmark_single_program(
         modular,
         agentic,
         agentic_verify,
+        agentic_agent,
     );
 
     result.translation_success = translation_result.translation_success;
@@ -323,37 +338,45 @@ fn benchmark_single_program(
     }
 
     // Library and executable validation differ.
-    let (test_results, error_messages) = match (is_lib, translation_result.rust_binary_path) {
-        (true, _) => {
-            match harness::library::run_library_validation(
-                &program_name,
-                program_dir,
-                &output_dir,
-                &test_cases,
-                timeout,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    let error_msg = format!("Library validation failed: {}", e);
-                    log::error!("{}", error_msg);
-                    result.error_message = Some(error_msg);
-                    return result;
+    // Both Library and Configurable projects use cando2 (runner + test_vectors).
+    // Executable projects run the binary directly against test vectors.
+    // Unknown project kinds fall back to the binary path if available.
+    let use_library_validation = matches!(
+        project_kind,
+        Some(ProjectKind::Library) | Some(ProjectKind::Configurable)
+    );
+    let (test_results, error_messages) =
+        match (use_library_validation, translation_result.rust_binary_path) {
+            (true, _) => {
+                match harness::library::run_library_validation(
+                    &program_name,
+                    program_dir,
+                    &output_dir,
+                    &test_cases,
+                    timeout,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let error_msg = format!("Library validation failed: {}", e);
+                        log::error!("{}", error_msg);
+                        result.error_message = Some(error_msg);
+                        return result;
+                    }
                 }
             }
-        }
-        (false, Some(binary_path)) if binary_path.exists() => {
-            run_test_validation(&binary_path, &test_cases, timeout, &output_dir)
-        }
-        (_, binary_path) => {
-            let error = format!(
+            (false, Some(binary_path)) if binary_path.exists() => {
+                run_test_validation(&binary_path, &test_cases, timeout, &output_dir)
+            }
+            (_, binary_path) => {
+                let error = format!(
                 "Rust build reported success, but expected output artifact was not found at {:?}",
                 binary_path
             );
-            log::error!("{}", error);
-            result.error_message = Some(error);
-            return result;
-        }
-    };
+                log::error!("{}", error);
+                result.error_message = Some(error);
+                return result;
+            }
+        };
 
     result.passed_tests = test_results
         .iter()
@@ -453,6 +476,8 @@ fn run(args: Args) -> HarvestResult<()> {
         "Using {} Translation",
         if args.modular {
             "Modular"
+        } else if args.agentic {
+            "Agentic"
         } else {
             "All-at-once"
         }
@@ -477,6 +502,14 @@ fn run(args: Args) -> HarvestResult<()> {
     log_found_programs(&program_dirs, &args.input_dir)?;
 
     // Process all programs
+    let agentic_agent = args
+        .agentic_agent
+        .as_deref()
+        .map(|s| match s.to_lowercase().as_str() {
+            "kiro" => harvest_core::config::AgentKind::Kiro,
+            "claude" => harvest_core::config::AgentKind::Claude,
+            other => panic!("unknown agent kind: {other}"),
+        });
     let results = run_all_benchmarks(
         &program_dirs,
         &args.output_dir,
@@ -485,6 +518,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.modular,
         args.agentic,
         args.agentic_verify,
+        agentic_agent,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

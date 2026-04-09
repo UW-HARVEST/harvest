@@ -33,6 +33,10 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_verify: bool,
 
+    /// Which agent to use for agentic translation: kiro or claude (requires --agentic).
+    #[arg(long, requires = "agentic", value_parser = parse_agent_kind)]
+    pub agentic_agent: Option<harvest_core::config::AgentKind>,
+
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
     pub input: Option<PathBuf>,
@@ -57,6 +61,16 @@ pub(crate) fn unknown_field_warning(prefix: &str, unknown: &HashMap<String, Valu
         "" => eprintln!("Warning: unknown config key {name}"),
         p => eprintln!("Warning: unknown config key {p}.{name}"),
     });
+}
+
+fn parse_agent_kind(s: &str) -> Result<harvest_core::config::AgentKind, String> {
+    match s.to_lowercase().as_str() {
+        "kiro" => Ok(harvest_core::config::AgentKind::Kiro),
+        "claude" => Ok(harvest_core::config::AgentKind::Claude),
+        other => Err(format!(
+            "unknown agent kind: {other} (expected: kiro, claude)"
+        )),
+    }
 }
 
 /// Performs parsing and validation of the config; to be called by main() before executing any code
@@ -113,6 +127,12 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
     if args.agentic_verify {
         settings = settings
             .set_override("agentic_verify", "true")
+            .expect("settings override failed");
+    }
+
+    if let Some(agent) = args.agentic_agent {
+        settings = settings
+            .set_override("agentic_agent", agent.to_string())
             .expect("settings override failed");
     }
 

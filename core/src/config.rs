@@ -1,7 +1,26 @@
+use std::fmt;
 use std::{collections::HashMap, path::PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
+
+/// Which external agent to invoke for agentic translation and verification.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentKind {
+    #[default]
+    Kiro,
+    Claude,
+}
+
+impl fmt::Display for AgentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentKind::Kiro => write!(f, "kiro"),
+            AgentKind::Claude => write!(f, "claude"),
+        }
+    }
+}
 
 /// Configuration for this harvest-translate run. The sources of these configuration values (from
 /// highest-precedence to lowest-precedence) are:
@@ -39,6 +58,10 @@ pub struct Config {
     #[serde(default)]
     pub agentic_verify: bool,
 
+    /// Which external agent to use for agentic translation (requires `agentic = true`).
+    #[serde(default)]
+    pub agentic_agent: AgentKind,
+
     /// Filter describing which log messages should be output to stdout. This is in the
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
@@ -65,6 +88,7 @@ impl Config {
             modular: false,
             agentic: false,
             agentic_verify: false,
+            agentic_agent: AgentKind::default(),
             log_filter: "off".to_owned(),
             tools: Default::default(),
             unknown: Default::default(),
@@ -75,8 +99,8 @@ impl Config {
     /// Printed at the start of translation and benchmarking runs to aid in reproduction of results.
     pub fn model_info(&self) -> Option<String> {
         if self.agentic {
-            let suffix = if self.agentic_verify { " + verify" } else { "" };
-            return Some(format!("agentic{suffix}"));
+            let verify = if self.agentic_verify { " + verify" } else { "" };
+            return Some(format!("agentic({}){verify}", self.agentic_agent));
         }
         let tool_name = if self.modular {
             "modular_translation_llm"

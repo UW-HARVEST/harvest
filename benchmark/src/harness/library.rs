@@ -148,14 +148,16 @@ pub fn run_library_validation(
 /// # Returns
 /// Path to the shared library file (.so, .dylib, or .dll)
 pub fn locate_compiled_library(output_dir: &Path, program_name: &str) -> HarvestResult<PathBuf> {
-    let pkg_name = CargoToml::open(&output_dir.join("Cargo.toml"))
+    // Use the lib name (from [lib].name) because cargo names the .so after the lib crate name,
+    // not the package name. Falls back to package_name if [lib].name is not set.
+    let lib_name = CargoToml::open(&output_dir.join("Cargo.toml"))
         .ok()
-        .and_then(|c| c.package_name())
+        .and_then(|c| c.lib_name())
         .unwrap_or_else(|| program_name.to_string());
     let target_release = output_dir.join("target").join("release");
 
-    // Construct expected library name from package name
-    let lib_stem = format!("lib{}", pkg_name.replace('-', "_"));
+    // Construct expected library name from lib crate name
+    let lib_stem = format!("lib{}", lib_name.replace('-', "_"));
 
     // Try common extensions
     for ext in LIBRARY_EXTENSIONS {

@@ -18,7 +18,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Some(config) = initialize(args) else {
         return Ok(()); // An early-exit argument was passed.
     };
-    empty_writable_dir(&config.output, config.force).expect("output directory error");
+    let _ = empty_writable_dir(&config.output, false);
     let ir = transpile(config.into())?;
     println!("{}", ir);
     Ok(())

@@ -57,6 +57,16 @@ impl CargoToml {
             .map(|s| s.to_string())
     }
 
+    /// Returns the `[lib].name` if explicitly set, otherwise falls back to `package_name`.
+    pub fn lib_name(&self) -> Option<String> {
+        self.doc
+            .get("lib")
+            .and_then(|l| l.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.package_name())
+    }
+
     /// Adds an empty `[workspace]` section if not already present, preventing Cargo from
     /// searching parent directories for a workspace root.
     pub fn add_workspace(&mut self) {
@@ -187,11 +197,8 @@ impl CargoToml {
         {
             pkg.insert("name", Item::Value(Value::from(&desired)));
         }
-        if let Some(lib) = self.doc.get_mut("lib").and_then(|l| l.as_table_mut())
-            && lib.get("name").and_then(|n| n.as_str()) != Some(&desired)
-        {
-            lib.insert("name", Item::Value(Value::from(&desired)));
-        }
+        // Do NOT rename [lib].name. It is referenced by `use lib_name::...` in source code.
+        // Renaming it here would break any binary targets that import the lib by its original name.
     }
 
     /// Sets `[features].default` to the given list. Reserved for multi-config support.

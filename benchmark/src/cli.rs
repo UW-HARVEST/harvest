@@ -29,6 +29,10 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_verify: bool,
 
+    /// Which agent to use for agentic translation: kiro or claude (requires --agentic).
+    #[arg(long, requires = "agentic")]
+    pub agentic_agent: Option<String>,
+
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,

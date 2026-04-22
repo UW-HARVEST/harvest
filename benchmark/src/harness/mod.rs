@@ -124,7 +124,6 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
 
     // Check for required subdirectories
     let test_case_dir = input_dir.join("test_case");
-    let test_case_src_dir = test_case_dir.join("src");
     let test_vectors_dir = input_dir.join("test_vectors");
 
     if !test_case_dir.exists() || !test_case_dir.is_dir() {
@@ -135,10 +134,13 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    if !test_case_src_dir.exists() || !test_case_src_dir.is_dir() {
+    // Accept test_case/src (normal layout) or test_case/app (configurable layout).
+    let has_src = test_case_dir.join("src").is_dir();
+    let has_app = test_case_dir.join("app").is_dir();
+    if !has_src && !has_app {
         return Err(format!(
-            "Required test_case/src directory not found: {}",
-            test_case_src_dir.display()
+            "Required test_case/src or test_case/app directory not found under: {}",
+            test_case_dir.display()
         )
         .into());
     }

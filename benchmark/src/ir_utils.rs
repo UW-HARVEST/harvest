@@ -34,16 +34,20 @@ pub fn raw_source(ir: &HarvestIR) -> HarvestResult<&RawDir> {
 }
 
 /// Extract cargo build results from the IR.
-/// Returns the build artifacts or an error if no results or multiple results are found.
+/// Returns the build artifacts, or an error if the build failed or results are missing/ambiguous.
 pub fn cargo_build_result(ir: &HarvestIR) -> Result<&Vec<Artifact>, String> {
-    let build_results: Vec<_> = ir
-        .get_by_representation::<CargoBuildResult>()
-        .map(|(_, r)| &r.artifacts)
-        .collect();
+    let build_results: Vec<_> = ir.get_by_representation::<CargoBuildResult>().collect();
 
     match build_results.len() {
         0 => Err("No artifacts built".into()),
-        1 => Ok(build_results[0]),
+        1 => {
+            let (_, r) = build_results[0];
+            if !r.success {
+                Err(format!("cargo build failed:\n{}", r.err))
+            } else {
+                Ok(&r.artifacts)
+            }
+        }
         n => Err(format!("Found {} build results, expected at most 1", n)),
     }
 }

@@ -68,9 +68,14 @@ impl Tool for VerifyFixAgentic {
 
         info!("Working directory: {}", case_dir.display());
 
+        // The wishlist file lives inside translated_rust/ so the agent can write to it
+        // without any special permissions. The absolute path is injected into the prompt.
+        let local_wishlist = translated.join("tool_wishlist.json");
+
         let cmake_flags = extract_cmake_flags(case_dir);
-        let prompt =
-            load_verify_prompt(&config, agent)?.replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
+        let prompt = load_verify_prompt(&config, agent)?
+            .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags)
+            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy());
 
         // Kiro runs in case_dir (references translated_rust/ in prompt paths).
         // Claude runs in translated_rust/ directly (references c_src/ and src/).
@@ -88,6 +93,34 @@ impl Tool for VerifyFixAgentic {
         };
         let _ = agent_work_dir;
         info!("Verification complete");
+
+        // Append verify-phase wishlist entries to the translate-phase file (if any),
+        // so the final output contains wishes from both phases in chronological order.
+        if local_wishlist.exists() {
+            if let Some(out_path) = &config.wishlist_output_path {
+                match (fs::read_to_string(&local_wishlist), fs::read_to_string(out_path)) {
+                    (Ok(new_entries), Ok(existing)) => {
+                        let merged = format!("{}{}", existing, new_entries);
+                        if let Err(e) = fs::write(out_path, merged) {
+                            warn!("Failed to append verify wishlist to {}: {}", out_path.display(), e);
+                        } else {
+                            info!("Tool wishlist (verify phase) appended to {}", out_path.display());
+                        }
+                    }
+                    (Ok(new_entries), Err(_)) => {
+                        // No translate-phase file yet — write fresh.
+                        if let Err(e) = fs::write(out_path, new_entries) {
+                            warn!("Failed to write verify wishlist to {}: {}", out_path.display(), e);
+                        } else {
+                            info!("Tool wishlist written to {}", out_path.display());
+                        }
+                    }
+                    (Err(e), _) => {
+                        warn!("Failed to read local wishlist {}: {}", local_wishlist.display(), e);
+                    }
+                }
+            }
+        }
 
         // Remove artifacts that should not be carried into the IR.
         let c_src_out = translated.join("c_src");
@@ -232,6 +265,12 @@ pub struct Config {
     /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Destination path for the agent's tool wishlist file.
+    /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).
+    /// Verify-phase entries are appended to any existing translate-phase entries at this path.
+    /// If absent, any wishlist the agent writes is silently discarded with the tempdir.
+    pub wishlist_output_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

@@ -70,10 +70,28 @@ impl Tool for TranslateAgentic {
 
         let translated = case_dir.join("translated_rust");
 
+        // The wishlist file lives inside the agent's working directory so the agent
+        // can write to it without any special permissions. We inject the absolute
+        // path into the prompt so the agent knows exactly where to append entries.
+        let local_wishlist = translated.join("tool_wishlist.json");
+        let translate_prompt = translate_prompt
+            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy());
+
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
         }
         invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
+
+        // Copy the wishlist out before the tempdir is dropped.
+        if local_wishlist.exists() {
+            if let Some(out_path) = &config.wishlist_output_path {
+                if let Err(e) = fs::copy(&local_wishlist, out_path) {
+                    warn!("Failed to copy tool wishlist to {}: {}", out_path.display(), e);
+                } else {
+                    info!("Tool wishlist written to {}", out_path.display());
+                }
+            }
+        }
 
         if !translated.join("Cargo.toml").exists() {
             return Err("Agent did not produce a Cargo.toml".into());
@@ -241,6 +259,11 @@ pub struct Config {
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Destination path for the agent's tool wishlist file.
+    /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).
+    /// If absent, any wishlist the agent writes is silently discarded with the tempdir.
+    pub wishlist_output_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

@@ -299,11 +299,27 @@ fn benchmark_single_program(
         log::info!("✅ Successfully parsed {} test case(s)", test_cases.len());
     }
 
+    // When running in agentic mode, inject the wishlist output path into the tool configs
+    // so each agent knows where to record its static-analysis tool wishes. Both tools
+    // point to the same file; the verify phase appends to whatever the translate phase wrote.
+    let wishlist_path = output_dir.join("tool_wishlist.json");
+    let mut effective_overrides = config_overrides.to_vec();
+    if agentic {
+        effective_overrides.push(format!(
+            "tools.translate_agentic.wishlist_output_path=\"{}\"",
+            wishlist_path.display()
+        ));
+        effective_overrides.push(format!(
+            "tools.verify_fix_agentic.wishlist_output_path=\"{}\"",
+            wishlist_path.display()
+        ));
+    }
+
     // Do the actual translation
     let translation_result = translate_c_directory_to_rust_project(
         &test_case_dir,
         &output_dir,
-        config_overrides,
+        &effective_overrides,
         modular,
         agentic,
         agentic_verify,

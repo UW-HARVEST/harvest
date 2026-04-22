@@ -53,13 +53,13 @@ class ToolResult:
 
 
 @dataclass
-class SubTask:
+class SubAgent:
     """
     A sub-agent invocation embedded inside an Agent tool call.
 
-    BLOCKING SEMANTICS: A SubTask is NOT truly asynchronous. While it runs,
+    BLOCKING SEMANTICS: A SubAgent is NOT truly asynchronous. While it runs,
     the parent agent's API call loop is completely paused — no new turns are
-    issued to the parent until this SubTask finishes and returns its result.
+    issued to the parent until this SubAgent finishes and returns its result.
     From the parent's perspective, Agent is just a slow tool: it blocks until
     done, then delivers a tool_result exactly like Bash or Read would.
 
@@ -68,7 +68,7 @@ class SubTask:
     deeper nesting (sub-agents spawning their own sub-agents) without any
     change to the schema.
 
-    Linkage: SubTask.tool_use_id == the parent ToolUse.id that spawned it.
+    Linkage: SubAgent.tool_use_id == the parent ToolUse.id that spawned it.
     This is the same ID that appears in system/task_started,
     system/task_progress, system/task_notification, and the final user
     tool_result that returns control to the parent.
@@ -119,7 +119,7 @@ class ToolUse:
     result: Optional[ToolResult] = None
 
     # Populated only when name == "Agent"
-    subtask: Optional[SubTask] = None
+    subagent: Optional[SubAgent] = None
 
 
 @dataclass
@@ -160,7 +160,7 @@ class Turn:
     accumulated context: all prior content + all tool results.
 
     turn_index counts only the turns of the agent that owns this
-    conversation. Sub-agent turns (nested inside a SubTask) are counted
+    conversation. Sub-agent turns (nested inside a SubAgent) are counted
     separately in their own conversation and never contribute to the
     parent's index. This matches the num_turns field in the result event.
     """
@@ -327,7 +327,7 @@ class TraceParser:
         # both carrying the same tool_use_id.
         # Records inside a bracket belong to the sub-agent's conversation.
         # ------------------------------------------------------------------
-        subtask_map: dict[str, SubTask] = {}   # tool_use_id -> SubTask
+        subagent_map: dict[str, SubAgent] = {}   # tool_use_id -> SubAgent
         task_stack: dict[str, int] = {}        # tool_use_id -> event index
         task_brackets: dict[str, tuple[int, int]] = {}  # tool_use_id -> (start, end)
 
@@ -337,7 +337,7 @@ class TraceParser:
                 tid = obj.get("tool_use_id", "")
                 if tid:
                     task_stack[tid] = i
-                    subtask_map[tid] = SubTask(
+                    subagent_map[tid] = SubAgent(
                         task_id=obj.get("task_id", ""),
                         tool_use_id=tid,
                         description=obj.get("description", ""),
@@ -349,7 +349,7 @@ class TraceParser:
                 if tid and tid in task_stack:
                     start_idx = task_stack.pop(tid)
                     task_brackets[tid] = (start_idx, i)
-                    st = subtask_map[tid]
+                    st = subagent_map[tid]
                     st.status = obj.get("status", "completed")
                     usage = obj.get("usage", {})
                     st.total_tokens = usage.get("total_tokens", 0)
@@ -381,9 +381,9 @@ class TraceParser:
                     session.init = self._parse_init(obj)
                 elif sub == "task_progress":
                     tid = obj.get("tool_use_id", "")
-                    if tid in subtask_map:
+                    if tid in subagent_map:
                         usage = obj.get("usage", {})
-                        subtask_map[tid].progress_snapshots.append(ProgressSnapshot(
+                        subagent_map[tid].progress_snapshots.append(ProgressSnapshot(
                             total_tokens=usage.get("total_tokens", 0),
                             tool_uses=usage.get("tool_uses", 0),
                             duration_ms=usage.get("duration_ms", 0),
@@ -410,11 +410,11 @@ class TraceParser:
         session.conversation = self._parse_conversation(main_records)
 
         for tid, records in subagent_records.items():
-            if tid in subtask_map:
-                subtask_map[tid].conversation = self._parse_conversation(records)
+            if tid in subagent_map:
+                subagent_map[tid].conversation = self._parse_conversation(records)
 
-        # Attach SubTask objects to their parent Agent ToolUse
-        self._attach_subtasks(session.conversation, subtask_map)
+        # Attach SubAgent objects to their parent Agent ToolUse
+        self._attach_subagents(session.conversation, subagent_map)
 
         return session
 
@@ -491,16 +491,16 @@ class TraceParser:
 
         return turns
 
-    def _attach_subtasks(
-        self, turns: list[Turn], subtask_map: dict[str, SubTask]
+    def _attach_subagents(
+        self, turns: list[Turn], subagent_map: dict[str, SubAgent]
     ) -> None:
-        """Wire SubTask objects into their parent Agent ToolUse nodes."""
+        """Wire SubAgent objects into their parent Agent ToolUse nodes."""
         for turn in turns:
             for block in turn.content_blocks:
                 if block.type == "tool_use" and block.tool_use is not None:
                     tu = block.tool_use
-                    if tu.name == "Agent" and tu.id in subtask_map:
-                        tu.subtask = subtask_map[tu.id]
+                    if tu.name == "Agent" and tu.id in subagent_map:
+                        tu.subagent = subagent_map[tu.id]
 
     def _parse_init(self, obj: dict) -> InitEvent:
         tools = obj.get("tools", [])
@@ -579,7 +579,7 @@ def print_session_stats(sessions: list[Session]) -> None:
         print(f"  Agent (sub-agent) calls:      {len(agent_calls)}")
 
         for ag in agent_calls:
-            st = ag.subtask
+            st = ag.subagent
             if st:
                 sub_turns = len(st.conversation)
                 sub_tools = count_tools_in_conversation(st.conversation)
@@ -606,7 +606,7 @@ def print_session_stats(sessions: list[Session]) -> None:
             print(f"\n  --- Result ---")
             print(f"    stop_reason:    {r.stop_reason}")
             print(f"    is_error:       {r.is_error}")
-            print(f"    num_turns:      {r.num_turns}  (should match main turns above)")
+            print(f"    num_turns:      {r.num_turns}")
             print(f"    duration_ms:    {r.duration_ms}")
             print(f"    total_cost_usd: ${r.total_cost_usd:.4f}")
             for model, mu in r.model_usage.items():
@@ -618,11 +618,171 @@ def print_session_stats(sessions: list[Session]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Human-readable history printer
+# ---------------------------------------------------------------------------
+
+def _truncate(text: str, max_len: int = 30000) -> str:
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + f"  …[+{len(text) - max_len} chars]"
+
+
+def _fmt_tool_input(name: str, inp: dict) -> str:
+    """Format tool input as a compact one-or-few-liner."""
+    if name == "Bash":
+        cmd = inp.get("command", "").strip().replace("\n", " ↵ ")
+        desc = inp.get("description", "")
+        if desc:
+            return f"[{desc}]\n         $ {_truncate(cmd)}"
+        return f"$ {_truncate(cmd)}"
+    if name in ("Read", "Write", "Edit"):
+        path = inp.get("file_path", inp.get("path", ""))
+        extra = ""
+        if name == "Write":
+            content = inp.get("content", "")
+            extra = f"  ({len(content)} chars)"
+        elif name == "Edit":
+            old = inp.get("old_string", "")[:60].replace("\n", "↵")
+            new = inp.get("new_string", "")[:60].replace("\n", "↵")
+            extra = f"\n         - {old!r}\n         + {new!r}"
+        return f"{path}{extra}"
+    if name == "Agent":
+        desc = inp.get("description", "")
+        sub_type = inp.get("subagent_type", "")
+        prompt_preview = _truncate(inp.get("prompt", ""))
+        return f"[{sub_type}] {desc}\n         prompt: {prompt_preview}"
+    # Generic fallback
+    parts = []
+    for k, v in inp.items():
+        v_str = str(v).replace("\n", "↵")
+        parts.append(f"{k}={_truncate(v_str)}")
+    return "  ".join(parts)
+
+
+def _fmt_turns(turns: list[Turn], out: list[str], indent: str = "") -> None:
+    """Append formatted turn lines into `out` (a list[str] for efficient joining)."""
+    for turn in turns:
+        out.append(f"{indent}┌─ Turn {turn.turn_index} {'─' * max(0, 60 - len(indent) - 10)}")
+
+        # Thinking blocks
+        for thinking in turn.thinking_texts:
+            preview = _truncate(thinking)
+            out.append(f"{indent}│  💭 Thinking: ({len(thinking)} chars)")
+            for line in preview.splitlines():
+                out.append(f"{indent}│     {line}")
+
+        # Text blocks
+        for text in turn.texts:
+            out.append(f"{indent}│  💬 {_truncate(text)}")
+
+        # Tool calls
+        for tu in turn.tool_uses:
+            is_agent = tu.name == "Agent"
+            icon = "🤖" if is_agent else "🔧"
+            fmt_input = _fmt_tool_input(tu.name, tu.input)
+            input_lines = fmt_input.splitlines()
+            out.append(f"{indent}│  {icon} Tool: {tu.name}  {input_lines[0]}")
+            for extra_line in input_lines[1:]:
+                out.append(f"{indent}│     {extra_line}")
+
+            # Sub-agent: recurse with deeper indentation
+            if is_agent and tu.subagent:
+                sa = tu.subagent
+                out.append(f"{indent}│  ╔═ Sub-agent [{sa.description}] ({'─'*20})")
+                out.append(f"{indent}│  ║  task_id: {sa.task_id}  status: {sa.status}")
+                _fmt_turns(sa.conversation, out, indent=indent + "│  ║  ")
+                out.append(
+                    f"{indent}│  ╚═ Sub-agent done  "
+                    f"tokens={sa.total_tokens}  tools={sa.total_tool_uses}  "
+                    f"duration={sa.duration_ms}ms"
+                )
+
+            # Tool result (after sub-agent block when applicable)
+            if tu.result:
+                result_text = _truncate(tu.result.content)
+                err_tag = " [ERROR]" if tu.result.is_error else ""
+                out.append(f"{indent}│  📥 Result{err_tag}: ({len(tu.result.content)} chars)")
+                for line in result_text.splitlines():
+                    out.append(f"{indent}│     {line}")
+
+        out.append(f"{indent}└{'─' * max(0, 62 - len(indent))}")
+        out.append("")
+
+
+def build_readable_history(sessions: list[Session]) -> str:
+    """
+    Build a human-readable narrative of the full agent execution.
+    Returns a single string. Uses list accumulation + join for efficiency
+    since the output can be very large (multiple MB).
+    """
+    out: list[str] = []
+    total = len(sessions)
+
+    for idx, s in enumerate(sessions, 1):
+        r = s.result
+        duration_s = f"{r.duration_ms / 1000:.1f}s" if r else "?"
+        cost = f"${r.total_cost_usd:.4f}" if r else "?"
+
+        out.append("")
+        out.append("=" * 70)
+        out.append(f"  Session {idx}/{total} — {s.phase.upper()}")
+        out.append(
+            f"  model: {s.init.model if s.init else '?'}  "
+            f"duration: {duration_s}  cost: {cost}"
+        )
+        out.append("=" * 70)
+        out.append("")
+
+        # Surface rate-limit events
+        for m in s.monitoring:
+            if m.type == "rate_limit_event" or m.subtype == "rate_limit_event":
+                info = m.raw.get("rate_limit_info", {})
+                out.append(
+                    f"  ⚠️  Rate limit: status={info.get('status')}  "
+                    f"type={info.get('rateLimitType')}"
+                )
+
+        out.append("")
+        _fmt_turns(s.conversation, out)
+
+        if r:
+            out.append(
+                f"  ✅ Session ended: {r.stop_reason}  "
+                f"turns={r.num_turns}  cost={cost}"
+            )
+            for model, mu in r.model_usage.items():
+                short = model.split("-")[1] if "-" in model else model
+                out.append(
+                    f"     [{short}] out={mu.output_tokens}  "
+                    f"cache_read={mu.cache_read_tokens}  ${mu.cost_usd:.4f}"
+                )
+        out.append("")
+
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "trace_c.txt"
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: parse_trace.py <file> [--readable]")
+        sys.exit(1)
+
+    path = args[0]
+    readable = "--readable" in args or "-r" in args
+
     parser = TraceParser()
     sessions = parser.parse_file(path)
-    print_session_stats(sessions)
+
+    if readable:
+        out_path = path.rsplit(".", 1)[0] + "_readable.txt"
+        content = build_readable_history(sessions)
+        with open(out_path, "w") as f:
+            f.write(content)
+        print(f"Written to {out_path}  ({len(content):,} chars)")
+    else:
+        print_session_stats(sessions)

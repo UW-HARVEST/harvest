@@ -754,7 +754,7 @@ def build_readable_history(sessions: list[Session]) -> str:
             for model, mu in r.model_usage.items():
                 short = model.split("-")[1] if "-" in model else model
                 out.append(
-                    f"     [{short}] out={mu.output_tokens}  "
+                    f"     [{short}] in={mu.input_tokens} out={mu.output_tokens}  "
                     f"cache_read={mu.cache_read_tokens}  ${mu.cost_usd:.4f}"
                 )
         out.append("")

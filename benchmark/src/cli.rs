@@ -33,6 +33,11 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_agent: Option<String>,
 
+    /// Provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
+    /// Only meaningful when --agentic is set.
+    #[arg(long, requires = "agentic")]
+    pub agent_tools: bool,
+
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,

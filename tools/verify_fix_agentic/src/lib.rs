@@ -68,6 +68,26 @@ impl Tool for VerifyFixAgentic {
 
         info!("Working directory: {}", case_dir.display());
 
+        // Materialize agent tools if enabled and build the prompt section.
+        // When disabled, {AGENT_TOOLS_SECTION} is replaced with an empty string so
+        // the entire "Available Tools" block is absent from the prompt the agent sees.
+        let agent_tools_section = if config.agent_tools {
+            let dir = translated.join("agent_tools");
+            agent_tools_embed::materialize_to(&dir)?;
+            let docs = agent_tools_embed::collect_docs()
+                .replace("{AGENT_TOOLS_DIR}", &dir.to_string_lossy());
+            format!(
+                "---\n\n## Available Tools\n\n\
+                 The following tools are pre-installed in `{}/`. Use them when you\n\
+                 need a precise answer about C behavior rather than reasoning from first principles.\n\n\
+                 {}\n\n",
+                dir.display(),
+                docs
+            )
+        } else {
+            String::new()
+        };
+
         // The wishlist file lives inside translated_rust/ so the agent can write to it
         // without any special permissions. The absolute path is injected into the prompt.
         let local_wishlist = translated.join("tool_wishlist.json");
@@ -75,7 +95,8 @@ impl Tool for VerifyFixAgentic {
         let cmake_flags = extract_cmake_flags(case_dir);
         let prompt = load_verify_prompt(&config, agent)?
             .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags)
-            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy());
+            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
+            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
 
         // Kiro runs in case_dir (references translated_rust/ in prompt paths).
         // Claude runs in translated_rust/ directly (references c_src/ and src/).
@@ -265,6 +286,11 @@ pub struct Config {
     /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Whether to provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
+    /// Injected by the benchmark via --agent-tools. Defaults to false.
+    #[serde(default)]
+    pub agent_tools: bool,
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).

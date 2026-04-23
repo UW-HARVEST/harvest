@@ -140,6 +140,7 @@ pub fn run_all_benchmarks(
     agentic: bool,
     agentic_verify: bool,
     agentic_agent: Option<harvest_core::config::AgentKind>,
+    agent_tools: bool,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -159,6 +160,7 @@ pub fn run_all_benchmarks(
             agentic,
             agentic_verify,
             agentic_agent,
+            agent_tools,
         );
 
         results.push(result);
@@ -247,6 +249,7 @@ fn benchmark_single_program(
     agentic: bool,
     agentic_verify: bool,
     agentic_agent: Option<harvest_core::config::AgentKind>,
+    agent_tools: bool,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -313,6 +316,10 @@ fn benchmark_single_program(
             "tools.verify_fix_agentic.wishlist_output_path=\"{}\"",
             wishlist_path.display()
         ));
+        if agent_tools {
+            effective_overrides.push("tools.translate_agentic.agent_tools=true".to_owned());
+            effective_overrides.push("tools.verify_fix_agentic.agent_tools=true".to_owned());
+        }
     }
 
     // Do the actual translation
@@ -535,6 +542,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agentic,
         args.agentic_verify,
         agentic_agent,
+        args.agent_tools,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

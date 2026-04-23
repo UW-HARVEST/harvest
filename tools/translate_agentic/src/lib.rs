@@ -70,12 +70,33 @@ impl Tool for TranslateAgentic {
 
         let translated = case_dir.join("translated_rust");
 
+        // Materialize agent tools if enabled and build the prompt section.
+        // When disabled, {AGENT_TOOLS_SECTION} is replaced with an empty string so
+        // the entire "Available Tools" block is absent from the prompt the agent sees.
+        let agent_tools_section = if config.agent_tools {
+            let dir = translated.join("agent_tools");
+            agent_tools_embed::materialize_to(&dir)?;
+            let docs = agent_tools_embed::collect_docs()
+                .replace("{AGENT_TOOLS_DIR}", &dir.to_string_lossy());
+            format!(
+                "## Available Tools\n\n\
+                 The following tools are pre-installed in `{}/`. Use them when you\n\
+                 need a precise answer about C behavior rather than reasoning from first principles.\n\n\
+                 {}\n",
+                dir.display(),
+                docs
+            )
+        } else {
+            String::new()
+        };
+
         // The wishlist file lives inside the agent's working directory so the agent
         // can write to it without any special permissions. We inject the absolute
         // path into the prompt so the agent knows exactly where to append entries.
         let local_wishlist = translated.join("tool_wishlist.json");
         let translate_prompt = translate_prompt
-            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy());
+            .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
+            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
 
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
@@ -259,6 +280,11 @@ pub struct Config {
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Whether to provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
+    /// Injected by the benchmark via --agent-tools. Defaults to false.
+    #[serde(default)]
+    pub agent_tools: bool,
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).

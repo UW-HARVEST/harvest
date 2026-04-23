@@ -42,7 +42,7 @@ run longer than 600 seconds. If a test takes too long, skip it and move on to
 the next function. Use `timeout 600 cargo test ...` or similar. Do not get stuck
 on any single step.
 
----
+{AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist
 

@@ -71,7 +71,7 @@ impl Tool for VerifyFixAgentic {
         // Materialize agent tools if enabled and build the prompt section.
         // When disabled, {AGENT_TOOLS_SECTION} is replaced with an empty string so
         // the entire "Available Tools" block is absent from the prompt the agent sees.
-        let agent_tools_section = if config.agent_tools {
+        let agent_tools_section = if context.config.agent_tools {
             let dir = translated.join("agent_tools");
             agent_tools_embed::materialize_to(&dir)?;
             let docs = agent_tools_embed::collect_docs()
@@ -287,10 +287,6 @@ pub struct Config {
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
-    /// Whether to provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
-    /// Injected by the benchmark via --agent-tools. Defaults to false.
-    #[serde(default)]
-    pub agent_tools: bool,
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).

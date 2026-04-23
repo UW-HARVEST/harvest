@@ -78,6 +78,7 @@ pub fn translate_c_directory_to_rust_project(
     agentic: bool,
     agentic_verify: bool,
     agentic_agent: Option<harvest_core::config::AgentKind>,
+    agent_tools: bool,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -89,6 +90,7 @@ pub fn translate_c_directory_to_rust_project(
         agentic,
         agentic_verify,
         agentic_agent,
+        agent_tools,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -316,10 +318,6 @@ fn benchmark_single_program(
             "tools.verify_fix_agentic.wishlist_output_path=\"{}\"",
             wishlist_path.display()
         ));
-        if agent_tools {
-            effective_overrides.push("tools.translate_agentic.agent_tools=true".to_owned());
-            effective_overrides.push("tools.verify_fix_agentic.agent_tools=true".to_owned());
-        }
     }
 
     // Do the actual translation
@@ -331,6 +329,7 @@ fn benchmark_single_program(
         agentic,
         agentic_verify,
         agentic_agent,
+        agent_tools,
     );
 
     result.translation_success = translation_result.translation_success;

@@ -1401,6 +1401,7 @@ dependencies = [
  "config",
  "directories",
  "harvest_core",
+ "infer_analysis",
  "libc",
  "load_raw_source",
  "modular_translation_llm",
@@ -1728,6 +1729,17 @@ checksum = "0ad4bb2b565bca0645f4d68c5c9af97fba094e9791da685bf83cb5f3ce74acf2"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "infer_analysis"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

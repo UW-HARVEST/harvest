@@ -11,6 +11,7 @@ use c_ast::ParseToAst;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
+use infer_analysis::InferStaticAnalyze;
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use normalize_cargo::NormalizeCargo;
@@ -35,7 +36,8 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+    let infer = scheduler.queue_after(InferStaticAnalyze, &[load_src]);
+    /*let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
     scheduler.run_all(&mut runner, &mut ir, config.clone())?;
     let spec = ir
         .get::<ProjectSpec>(project_spec)
@@ -56,13 +58,13 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             }
             t
         }
-    };
+    };*/
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
     let result = scheduler.run_all(&mut runner, &mut ir, config.clone());
-    ir.get_representation(translate)
+    ir.get_representation(infer)
         .ok_or("No CargoPackage representation found in IR")?
-        .materialize(&config.output)?;
+        .materialize(&config.output.join("results"))?;
     drop(scheduler);
     drop(runner);
     collector.diagnostics(); // TODO: Return this value (see issue 51)

@@ -4,5 +4,6 @@ pkgs.mkShell {
   buildInputs = [
     pkgs.rustup
     pkgs.rustPlatform.bindgenHook
+    (import ./infer {})
   ];
 }

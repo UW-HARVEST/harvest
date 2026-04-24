@@ -20,6 +20,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let _ = empty_writable_dir(&config.output, false);
     let ir = transpile(config.into())?;
-    println!("{}", ir);
+    println!("Output {}", ir);
     Ok(())
 }

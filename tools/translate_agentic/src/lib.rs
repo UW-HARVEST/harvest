@@ -169,7 +169,7 @@ fn invoke_agent(
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --max-turns 50 \
+                 --max-turns 100 \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))

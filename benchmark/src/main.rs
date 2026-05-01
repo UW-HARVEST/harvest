@@ -360,13 +360,18 @@ fn benchmark_single_program(
     }
 
     // Library and executable validation differ.
-    // Both Library and Configurable projects use cando2 (runner + test_vectors).
-    // Executable projects run the binary directly against test vectors.
-    // Unknown project kinds fall back to the binary path if available.
-    let use_library_validation = matches!(
-        project_kind,
-        Some(ProjectKind::Library) | Some(ProjectKind::Configurable)
-    );
+    // - Library projects always use cando2 (runner + test_vectors via FFI).
+    // - Configurable projects can be tested either way; pick library validation only
+    //   when an input `runner/` exists, otherwise fall back to running the driver
+    //   binary against test_vectors (executable-style tests).
+    // - Executable projects run the binary directly against test vectors.
+    // - Unknown project kinds fall back to the binary path if available.
+    let runner_exists = program_dir.join("runner").is_dir();
+    let use_library_validation = match project_kind {
+        Some(ProjectKind::Library) => true,
+        Some(ProjectKind::Configurable) => runner_exists,
+        _ => false,
+    };
     let (test_results, error_messages) =
         match (use_library_validation, translation_result.rust_binary_path) {
             (true, _) => {

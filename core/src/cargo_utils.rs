@@ -175,9 +175,14 @@ impl CargoToml {
         }
     }
 
-    /// Sets `[package].name` (and `[lib].name` if present) to match the last component of
-    /// `project_dir`, sanitized to a valid Cargo package name. Does nothing if the name is
-    /// already correct or the directory name cannot be determined.
+    /// Sets `[package].name` to match the last component of `project_dir`, sanitized to a
+    /// valid Cargo package name. Does nothing if the name is already correct or the directory
+    /// name cannot be determined.
+    ///
+    /// If a `[lib]` section exists without an explicit `name`, this also pins `[lib].name` to
+    /// the *original* package name first — otherwise the lib's name (which Cargo derives from
+    /// `package.name` when not set) would silently follow the rename and break any
+    /// `use <lib_name>::…` references in `src/main.rs` or other binaries.
     pub fn normalize_name(&mut self, project_dir: &Path) {
         let desired_raw = project_dir
             .file_name()
@@ -192,13 +197,24 @@ impl CargoToml {
             return;
         }
 
+        // Capture the original package name before we change it so we can pin an
+        // implicit [lib].name to it.
+        let old_pkg_name = self.package_name();
+
+        // Pin [lib].name to the original package name if it would otherwise change implicitly.
+        if let Some(old) = old_pkg_name.as_deref()
+            && old != desired
+            && let Some(lib) = self.doc.get_mut("lib").and_then(|l| l.as_table_mut())
+            && !lib.contains_key("name")
+        {
+            lib.insert("name", Item::Value(Value::from(old)));
+        }
+
         if let Some(pkg) = self.doc.get_mut("package").and_then(|p| p.as_table_mut())
             && pkg.get("name").and_then(|n| n.as_str()) != Some(&desired)
         {
             pkg.insert("name", Item::Value(Value::from(&desired)));
         }
-        // Do NOT rename [lib].name. It is referenced by `use lib_name::...` in source code.
-        // Renaming it here would break any binary targets that import the lib by its original name.
     }
 
     /// Sets `[features].default` to the given list. Reserved for multi-config support.
@@ -402,5 +418,73 @@ mod tests {
         assert_eq!(sanitize_package_name("123abc"), "_123abc");
         assert_eq!(sanitize_package_name("-foo"), "_-foo");
         assert_eq!(sanitize_package_name("a b.c"), "a_b_c");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_normalize_name_pins_implicit_lib_name() {
+        // Agent named the package `sphincsplus` and source files use
+        // `use sphincsplus::...`.  When normalize_name renames the package to
+        // match the directory, the implicit lib name must be pinned to the
+        // original package name so the source references keep working.
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("_005_renamed_target");
+        fs::create_dir_all(&project_dir).unwrap();
+        let cargo_path = project_dir.join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            "[package]\nname = \"sphincsplus\"\n\n[lib]\ncrate-type = [\"lib\", \"cdylib\"]\n",
+        )
+        .unwrap();
+
+        let mut cargo = CargoToml::open(&cargo_path).unwrap();
+        cargo.normalize_name(&project_dir);
+        cargo.save().unwrap();
+
+        let contents = fs::read_to_string(&cargo_path).unwrap();
+        assert!(contents.contains("name = \"_005_renamed_target\""));
+        // The lib name must now be explicitly pinned to the original package name.
+        let reopened = CargoToml::open(&cargo_path).unwrap();
+        assert_eq!(reopened.lib_name(), Some("sphincsplus".to_string()));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_normalize_name_preserves_explicit_lib_name() {
+        // An already-explicit [lib].name must be left alone.
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("renamed");
+        fs::create_dir_all(&project_dir).unwrap();
+        let cargo_path = project_dir.join("Cargo.toml");
+        fs::write(
+            &cargo_path,
+            "[package]\nname = \"original\"\n\n[lib]\nname = \"my_lib\"\ncrate-type = [\"lib\"]\n",
+        )
+        .unwrap();
+
+        let mut cargo = CargoToml::open(&cargo_path).unwrap();
+        cargo.normalize_name(&project_dir);
+        cargo.save().unwrap();
+
+        let reopened = CargoToml::open(&cargo_path).unwrap();
+        assert_eq!(reopened.lib_name(), Some("my_lib".to_string()));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_normalize_name_no_lib_section() {
+        // No [lib] section at all — nothing should be added.
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("renamed");
+        fs::create_dir_all(&project_dir).unwrap();
+        let cargo_path = project_dir.join("Cargo.toml");
+        fs::write(&cargo_path, "[package]\nname = \"original\"\n").unwrap();
+
+        let mut cargo = CargoToml::open(&cargo_path).unwrap();
+        cargo.normalize_name(&project_dir);
+        cargo.save().unwrap();
+
+        let contents = fs::read_to_string(&cargo_path).unwrap();
+        assert!(!contents.contains("[lib]"));
     }
 }

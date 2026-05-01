@@ -12,7 +12,9 @@ Usage:
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -763,17 +765,319 @@ def build_readable_history(sessions: list[Session]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Timeline Visualization (SVG)
+#
+# Each turn becomes one horizontal bar. The bar is split into colored
+# segments, one per operation, in execution order. Segment width is
+# proportional to the character count that flowed through that operation:
+#
+#   read  — content read INTO context (tool_result of Read/Glob/Grep,
+#           or Bash commands like cat/ls/grep that pull data in)
+#   think — model output (thinking blocks + assistant text)
+#   write — content the agent produced (Write content, Edit new_string,
+#           Bash redirects/sed -i)
+#   build — execution-style operations (cargo/cmake/make/gcc/python/...)
+#           sized by tool_result length (the output that re-entered context)
+#   other — anything we couldn't classify
+#
+# Bar TOTAL width is normalized to the longest turn in the trace, so a
+# row that fills the whole strip = the heaviest turn; short rows = short
+# turns. Hover any segment to see the full command/preview as a tooltip.
+# ---------------------------------------------------------------------------
+
+CAT_READ, CAT_THINK, CAT_WRITE, CAT_BUILD, CAT_SUBAGENT, CAT_OTHER = (
+    "read", "think", "write", "build", "subagent", "other",
+)
+
+CAT_COLORS = {
+    CAT_READ:     "#85c955",   # green
+    CAT_THINK:    "#5b9bd5",   # blue
+    CAT_WRITE:    "#e8a020",   # amber
+    CAT_BUILD:    "#e05050",   # red
+    CAT_SUBAGENT: "#9b80c8",   # purple-grey
+    CAT_OTHER:    "#555555",   # dark grey
+}
+
+# Dark theme palette
+_BG          = "#1e1e1e"
+_ROW_ALT     = "#252525"
+_TEXT        = "#cccccc"
+_TEXT_DIM    = "#888888"
+_GRID        = "#333333"
+_TITLE       = "#e0e0e0"
+
+# Bash command classification by leading word.
+_READ_CMDS = {
+    "ls", "cat", "head", "tail", "find", "grep", "rg", "wc", "file",
+    "stat", "du", "pwd", "which", "tree", "diff", "less", "more",
+    "nm", "objdump", "readelf", "strings", "od", "xxd", "awk", "sed",
+    "jq", "column", "sort", "uniq", "cut", "tr",
+}
+_WRITE_CMDS = {
+    "cp", "mv", "mkdir", "touch", "rm", "rmdir", "ln", "chmod", "chown",
+    "patch", "tar", "unzip", "zip",
+}
+_BUILD_CMDS = {
+    "cargo", "cmake", "make", "ninja", "gcc", "clang", "g++", "clang++",
+    "rustc", "go", "python", "python3", "node", "npm", "yarn", "pnpm",
+    "ctest", "bear", "opt", "llvm-link", "llc", "ld", "ar",
+    "bash", "sh", "zsh", "fish",
+}
+
+
+def _peel_bash(cmd: str) -> str:
+    """Strip wrapper prefixes (set/timeout/cd &&/env) and return the head."""
+    cmd = cmd.strip()
+    while True:
+        new_cmd = cmd
+        new_cmd = re.sub(r"^set\s+-\S+(\s+\S+)*\s*;\s*", "", new_cmd)
+        new_cmd = re.sub(r"^timeout\s+\S+\s+", "", new_cmd)
+        new_cmd = re.sub(r"^cd\s+\S+\s*&&\s*", "", new_cmd)
+        new_cmd = re.sub(r"^env\s+(?:\w+=\S+\s+)+", "", new_cmd)
+        if new_cmd == cmd:
+            break
+        cmd = new_cmd
+    parts = re.split(r"[\|;]|&&", cmd, maxsplit=1)
+    return parts[0].strip()
+
+
+def _classify_bash(cmd: str) -> str:
+    """Classify a bash command by its primary purpose."""
+    # Write detection: redirect, tee, sed -i anywhere in the line.
+    if (re.search(r"(^|\s)>>?\s", cmd)
+            or re.search(r"\btee\s", cmd)
+            or re.search(r"\bsed\s+-i\b", cmd)):
+        return CAT_WRITE
+
+    head = _peel_bash(cmd)
+    if not head:
+        return CAT_OTHER
+    tokens = head.split()
+    first = tokens[0] if tokens else ""
+
+    if first.startswith(("./", "/", "../")):
+        return CAT_BUILD
+    if first in _READ_CMDS:
+        return CAT_READ
+    if first in _WRITE_CMDS:
+        return CAT_WRITE
+    if first in _BUILD_CMDS:
+        return CAT_BUILD
+    return CAT_OTHER
+
+
+def _classify_tool(tu: ToolUse) -> str:
+    if tu.name in ("Read", "Glob", "Grep"):
+        return CAT_READ
+    if tu.name in ("Write", "Edit", "NotebookEdit"):
+        return CAT_WRITE
+    if tu.name == "Bash":
+        return _classify_bash(tu.input.get("command", ""))
+    if tu.name == "Agent":
+        return CAT_SUBAGENT
+    return CAT_OTHER
+
+
+def _tool_size(tu: ToolUse) -> int:
+    """Visualization weight for a tool use, in characters."""
+    if tu.name == "Write":
+        return len(tu.input.get("content", ""))
+    if tu.name == "Edit":
+        return len(tu.input.get("new_string", ""))
+    # All others: characters that came back into context.
+    return len(tu.result.content) if tu.result else 0
+
+
+def _think_size(turn: Turn) -> int:
+    return sum(
+        len(b.thinking or "") if b.type == "thinking" else len(b.text or "")
+        for b in turn.content_blocks
+        if b.type in ("thinking", "text")
+    )
+
+
+@dataclass
+class _Segment:
+    category: str
+    size: int
+    tooltip: str
+
+
+def _segment_turn(turn: Turn) -> list[_Segment]:
+    """Break a turn into ordered segments; think first, then tool ops."""
+    segs: list[_Segment] = []
+
+    think_size = _think_size(turn)
+    if think_size > 0:
+        previews: list[str] = []
+        for b in turn.content_blocks:
+            if b.type == "thinking" and b.thinking:
+                previews.append("💭 " + b.thinking[:200].replace("\n", " "))
+            elif b.type == "text" and b.text:
+                previews.append("💬 " + b.text[:200].replace("\n", " "))
+        tip = "\n".join(previews[:4]) if previews else f"think ({think_size})"
+        segs.append(_Segment(CAT_THINK, think_size, tip))
+
+    for tu in turn.tool_uses:
+        size = _tool_size(tu)
+        if size <= 0:
+            continue
+        cat = _classify_tool(tu)
+        if tu.name == "Bash":
+            cmd = tu.input.get("command", "")
+            tip = f"$ {cmd[:400]}"
+        elif tu.name in ("Read", "Glob", "Grep"):
+            target = tu.input.get("file_path") or tu.input.get("pattern", "")
+            tip = f"{tu.name}: {target}"
+        elif tu.name in ("Write", "Edit"):
+            tip = f"{tu.name}: {tu.input.get('file_path', '')}"
+        elif tu.name == "Agent":
+            desc = tu.input.get("description", "")
+            prompt_preview = tu.input.get("prompt", "")[:300].replace("\n", " ")
+            result_preview = (tu.result.content[:300] if tu.result else "").replace("\n", " ")
+            tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
+        else:
+            tip = tu.name
+        segs.append(_Segment(cat, size, tip))
+
+    return segs
+
+
+def _flatten_rows(
+    sessions: list[Session],
+) -> list[tuple[str, int, list[_Segment]]]:
+    """
+    Flatten sessions + sub-agents into (label, depth, segments) rows.
+
+    Sub-agent turns are emitted immediately after the parent turn that
+    spawned them, with depth = parent_depth + 1, so the SVG renderer
+    can indent them visually.
+    """
+    rows: list[tuple[str, int, list[_Segment]]] = []
+
+    def emit(turns: list[Turn], prefix: str, depth: int) -> None:
+        for t in turns:
+            label = f"{prefix}T{t.turn_index}"
+            rows.append((label, depth, _segment_turn(t)))
+            # Expand any sub-agents this turn launched, in execution order.
+            for tu in t.tool_uses:
+                if tu.name == "Agent" and tu.subagent:
+                    sub_prefix = f"{prefix}T{t.turn_index}/A:"
+                    emit(tu.subagent.conversation, sub_prefix, depth + 1)
+
+    for s_idx, s in enumerate(sessions, 1):
+        prefix = f"S{s_idx}." if len(sessions) > 1 else ""
+        emit(s.conversation, prefix, 0)
+
+    return rows
+
+
+def render_timeline_svg(sessions: list[Session]) -> str:
+    rows = _flatten_rows(sessions)
+    if not rows:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20"/>'
+
+    max_total = max(
+        (sum(seg.size for seg in segs) for _, _, segs in rows), default=1
+    ) or 1
+    max_depth = max((d for _, d, _ in rows), default=0)
+
+    row_h = 14
+    label_w = 90
+    bar_w = 1400
+    indent_px = 24
+    pad_top = 90
+    pad_bottom = 30
+    height = pad_top + len(rows) * row_h + pad_bottom
+    width = label_w + max_depth * indent_px + bar_w + 40
+
+    out: list[str] = []
+    out.append('<?xml version="1.0" encoding="UTF-8"?>')
+    out.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" '
+        f'font-family="ui-monospace, monospace" font-size="11">'
+    )
+    out.append(f'<rect width="{width}" height="{height}" fill="{_BG}"/>')
+
+    title = f"Trace timeline — {len(rows)} turns"
+    out.append(
+        f'<text x="20" y="28" font-size="16" font-weight="bold" fill="{_TITLE}">'
+        f'{html.escape(title)}</text>'
+    )
+
+    legend_x = 20
+    for cat, color in CAT_COLORS.items():
+        out.append(
+            f'<rect x="{legend_x}" y="50" width="14" height="14" '
+            f'fill="{color}"/>'
+        )
+        out.append(
+            f'<text x="{legend_x + 20}" y="62" fill="{_TEXT}">{cat}</text>'
+        )
+        legend_x += 80
+
+    # X-axis tick marks (rough scale guide)
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        x = label_w + bar_w * frac
+        out.append(
+            f'<line x1="{x}" y1="{pad_top - 6}" x2="{x}" y2="{height - pad_bottom}" '
+            f'stroke="{_GRID}" stroke-dasharray="2,3"/>'
+        )
+        out.append(
+            f'<text x="{x}" y="{pad_top - 10}" text-anchor="middle" '
+            f'fill="{_TEXT_DIM}" font-size="10">{int(max_total * frac):,}</text>'
+        )
+
+    for idx, (lab, depth, segs) in enumerate(rows):
+        y = pad_top + idx * row_h
+        bar_start = label_w + depth * indent_px
+        if idx % 2 == 0:
+            out.append(
+                f'<rect x="{bar_start}" y="{y}" '
+                f'width="{width - bar_start - 40}" '
+                f'height="{row_h}" fill="{_ROW_ALT}"/>'
+            )
+        label_fill = _TEXT_DIM if depth > 0 else _TEXT
+        out.append(
+            f'<text x="{bar_start - 5}" y="{y + 11}" text-anchor="end" '
+            f'fill="{label_fill}">{html.escape(lab)}</text>'
+        )
+        x = float(bar_start)
+        seg_gap = 2.0  # px gap between adjacent segments so equal-color blocks read separately
+        for i, seg in enumerate(segs):
+            w = max(seg.size / max_total * bar_w, 0.5)
+            color = CAT_COLORS.get(seg.category, "#999")
+            tooltip = html.escape(
+                f"{seg.category}: {seg.size:,} chars\n{seg.tooltip}"
+            )
+            out.append(
+                f'<g><title>{tooltip}</title>'
+                f'<rect x="{x:.2f}" y="{y + 1}" width="{w:.2f}" '
+                f'height="{row_h - 2}" fill="{color}"/></g>'
+            )
+            x += w
+            if i < len(segs) - 1:
+                x += seg_gap
+
+    out.append('</svg>')
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
-        print("Usage: parse_trace.py <file> [--readable]")
+        print("Usage: parse_trace.py <file> [--readable | --visualize]")
         sys.exit(1)
 
     path = args[0]
     readable = "--readable" in args or "-r" in args
+    visualize = "--visualize" in args or "-v" in args
 
     parser = TraceParser()
     sessions = parser.parse_file(path)
@@ -781,6 +1085,12 @@ if __name__ == "__main__":
     if readable:
         out_path = path.rsplit(".", 1)[0] + "_readable.txt"
         content = build_readable_history(sessions)
+        with open(out_path, "w") as f:
+            f.write(content)
+        print(f"Written to {out_path}  ({len(content):,} chars)")
+    elif visualize:
+        out_path = path.rsplit(".", 1)[0] + "_timeline.svg"
+        content = render_timeline_svg(sessions)
         with open(out_path, "w") as f:
             f.write(content)
         print(f"Written to {out_path}  ({len(content):,} chars)")

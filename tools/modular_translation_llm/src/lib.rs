@@ -22,8 +22,9 @@ mod recombine;
 mod translation;
 mod translation_llm;
 pub use translation::{
-    InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
-    translate_decls, translate_functions, translate_interface, translate_types,
+    InterfaceTranslationResult, MacroTranslationResult, RustDeclaration, TranslationResult,
+    TypeTranslationResult, translate_decls, translate_functions, translate_interface,
+    translate_macros, translate_types,
 };
 pub use translation_llm::ModularTranslationLLM;
 
@@ -105,23 +106,27 @@ impl Tool for ModularTranslationLlm {
 
         let app_types: &[TopLevelEntity] = &clang_ast.app_types;
         let app_globals: &[TopLevelEntity] = &clang_ast.app_globals;
+        let defines: &[TopLevelEntity] = &clang_ast.defines;
         let mut app_functions: Vec<TopLevelEntity> = clang_ast.app_functions.clone();
 
         annotate_visibility(&mut app_functions, &clang_ast.app_func_sigs);
         info!("Visibility annotation complete");
 
         info!(
-            "Extracted {} type declarations, {} global declarations, {} function declarations",
+            "Extracted {} macro definitions, {} type declarations, {} global declarations, {} function declarations",
+            defines.len(),
             app_types.len(),
             app_globals.len(),
             app_functions.len()
         );
 
         // Translation flow:
+        // Macros (MacroDefinition) - establish macro translations
         // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result = translation::translate_decls(
+            defines,
             app_types,
             app_globals,
             &app_functions,

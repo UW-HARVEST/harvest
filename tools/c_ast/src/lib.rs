@@ -48,9 +48,9 @@ fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &Path) -> clang
     parser
 }
 
-/// Extract top-level entities from the file at `rel_path`.
+/// Extract top-level entities from the translation unit.
 /// This includes both entities that survive preprocessing (types, functions, globals) and preprocessor directives (includes, defines, compiler args).
-fn extract_entities(parser: clang::Parser<'_>, rel_file: &Path, out: &mut RichSourceMap) {
+fn extract_entities(parser: clang::Parser<'_>, out: &mut RichSourceMap) {
     let tu = match parser.parse() {
         Ok(tu) => tu,
         Err(e) => {
@@ -68,18 +68,12 @@ fn extract_entities(parser: clang::Parser<'_>, rel_file: &Path, out: &mut RichSo
         };
 
         // Ignore imports
-        if child.is_in_system_header()
-            || child
-                .get_location()
-                .and_then(|loc| loc.get_file_location().file)
-                .is_none()
-        {
+        if child.is_in_system_header() || utils::get_file_location(&child).is_none() {
             continue;
         }
 
         // Read the source text from the file
-        let Some((span, source_text)) = utils::range_to_span_and_text(child.get_range(), rel_file)
-        else {
+        let Some((span, source_text)) = utils::get_span_and_text(&child) else {
             continue;
         };
 
@@ -134,7 +128,7 @@ impl Tool for ParseToAst {
             }
             tracing::info!("Parsing file: {}", rel_path.to_string_lossy());
             let parser = build_parser(&index, src_dir.path(), &rel_path);
-            extract_entities(parser, &rel_path, &mut out);
+            extract_entities(parser, &mut out);
         }
 
         debug!(

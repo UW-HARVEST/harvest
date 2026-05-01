@@ -121,7 +121,7 @@ impl RichSourceMap {
                 self.include_paths.push(item);
             }
             EntityKind::MacroDefinition => {
-                self.defines.push(item);
+                self.push_define(item);
             }
             EntityKind::PreprocessingDirective => {
                 self.compiler_args.push(item);
@@ -130,10 +130,14 @@ impl RichSourceMap {
     }
 
     fn push_type(&mut self, item: TopLevelEntity) {
-        Self::insert_type_into(&mut self.app_types, item);
+        Self::insert_deduplicated_decl_into(&mut self.app_types, item);
     }
 
-    fn insert_type_into(nodes: &mut Vec<TopLevelEntity>, mut item: TopLevelEntity) {
+    fn push_define(&mut self, item: TopLevelEntity) {
+        Self::insert_deduplicated_decl_into(&mut self.defines, item);
+    }
+
+    fn insert_deduplicated_decl_into(nodes: &mut Vec<TopLevelEntity>, mut item: TopLevelEntity) {
         // If an existing top-level node contains this item, attach it directly
         // as an immediate child. We do not preserve deeper sub-entity ordering.
         for node in nodes.iter_mut() {

@@ -40,13 +40,22 @@ pub fn recombine_decls(
         translation_result.translations.len()
     );
 
-    // Concatenate all Rust code
-    let rust_code = translation_result
+    // Concatenate translated macros first, then translated declarations.
+    let macro_code = translation_result.macros.join("\n\n");
+    let decl_code = translation_result
         .translations
         .iter()
         .map(|decl| decl.rust_code.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
+
+    let rust_code = if macro_code.is_empty() {
+        decl_code
+    } else if decl_code.is_empty() {
+        macro_code
+    } else {
+        format!("{macro_code}\n\n{decl_code}")
+    };
 
     let source_content = prepend_dependency_imports(&translation_result.translations, rust_code);
 

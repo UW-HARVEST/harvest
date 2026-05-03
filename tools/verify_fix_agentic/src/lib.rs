@@ -7,6 +7,7 @@
 //! gives up). This is dynamic, execution-based verification, not a static or formal analysis.
 
 use full_source::{CargoPackage, RawSource};
+use harvest_core::cmake_presets::{TestConfig, find_test_config};
 use harvest_core::config::{AgentKind, unknown_field_warning};
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
@@ -92,9 +93,12 @@ impl Tool for VerifyFixAgentic {
         // without any special permissions. The absolute path is injected into the prompt.
         let local_wishlist = translated.join("tool_wishlist.json");
 
-        let cmake_flags = extract_cmake_flags(case_dir);
+        // Look near the original input dir; the case_dir tempdir does not contain
+        // CMakePresets.json because raw_source only mirrors `test_case/` content.
+        let test_config = find_test_config(&context.config.input);
         let prompt = load_verify_prompt(&config, agent)?
-            .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags)
+            .replace("{CMAKE_BUILD_FLAGS}", &test_config.cmake_flags)
+            .replace("{ALL_CONFIGURATIONS}", &render_configurations(&test_config))
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
 
@@ -249,29 +253,15 @@ fn write_claude_sandbox(case_dir: &Path) -> Result<(), Box<dyn std::error::Error
 ///
 /// These flags are injected into the verify prompt so the agent knows which build configuration
 /// was active for this case.
-fn extract_cmake_flags(case_dir: &Path) -> String {
-    let presets = case_dir.join("translated_rust/c_src/CMakePresets.json");
-    let content = match fs::read_to_string(&presets) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    let data: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return String::new(),
-    };
-
-    let Some(cv) = data
-        .pointer("/configurePresets/1/cacheVariables")
-        .and_then(|v| v.as_object())
-    else {
+/// Render `TestConfig` as the markdown block that the verify prompt expects in
+/// place of `{ALL_CONFIGURATIONS}`. Empty when there are no project knobs to
+/// switch — in that case the conditional "If configurations are listed below"
+/// section silently no-ops.
+fn render_configurations(cfg: &TestConfig) -> String {
+    if cfg.is_empty() {
         return String::new();
-    };
-
-    cv.iter()
-        .filter(|(k, _)| *k != "CMAKE_C_STANDARD" && *k != "CMAKE_BUILD_TYPE")
-        .map(|(k, v)| format!("-D{}={}", k, v.as_str().unwrap_or("")))
-        .collect::<Vec<_>>()
-        .join(" ")
+    }
+    format!("Configurations to verify:\n{}", cfg.as_markdown_bullet())
 }
 
 /// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.

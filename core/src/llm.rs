@@ -149,7 +149,7 @@ impl HarvestLLM {
             .block_on(self.client.chat(request))?;
 
         let usage = response.usage();
-        let response_text = response.text().expect("no response text");
+        let response_text = response.text().ok_or("no response text")?;
 
         // Parse the response - strip markdown code fences
         let response_text = response_text

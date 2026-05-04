@@ -76,7 +76,7 @@ fn extract_entities(parser: clang::Parser<'_>, out: &mut RichSourceMap) {
         let Some((span, source_text)) = utils::get_span_and_text(&child) else {
             continue;
         };
-        
+
         // Extract the AST for this entity
         let ast = ast::ast_from_entity(decl_kind, &child);
         out.push_entity(

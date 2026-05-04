@@ -22,7 +22,7 @@ pub struct ParseToAst;
 /// This includes standard flags, include paths, and language specification based on file extension.
 fn generate_parse_args(src_root: &Path, rel_file: &Path) -> Vec<String> {
     let mut parser_arg_values = vec!["-std=gnu11".to_string()];
-    parser_arg_values.push(format!("-I{}", src_root.to_string_lossy()));
+    parser_arg_values.push(format!("-I{}/include", src_root.to_string_lossy()));
     parser_arg_values.extend(
         utils::language_args_for_file(rel_file)
             .iter()
@@ -76,7 +76,7 @@ fn extract_entities(parser: clang::Parser<'_>, out: &mut RichSourceMap) {
         let Some((span, source_text)) = utils::get_span_and_text(&child) else {
             continue;
         };
-
+        
         // Extract the AST for this entity
         let ast = ast::ast_from_entity(decl_kind, &child);
         out.push_entity(

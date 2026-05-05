@@ -38,7 +38,7 @@ pub struct Args {
     pub input: Option<PathBuf>,
 
     /// Number of LLM-based repair passes to attempt after a failed build.
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "2")]
     pub repair_passes: usize,
 
     /// Prints out the location of the config file.

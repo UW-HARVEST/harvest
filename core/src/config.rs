@@ -59,7 +59,7 @@ pub struct Config {
 }
 
 fn default_max_repair_passes() -> usize {
-    1
+    2
 }
 
 impl Config {

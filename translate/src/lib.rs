@@ -8,18 +8,20 @@ pub mod util;
 
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
+use fix_declarations_llm::FixDeclarationsLlm;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
 use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
+use quantize_rust_spans::QuantizeRustSpans;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 use translate_agentic::TranslateAgentic;
-use try_cargo_build::TryCargoBuild;
+use try_cargo_build::{CargoBuildResult, TryCargoBuild};
 use verify_fix_agentic::VerifyFixAgentic;
 use write_output::WriteOutput;
 
@@ -50,17 +52,35 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     } else {
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
     };
-    let try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
-    let _write_output = scheduler.queue_after(WriteOutput, &[try_build]);
-
+    let mut current_pkg_id = translate;
+    let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
-    let result = scheduler.run_all(&mut runner, &mut ir, config);
+    scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+    // Repair loop — skipped for agentic, which has its own repair mechanism.
+    if !config.agentic {
+        for _ in 0..config.max_repair_passes {
+            let success = ir
+                .get::<CargoBuildResult>(current_build_id)
+                .ok_or("transpile: no CargoBuildResult in IR")?
+                .success;
+            if success {
+                break;
+            }
+            let quantize = scheduler.queue_after(QuantizeRustSpans, &[current_pkg_id]);
+            let fix = scheduler.queue_after(FixDeclarationsLlm, &[quantize, current_build_id]);
+            let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+            current_pkg_id = fix;
+            current_build_id = new_build;
+        }
+    }
+
+    scheduler.queue_after(WriteOutput, &[current_build_id]);
+    scheduler.run_all(&mut runner, &mut ir, config)?;
+
     drop(scheduler);
     drop(runner);
     collector.diagnostics(); // TODO: Return this value (see issue 51)
-    if let Err(e) = result {
-        error!("Error during transpilation: {e}");
-        return Err(e);
-    }
     Ok(ir)
 }

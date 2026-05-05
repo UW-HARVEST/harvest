@@ -3,7 +3,7 @@
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::info;
 use try_cargo_build::CargoBuildResult;
 
@@ -29,7 +29,7 @@ impl Tool for WriteOutput {
         copy_dir_all(src, dst)?;
         info!("Output written to {}", dst.display());
 
-        Ok(Box::new(WriteOutputResult))
+        Ok(Box::new(WriteOutputResult { path: dst.clone() }))
     }
 }
 
@@ -47,11 +47,13 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub struct WriteOutputResult;
+pub struct WriteOutputResult {
+    pub path: PathBuf,
+}
 
 impl std::fmt::Display for WriteOutputResult {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "WriteOutputResult")
+        write!(f, "Output written to: {}", self.path.display())
     }
 }
 

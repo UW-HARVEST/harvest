@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 use syn::spanned::Spanned;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 // Copy from proc_macro2 so we can derive [Serialize] and [Deserialize]
 /// A line-column pair representing the start or end of a `Span`.
@@ -133,19 +133,20 @@ impl Tool for QuantizeRustSpans {
             .ir_snapshot
             .get::<CargoPackage>(cargo_pkg_idx)
             .ok_or("QuantizeRustSpans: no CargoPackage found in IR")?;
-
         let mut items = HashMap::new();
 
-        let source_files = cargo_pkg
+        let source_files: Vec<_> = cargo_pkg
             .dir
             .files_recursive()
             .into_iter()
-            .filter(|(path, _)| path.ends_with(".rs"));
+            .filter(|(path, _)| path.extension().is_some_and(|e| e == "rs"))
+            .collect();
+
         for (path, source) in source_files {
             let source = str::from_utf8(source)?;
             match extract_top_level_spans(source) {
                 Ok(decls) => {
-                    debug!(
+                    info!(
                         "QuantizeRustSpans: split {} into {} items",
                         path.display(),
                         decls.len()
@@ -160,6 +161,12 @@ impl Tool for QuantizeRustSpans {
             }
         }
 
+        let total_items: usize = items.values().map(|v| v.len()).sum();
+        info!(
+            "QuantizeRustSpans: found {} top-level item(s) across {} file(s)",
+            total_items,
+            items.len()
+        );
         Ok(Box::new(RustItemMap {
             cargo_pkg_idx,
             items,

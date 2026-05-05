@@ -37,6 +37,10 @@ pub struct Args {
     // Should always be present unless using a subcommand like --print-config-path
     pub input: Option<PathBuf>,
 
+    /// Number of LLM-based repair passes to attempt after a failed build.
+    #[arg(long, default_value = "1")]
+    pub repair_passes: usize,
+
     /// Prints out the location of the config file.
     #[arg(long)]
     pub print_config_path: bool,
@@ -115,6 +119,10 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
             .set_override("agentic_verify", "true")
             .expect("settings override failed");
     }
+
+    settings = settings
+        .set_override("max_repair_passes", args.repair_passes as i64)
+        .expect("settings override failed");
 
     // We need to set an override so that deserializing the config does not error.
     // However, the config crate does not support providing a Path in an override.

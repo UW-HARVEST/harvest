@@ -75,6 +75,7 @@ pub fn translate_c_directory_to_rust_project(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -85,6 +86,7 @@ pub fn translate_c_directory_to_rust_project(
         modular,
         agentic,
         agentic_verify,
+        repair_passes,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -134,6 +136,7 @@ pub fn run_all_benchmarks(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -152,6 +155,7 @@ pub fn run_all_benchmarks(
             modular,
             agentic,
             agentic_verify,
+            repair_passes,
         );
 
         results.push(result);
@@ -238,6 +242,7 @@ fn benchmark_single_program(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -293,6 +298,7 @@ fn benchmark_single_program(
         modular,
         agentic,
         agentic_verify,
+        repair_passes,
     );
 
     result.translation_success = translation_result.translation_success;
@@ -485,6 +491,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.modular,
         args.agentic,
         args.agentic_verify,
+        args.repair_passes,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

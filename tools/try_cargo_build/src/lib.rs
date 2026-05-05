@@ -1,5 +1,5 @@
 //! Checks if a generated Rust project builds by materializing
-//! it to a tempdir and running `cargo build --release`.
+//! it to a root and running `cargo build --release`.
 pub use cargo_metadata::{Artifact, CompilerMessage};
 use full_source::CargoPackage;
 use harvest_core::cargo_utils::CargoToml;
@@ -7,6 +7,8 @@ use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use tempfile::TempDir;
 use tracing::info;
 
 pub struct TryCargoBuild;
@@ -19,12 +21,13 @@ pub type BuildResult = Result<Vec<PathBuf>, Vec<CompilerMessage>>;
 /// - If the project builds successfully, it returns Ok(Ok(artifact_filenames)).
 /// - If the project fails to build, it returns Ok(Err(error_message)).
 /// - If there is an error running cargo, it returns Err.
-fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
+fn try_cargo_build(root: Arc<TempDir>) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
+    let project_path = root.path().to_path_buf();
     let mut cargo = CargoToml::open(&project_path.join("Cargo.toml"))?;
     cargo.add_workspace();
-    cargo.normalize_name(project_path);
+    cargo.normalize_name(&project_path);
     cargo.save()?;
 
     // Run cargo build in the project directory
@@ -32,7 +35,7 @@ fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn s
         .arg("build")
         .arg("--release")
         .arg("--message-format=json")
-        .current_dir(project_path)
+        .current_dir(&project_path)
         .output()
         .map_err(|e| {
             format!(
@@ -72,6 +75,7 @@ fn try_cargo_build(project_path: &PathBuf) -> Result<CargoBuildResult, Box<dyn s
         diagnostics,
         success,
         err: String::from_utf8(output.stderr)?,
+        root,
     })
 }
 
@@ -90,11 +94,11 @@ impl Tool for TryCargoBuild {
             .ir_snapshot
             .get::<CargoPackage>(inputs[0])
             .ok_or("No CargoPackage representation found in IR")?;
-        let output_path = context.config.output.clone();
-        cargo_package.materialize(&output_path)?;
+        let root = Arc::new(tempfile::tempdir()?);
+        cargo_package.materialize(root.path())?;
 
         // Validate that the Rust project builds
-        Ok(Box::new(try_cargo_build(&output_path)?))
+        Ok(Box::new(try_cargo_build(root)?))
     }
 }
 
@@ -105,6 +109,14 @@ pub struct CargoBuildResult {
     pub diagnostics: Vec<CompilerMessage>,
     pub success: bool,
     pub err: String,
+    /// Keeps the root alive for the lifetime of this result.
+    pub root: Arc<TempDir>,
+}
+
+impl CargoBuildResult {
+    pub fn root_path(&self) -> &Path {
+        self.root.path()
+    }
 }
 
 impl std::fmt::Display for CargoBuildResult {

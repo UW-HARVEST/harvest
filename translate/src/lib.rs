@@ -21,6 +21,7 @@ use tracing::{error, info};
 use translate_agentic::TranslateAgentic;
 use try_cargo_build::TryCargoBuild;
 use verify_fix_agentic::VerifyFixAgentic;
+use write_output::WriteOutput;
 
 /// Performs the complete transpilation process using the scheduler.
 pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::Error>> {
@@ -49,7 +50,8 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     } else {
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
     };
-    let _try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+    let try_build = scheduler.queue_after(TryCargoBuild, &[translate]);
+    let _write_output = scheduler.queue_after(WriteOutput, &[try_build]);
 
     // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
     let result = scheduler.run_all(&mut runner, &mut ir, config);

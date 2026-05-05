@@ -1411,6 +1411,7 @@ dependencies = [
  "translate_agentic",
  "try_cargo_build",
  "verify_fix_agentic",
+ "write_output",
 ]
 
 [[package]]
@@ -3160,6 +3161,7 @@ dependencies = [
  "cargo_metadata",
  "full_source",
  "harvest_core",
+ "tempfile",
  "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
 ]
@@ -3610,6 +3612,15 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
+
+[[package]]
+name = "write_output"
+version = "0.1.0"
+dependencies = [
+ "harvest_core",
+ "tracing",
+ "try_cargo_build",
+]
 
 [[package]]
 name = "writeable"

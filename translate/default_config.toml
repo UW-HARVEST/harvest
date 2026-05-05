@@ -19,6 +19,12 @@ backend = "ollama"
 model = "codellama:7b"
 max_tokens = 10000
 
+[tools.fix_declarations_llm]
+address = "http://localhost:11434"
+backend = "ollama"
+model = "codellama:7b"
+max_tokens = 10000
+
 [tools.translate_agentic]
 timeout_secs = 1800
 

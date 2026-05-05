@@ -153,6 +153,10 @@ impl Tool for FixDeclarationsLlm {
             .map(|d| &d.message)
             .filter(|m| m.level == DiagnosticLevel::Error);
 
+        info!(
+            "FixDeclarationsLlm: {} error diagnostics found",
+            error_diagnostics.clone().count()
+        );
         for msg in error_diagnostics {
             for span in msg.spans.iter() {
                 let file_name = PathBuf::new().join(&span.file_name);
@@ -161,7 +165,7 @@ impl Tool for FixDeclarationsLlm {
                 let (decl_start, decl_end) = item_map
                     .items
                     .get(&file_name)
-                    .ok_or("")?
+                    .ok_or("FixDeclarationsLlm: no items found for file")?
                     .iter()
                     .find_map(|v| {
                         if v.contains(&(span.byte_start as usize))

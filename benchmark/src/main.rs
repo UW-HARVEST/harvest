@@ -128,6 +128,7 @@ pub fn translate_c_directory_to_rust_project(
 }
 
 /// Run all benchmarks for a list of programs
+#[allow(clippy::too_many_arguments)]
 pub fn run_all_benchmarks(
     program_dirs: &[PathBuf],
     output_dir: &Path,
@@ -234,6 +235,7 @@ fn run_test_validation(
 }
 
 /// Run all benchmarks for a single program
+#[allow(clippy::too_many_arguments)]
 fn benchmark_single_program(
     program_dir: &Path,
     output_root_dir: &Path,

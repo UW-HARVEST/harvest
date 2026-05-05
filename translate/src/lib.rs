@@ -54,33 +54,39 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     };
     let mut current_pkg_id = translate;
     let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
-    // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
-    scheduler.run_all(&mut runner, &mut ir, config.clone())?;
 
-    // Repair loop — skipped for agentic, which has its own repair mechanism.
-    if !config.agentic {
-        for _ in 0..config.max_repair_passes {
-            let success = ir
-                .get::<CargoBuildResult>(current_build_id)
-                .ok_or("transpile: no CargoBuildResult in IR")?
-                .success;
-            if success {
-                break;
+    let result: Result<(), Box<dyn std::error::Error>> = (|| {
+        // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
+        scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+        // Repair loop — skipped for agentic, which has its own repair mechanism.
+        if !config.agentic {
+            for _ in 0..config.max_repair_passes {
+                let success = ir
+                    .get::<CargoBuildResult>(current_build_id)
+                    .ok_or("transpile: no CargoBuildResult in IR")?
+                    .success;
+                if success {
+                    break;
+                }
+                let quantize = scheduler.queue_after(QuantizeRustSpans, &[current_pkg_id]);
+                let fix = scheduler.queue_after(FixDeclarationsLlm, &[quantize, current_build_id]);
+                let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+                current_pkg_id = fix;
+                current_build_id = new_build;
             }
-            let quantize = scheduler.queue_after(QuantizeRustSpans, &[current_pkg_id]);
-            let fix = scheduler.queue_after(FixDeclarationsLlm, &[quantize, current_build_id]);
-            let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
-            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
-            current_pkg_id = fix;
-            current_build_id = new_build;
         }
-    }
 
-    scheduler.queue_after(WriteOutput, &[current_build_id]);
-    scheduler.run_all(&mut runner, &mut ir, config)?;
+        scheduler.queue_after(WriteOutput, &[current_build_id]);
+        scheduler.run_all(&mut runner, &mut ir, config)?;
+
+        Ok(())
+    })();
 
     drop(scheduler);
     drop(runner);
     collector.diagnostics(); // TODO: Return this value (see issue 51)
+    result?;
     Ok(ir)
 }

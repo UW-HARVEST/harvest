@@ -3,7 +3,7 @@ use harvest_core::fs::RawDir;
 use harvest_core::HarvestIR;
 
 use full_source::{CargoPackage, RawSource};
-use try_cargo_build::{Artifact, CargoBuildResult};
+use try_cargo_build::CargoBuildResult;
 
 /// Extract the final CargoPackage representation from the IR.
 ///
@@ -33,17 +33,14 @@ pub fn raw_source(ir: &HarvestIR) -> HarvestResult<&RawDir> {
     }
 }
 
-/// Extract cargo build results from the IR.
-/// Returns the build artifacts or an error if no results or multiple results are found.
-pub fn cargo_build_result(ir: &HarvestIR) -> Result<&Vec<Artifact>, String> {
-    let build_results: Vec<_> = ir
-        .get_by_representation::<CargoBuildResult>()
-        .map(|(_, r)| &r.artifacts)
-        .collect();
-
-    match build_results.len() {
-        0 => Err("No artifacts built".into()),
-        1 => Ok(build_results[0]),
-        n => Err(format!("Found {} build results, expected at most 1", n)),
-    }
+/// Extract the final CargoBuildResult from the IR.
+///
+/// The repair loop produces one `CargoBuildResult` per build attempt. Because `HarvestIR` is
+/// backed by a `BTreeMap<Id, ...>` and `Id`s are monotonically increasing, the last entry is
+/// always the most recently produced.
+pub fn cargo_build_result(ir: &HarvestIR) -> Result<&CargoBuildResult, String> {
+    ir.get_by_representation::<CargoBuildResult>()
+        .last()
+        .map(|(_, r)| r)
+        .ok_or_else(|| "No CargoBuildResult found in IR".into())
 }

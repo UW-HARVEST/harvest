@@ -40,22 +40,15 @@ impl TranspilationResult {
     pub fn from_ir(ir: &HarvestIR) -> Self {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
-            Ok(artifacts) => {
-                if artifacts.is_empty() {
-                    // Empty artifacts list indicates build succeeded but produced no output
-                    (
-                        false,
-                        None,
-                        Some("Build succeeded but produced no artifacts".to_string()),
-                    )
-                } else {
-                    let first = artifacts
-                        .iter()
-                        .find_map(|a| a.executable.as_ref().map(|e| e.as_std_path().into()));
-                    (true, first, None)
-                }
+            Ok(result) if result.success => {
+                let first = result
+                    .artifacts
+                    .iter()
+                    .find_map(|a| a.executable.as_ref().map(|e| e.as_std_path().into()));
+                (true, first, None)
             }
-            Err(err) => (false, None, Some(err.clone())),
+            Ok(result) => (false, None, Some(result.err.clone())),
+            Err(err) => (false, None, Some(err)),
         };
 
         Self {

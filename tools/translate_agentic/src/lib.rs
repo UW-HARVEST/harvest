@@ -79,7 +79,7 @@ impl Tool for TranslateAgentic {
             let docs = agent_tools_embed::collect_docs()
                 .replace("{AGENT_TOOLS_DIR}", &dir.to_string_lossy());
             format!(
-                "## Available Tools\n\n\
+                "### Available Tools\n\n\
                  The following tools are pre-installed in `{}/`. Use them when you\n\
                  need a precise answer about C behavior rather than reasoning from first principles.\n\n\
                  {}\n",
@@ -112,6 +112,23 @@ impl Tool for TranslateAgentic {
                     info!("Tool wishlist written to {}", out_path.display());
                 }
             }
+        }
+
+        // Copy PLAN.md out before the tempdir is dropped. Translate-phase PLAN.md
+        // is preserved under a dedicated name so it survives any verify-phase
+        // rewrite of the CargoPackage. PLAN.md only exists if the agent decided
+        // it was in the Medium/Large regime; absence is normal for small projects.
+        let local_plan = translated.join("PLAN.md");
+        if local_plan.exists() {
+            if let Some(out_path) = &config.plan_output_path {
+                if let Err(e) = fs::copy(&local_plan, out_path) {
+                    warn!("Failed to copy PLAN.md to {}: {}", out_path.display(), e);
+                } else {
+                    info!("Translation PLAN.md written to {}", out_path.display());
+                }
+            }
+        } else {
+            info!("Agent did not produce a PLAN.md (likely small-regime project)");
         }
 
         if !translated.join("Cargo.toml").exists() {
@@ -169,7 +186,7 @@ fn invoke_agent(
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --max-turns 100 \
+                 --max-turns 200 \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))
@@ -286,6 +303,12 @@ pub struct Config {
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).
     /// If absent, any wishlist the agent writes is silently discarded with the tempdir.
     pub wishlist_output_path: Option<PathBuf>,
+
+    /// Destination path for the agent's translate-phase PLAN.md.
+    /// Injected by the benchmark at runtime (set to <output_dir>/plan_translate.md).
+    /// If absent, any plan the agent writes is preserved only inside the CargoPackage
+    /// and may be lost when verify rewrites it.
+    pub plan_output_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

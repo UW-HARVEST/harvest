@@ -308,6 +308,12 @@ fn benchmark_single_program(
     // so each agent knows where to record its static-analysis tool wishes. Both tools
     // point to the same file; the verify phase appends to whatever the translate phase wrote.
     let wishlist_path = output_dir.join("tool_wishlist.json");
+    // Translate-phase PLAN.md is dumped under a dedicated name so a later verify
+    // rewrite of the CargoPackage cannot overwrite or delete it.
+    let plan_translate_path = output_dir.join("plan_translate.md");
+    // Verify-phase HYPOTHESES.md captures the agent's hypothesis log across
+    // compactions, for post-hoc analysis of how it approached debugging.
+    let hypotheses_verify_path = output_dir.join("hypotheses_verify.md");
     let mut effective_overrides = config_overrides.to_vec();
     if agentic {
         effective_overrides.push(format!(
@@ -317,6 +323,14 @@ fn benchmark_single_program(
         effective_overrides.push(format!(
             "tools.verify_fix_agentic.wishlist_output_path=\"{}\"",
             wishlist_path.display()
+        ));
+        effective_overrides.push(format!(
+            "tools.translate_agentic.plan_output_path=\"{}\"",
+            plan_translate_path.display()
+        ));
+        effective_overrides.push(format!(
+            "tools.verify_fix_agentic.hypotheses_output_path=\"{}\"",
+            hypotheses_verify_path.display()
         ));
     }
 

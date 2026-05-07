@@ -147,6 +147,22 @@ impl Tool for VerifyFixAgentic {
             }
         }
 
+        // Copy verify-phase HYPOTHESES.md out before the tempdir is dropped.
+        // The agent maintains this as an append-only log of bug hypotheses across
+        // its own compactions; absence is normal if no bugs needed investigation.
+        let local_hypotheses = translated.join("HYPOTHESES.md");
+        if local_hypotheses.exists() {
+            if let Some(out_path) = &config.hypotheses_output_path {
+                if let Err(e) = fs::copy(&local_hypotheses, out_path) {
+                    warn!("Failed to copy HYPOTHESES.md to {}: {}", out_path.display(), e);
+                } else {
+                    info!("Verification HYPOTHESES.md written to {}", out_path.display());
+                }
+            }
+        } else {
+            info!("Agent did not produce a HYPOTHESES.md (no bugs investigated, or skipped step 1)");
+        }
+
         // Remove artifacts that should not be carried into the IR.
         let c_src_out = translated.join("c_src");
         if c_src_out.exists() {
@@ -283,6 +299,12 @@ pub struct Config {
     /// Verify-phase entries are appended to any existing translate-phase entries at this path.
     /// If absent, any wishlist the agent writes is silently discarded with the tempdir.
     pub wishlist_output_path: Option<PathBuf>,
+
+    /// Destination path for the agent's verify-phase HYPOTHESES.md.
+    /// Injected by the benchmark at runtime (set to <output_dir>/hypotheses_verify.md).
+    /// If absent, any hypotheses log the agent writes is preserved only inside the
+    /// CargoPackage and may be lost in downstream tooling.
+    pub hypotheses_output_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

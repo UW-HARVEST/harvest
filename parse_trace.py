@@ -213,6 +213,29 @@ class MonitoringEvent:
 
 
 @dataclass
+class CompactEvent:
+    """
+    A context-window compaction (`system/compact_boundary` event).
+
+    Claude Code summarizes the prior conversation when context approaches the
+    model's limit. The next API request then carries this compressed summary
+    instead of the full history — ~95% smaller in our traces. Mark these as
+    discontinuities: facts the agent established before a compact may be
+    represented only fuzzily afterwards.
+    """
+    pre_tokens: int       # context size before compaction (tokens)
+    post_tokens: int      # context size after compaction (tokens)
+    duration_ms: int      # time the compaction itself took
+    trigger: str          # "auto" or "manual"
+    line_number: int
+
+    # 1-based turn index AFTER which this compaction occurred. 0 means
+    # "before any main-conversation turns". Populated post-parse by counting
+    # main-conversation turn boundaries with line numbers below this event.
+    after_turn_index: int = 0
+
+
+@dataclass
 class InitEvent:
     model: str
     cwd: str
@@ -264,6 +287,7 @@ class Session:
     init: Optional[InitEvent] = None
     conversation: list[Turn] = field(default_factory=list)
     monitoring: list[MonitoringEvent] = field(default_factory=list)
+    compact_events: list[CompactEvent] = field(default_factory=list)
     result: Optional[ResultEvent] = None
 
 
@@ -392,6 +416,15 @@ class TraceParser:
                             last_tool_name=obj.get("last_tool_name", "") or "",
                             description=obj.get("description", "") or "",
                         ))
+                elif sub == "compact_boundary" and i not in subagent_index:
+                    md = obj.get("compact_metadata") or {}
+                    session.compact_events.append(CompactEvent(
+                        pre_tokens=md.get("pre_tokens", 0),
+                        post_tokens=md.get("post_tokens", 0),
+                        duration_ms=md.get("duration_ms", 0),
+                        trigger=md.get("trigger", "") or "",
+                        line_number=lineno,
+                    ))
                 continue
 
             if typ == "result":
@@ -410,6 +443,23 @@ class TraceParser:
         # Step 3: Build conversations.
         # ------------------------------------------------------------------
         session.conversation = self._parse_conversation(main_records)
+
+        # Locate each compact event in the main turn sequence by counting how
+        # many turn boundaries fall before its line number. A turn boundary
+        # is an assistant record that does not immediately follow another
+        # assistant record (consecutive assistant records are streamed chunks
+        # of one API response).
+        turn_start_linenos: list[int] = []
+        prev_was_assistant = False
+        for lineno, obj in main_records:
+            is_assistant = obj.get("type") == "assistant"
+            if is_assistant and not prev_was_assistant:
+                turn_start_linenos.append(lineno)
+            prev_was_assistant = is_assistant
+        for ev in session.compact_events:
+            ev.after_turn_index = sum(
+                1 for ts in turn_start_linenos if ts < ev.line_number
+            )
 
         for tid, records in subagent_records.items():
             if tid in subagent_map:
@@ -943,31 +993,52 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
     return segs
 
 
-def _flatten_rows(
-    sessions: list[Session],
-) -> list[tuple[str, int, list[_Segment]]]:
+@dataclass
+class _Row:
+    """One line in the SVG timeline. Either a turn (segments) or a context
+    compaction divider (compact set). Exactly one of segments / compact
+    carries the meaningful data."""
+    label: str
+    depth: int
+    segments: list[_Segment] = field(default_factory=list)
+    compact: Optional[CompactEvent] = None
+
+
+def _flatten_rows(sessions: list[Session]) -> list[_Row]:
     """
-    Flatten sessions + sub-agents into (label, depth, segments) rows.
+    Flatten sessions + sub-agents into renderable rows.
 
     Sub-agent turns are emitted immediately after the parent turn that
-    spawned them, with depth = parent_depth + 1, so the SVG renderer
-    can indent them visually.
+    spawned them, with depth = parent_depth + 1, so the SVG renderer can
+    indent them visually. Top-level `compact_boundary` events are inserted
+    between the turns they fall between.
     """
-    rows: list[tuple[str, int, list[_Segment]]] = []
+    rows: list[_Row] = []
 
-    def emit(turns: list[Turn], prefix: str, depth: int) -> None:
+    def emit(turns: list[Turn], prefix: str, depth: int,
+             compacts_by_after: dict[int, list[CompactEvent]]) -> None:
+        # Compaction can occur before any turn was issued (rare).
+        for ev in compacts_by_after.get(0, []):
+            rows.append(_Row(label="", depth=depth, compact=ev))
+
         for t in turns:
             label = f"{prefix}T{t.turn_index}"
-            rows.append((label, depth, _segment_turn(t)))
-            # Expand any sub-agents this turn launched, in execution order.
+            rows.append(_Row(label=label, depth=depth, segments=_segment_turn(t)))
             for tu in t.tool_uses:
                 if tu.name == "Agent" and tu.subagent:
                     sub_prefix = f"{prefix}T{t.turn_index}/A:"
-                    emit(tu.subagent.conversation, sub_prefix, depth + 1)
+                    # Sub-agent compactions are not currently surfaced.
+                    emit(tu.subagent.conversation, sub_prefix, depth + 1, {})
+            for ev in compacts_by_after.get(t.turn_index, []):
+                rows.append(_Row(label="", depth=depth, compact=ev))
 
     for s_idx, s in enumerate(sessions, 1):
         prefix = f"S{s_idx}." if len(sessions) > 1 else ""
-        emit(s.conversation, prefix, 0)
+        # Bucket compacts by the main turn they follow.
+        by_after: dict[int, list[CompactEvent]] = defaultdict(list)
+        for ev in s.compact_events:
+            by_after[ev.after_turn_index].append(ev)
+        emit(s.conversation, prefix, 0, by_after)
 
     return rows
 
@@ -978,9 +1049,10 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         return '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20"/>'
 
     max_total = max(
-        (sum(seg.size for seg in segs) for _, _, segs in rows), default=1
+        (sum(seg.size for seg in row.segments) for row in rows), default=1
     ) or 1
-    max_depth = max((d for _, d, _ in rows), default=0)
+    max_depth = max((row.depth for row in rows), default=0)
+    n_turn_rows = sum(1 for row in rows if row.compact is None)
 
     row_h = 14
     label_w = 90
@@ -1001,7 +1073,7 @@ def render_timeline_svg(sessions: list[Session]) -> str:
     )
     out.append(f'<rect width="{width}" height="{height}" fill="{_BG}"/>')
 
-    title = f"Trace timeline — {len(rows)} turns"
+    title = f"Trace timeline — {n_turn_rows} turns"
     out.append(
         f'<text x="20" y="28" font-size="16" font-weight="bold" fill="{_TITLE}">'
         f'{html.escape(title)}</text>'
@@ -1030,23 +1102,51 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             f'fill="{_TEXT_DIM}" font-size="10">{int(max_total * frac):,}</text>'
         )
 
-    for idx, (lab, depth, segs) in enumerate(rows):
+    compact_color = "#c878d8"  # magenta-ish; stands out on dark bg
+    for idx, row in enumerate(rows):
         y = pad_top + idx * row_h
-        bar_start = label_w + depth * indent_px
+
+        # Compaction divider: full-width band with a label.
+        if row.compact is not None:
+            ev = row.compact
+            band_x = label_w
+            band_w = width - band_x - 40
+            cy = y + row_h / 2
+            tooltip = html.escape(
+                f"context compaction ({ev.trigger})\n"
+                f"{ev.pre_tokens:,} → {ev.post_tokens:,} tokens "
+                f"({100 * ev.post_tokens / max(ev.pre_tokens, 1):.0f}%)\n"
+                f"duration: {ev.duration_ms / 1000:.1f}s"
+            )
+            label = (
+                f"⌁ compact: {ev.pre_tokens // 1000}k → {ev.post_tokens // 1000}k tok "
+                f"({ev.duration_ms / 1000:.0f}s, {ev.trigger})"
+            )
+            out.append(
+                f'<g><title>{tooltip}</title>'
+                f'<line x1="{band_x}" y1="{cy:.1f}" x2="{band_x + band_w}" y2="{cy:.1f}" '
+                f'stroke="{compact_color}" stroke-width="1" stroke-dasharray="4,3"/>'
+                f'<text x="{band_x + 10}" y="{cy + 4:.1f}" '
+                f'fill="{compact_color}" font-size="10">{html.escape(label)}</text>'
+                f'</g>'
+            )
+            continue
+
+        bar_start = label_w + row.depth * indent_px
         if idx % 2 == 0:
             out.append(
                 f'<rect x="{bar_start}" y="{y}" '
                 f'width="{width - bar_start - 40}" '
                 f'height="{row_h}" fill="{_ROW_ALT}"/>'
             )
-        label_fill = _TEXT_DIM if depth > 0 else _TEXT
+        label_fill = _TEXT_DIM if row.depth > 0 else _TEXT
         out.append(
             f'<text x="{bar_start - 5}" y="{y + 11}" text-anchor="end" '
-            f'fill="{label_fill}">{html.escape(lab)}</text>'
+            f'fill="{label_fill}">{html.escape(row.label)}</text>'
         )
         x = float(bar_start)
         seg_gap = 2.0  # px gap between adjacent segments so equal-color blocks read separately
-        for i, seg in enumerate(segs):
+        for i, seg in enumerate(row.segments):
             w = max(seg.size / max_total * bar_w, 0.5)
             color = CAT_COLORS.get(seg.category, "#999")
             tooltip = html.escape(
@@ -1058,7 +1158,7 @@ def render_timeline_svg(sessions: list[Session]) -> str:
                 f'height="{row_h - 2}" fill="{color}"/></g>'
             )
             x += w
-            if i < len(segs) - 1:
+            if i < len(row.segments) - 1:
                 x += seg_gap
 
     out.append('</svg>')

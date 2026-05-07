@@ -1,6 +1,5 @@
 use cargo_metadata::diagnostic::Diagnostic;
 use full_source::CargoPackage;
-use quantize_rust_spans::RustItemMap;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
 use std::path::PathBuf;

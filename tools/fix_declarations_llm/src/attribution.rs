@@ -29,7 +29,7 @@ fn find_enclosing_decl(
 
 fn get_error_diagnostics(
     build_result: &CargoBuildResult,
-) -> Vec<&cargo_metadata::diagnostic::DiagnosticMessage> {
+) -> Vec<&cargo_metadata::diagnostic::Diagnostic> {
     let mut error_diagnostics = vec![];
     for d in &build_result.diagnostics {
         if d.message.level == DiagnosticLevel::Error {
@@ -80,5 +80,41 @@ pub(crate) fn attribute_errors(
         }
     }
 
-    Ok(decl_errors)
+    Ok(coalesce_errors(decl_errors))
+}
+
+/// If any error in a file could not be attributed to a specific declaration (i.e. its span
+/// resolved to `Unbounded`), pull all of that file's diagnostics into the single
+/// `(Unbounded, Unbounded)` entry so the whole file is sent to the LLM as one unit.
+fn coalesce_errors(
+    mut decl_errors: HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>>,
+) -> HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>> {
+    let unbounded_files: Vec<PathBuf> = decl_errors
+        .keys()
+        .filter(|(_, start, end)| {
+            matches!(start, Bound::Unbounded) && matches!(end, Bound::Unbounded)
+        })
+        .map(|(file, _, _)| file.clone())
+        .collect();
+
+    for file in unbounded_files {
+        let specific_keys: Vec<_> = decl_errors
+            .keys()
+            .filter(|(f, start, end)| {
+                f == &file
+                    && !(matches!(start, Bound::Unbounded) && matches!(end, Bound::Unbounded))
+            })
+            .cloned()
+            .collect();
+
+        for key in specific_keys {
+            let diagnostics = decl_errors.remove(&key).unwrap();
+            decl_errors
+                .entry((file.clone(), Bound::Unbounded, Bound::Unbounded))
+                .or_default()
+                .extend(diagnostics);
+        }
+    }
+
+    decl_errors
 }

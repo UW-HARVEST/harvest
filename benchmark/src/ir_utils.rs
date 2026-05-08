@@ -4,6 +4,7 @@ use harvest_core::HarvestIR;
 
 use full_source::{CargoPackage, RawSource};
 use try_cargo_build::CargoBuildResult;
+use write_output::WriteOutputResult;
 
 /// Extract the final CargoPackage representation from the IR.
 ///
@@ -43,4 +44,12 @@ pub fn cargo_build_result(ir: &HarvestIR) -> Result<&CargoBuildResult, String> {
         .last()
         .map(|(_, r)| r)
         .ok_or_else(|| "No CargoBuildResult found in IR".into())
+}
+
+/// Extract the WriteOutputResult from the IR.
+pub fn write_output_result(ir: &HarvestIR) -> Result<&WriteOutputResult, String> {
+    ir.get_by_representation::<WriteOutputResult>()
+        .last()
+        .map(|(_, r)| r)
+        .ok_or_else(|| "No WriteOutputResult found in IR".into())
 }

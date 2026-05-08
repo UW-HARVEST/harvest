@@ -15,7 +15,7 @@ use crate::io::{
     collect_program_dirs, ensure_output_directory, log_failing_programs, log_found_programs,
     log_summary_stats, validate_input_directory, write_csv_results, write_error_file,
 };
-use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
+use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source, write_output_result};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
@@ -41,10 +41,9 @@ impl TranspilationResult {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
             Ok(result) if result.success => {
-                let first = result
-                    .artifacts
-                    .iter()
-                    .find_map(|a| a.executable.as_ref().map(|e| e.as_std_path().into()));
+                let first = write_output_result(ir)
+                    .ok()
+                    .and_then(|r| r.executable.clone());
                 (true, first, None)
             }
             Ok(result) => (false, None, Some(result.err.clone())),

@@ -29,7 +29,17 @@ impl Tool for WriteOutput {
         copy_dir_all(src, dst)?;
         info!("Output written to {}", dst.display());
 
-        Ok(Box::new(WriteOutputResult { path: dst.clone() }))
+        let executable = build_result
+            .artifacts
+            .iter()
+            .find_map(|a| a.executable.as_ref())
+            .and_then(|e| e.as_std_path().strip_prefix(src).ok())
+            .map(|rel| dst.join(rel));
+
+        Ok(Box::new(WriteOutputResult {
+            path: dst.clone(),
+            executable,
+        }))
     }
 }
 
@@ -49,6 +59,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 pub struct WriteOutputResult {
     pub path: PathBuf,
+    pub executable: Option<PathBuf>,
 }
 
 impl std::fmt::Display for WriteOutputResult {

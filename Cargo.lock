@@ -1373,6 +1373,7 @@ dependencies = [
  "try_cargo_build",
  "wait-timeout",
  "walkdir",
+ "write_output",
 ]
 
 [[package]]

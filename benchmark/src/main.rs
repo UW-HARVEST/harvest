@@ -50,10 +50,19 @@ impl TranspilationResult {
                         Some("Build succeeded but produced no artifacts".to_string()),
                     )
                 } else {
-                    let first = artifacts
-                        .iter()
-                        .find_map(|a| a.executable.as_ref().map(|e| e.as_std_path().into()));
-                    (true, first, None)
+                    // The framework's contract (set_bin_driver in cargo_utils) is that
+                    // the entry-point binary is named "driver". Pick that artifact
+                    // explicitly — taking the first executable is unsafe because the
+                    // verify agent can leave debug binaries in src/bin/, which cargo
+                    // builds and which can be ordered before driver in the artifact list.
+                    let driver = artifacts.iter().find_map(|a| {
+                        if a.target.name == "driver" {
+                            a.executable.as_ref().map(|e| e.as_std_path().into())
+                        } else {
+                            None
+                        }
+                    });
+                    (true, driver, None)
                 }
             }
             Err(err) => (false, None, Some(err.clone())),

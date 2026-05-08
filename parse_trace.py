@@ -59,16 +59,21 @@ class SubAgent:
     """
     A sub-agent invocation embedded inside an Agent tool call.
 
-    BLOCKING SEMANTICS: A SubAgent is NOT truly asynchronous. While it runs,
-    the parent agent's API call loop is completely paused — no new turns are
-    issued to the parent until this SubAgent finishes and returns its result.
-    From the parent's perspective, Agent is just a slow tool: it blocks until
-    done, then delivers a tool_result exactly like Bash or Read would.
+    SYNC vs ASYNC:
+    - Synchronous (default; `run_in_background` not set or false): the parent's
+      API call loop blocks until this SubAgent finishes and returns its result.
+      Its full conversation is recorded in the trace as assistant/user records
+      tagged with `parent_tool_use_id` — so `conversation` is fully populated.
+    - Asynchronous (`run_in_background: true`): the parent receives an
+      "Async agent launched" tool_result immediately and continues working.
+      The async agent's actual conversation is NOT in the trace; only
+      `task_progress` snapshots are emitted (one per tool call inside it)
+      describing what it was doing. For these, `conversation` is synthesized
+      from `progress_snapshots` so the visualizer has something to show.
 
-    The sub-agent's full execution is a recursive list[Turn], embedded here
-    rather than at the Session level. This tree structure naturally handles
-    deeper nesting (sub-agents spawning their own sub-agents) without any
-    change to the schema.
+    The sub-agent's execution is a recursive list[Turn], embedded here rather
+    than at the Session level. This tree naturally handles deeper nesting
+    (sub-agents spawning their own sub-agents) without schema changes.
 
     Linkage: SubAgent.tool_use_id == the parent ToolUse.id that spawned it.
     This is the same ID that appears in system/task_started,
@@ -81,8 +86,11 @@ class SubAgent:
     prompt: str
     status: str
 
-    # Full nested conversation of the sub-agent (same structure as parent)
+    # Full nested conversation of the sub-agent (same structure as parent).
+    # For async sub-agents this is synthesized from progress_snapshots and
+    # is_async is set True.
     conversation: list[Turn] = field(default_factory=list)
+    is_async: bool = False
 
     # Framework-level progress snapshots (not API messages)
     progress_snapshots: list[ProgressSnapshot] = field(default_factory=list)
@@ -122,6 +130,12 @@ class ToolUse:
 
     # Populated only when name == "Agent"
     subagent: Optional[SubAgent] = None
+
+    # When set, overrides the size computed from `result.content` etc.
+    # Used for synthesized ToolUses (async sub-agent progress events) where
+    # the real result content isn't in the trace; we substitute a token-delta
+    # estimate so the bar segment has a meaningful width.
+    size_override: Optional[int] = None
 
 
 @dataclass
@@ -290,10 +304,45 @@ class Session:
     compact_events: list[CompactEvent] = field(default_factory=list)
     result: Optional[ResultEvent] = None
 
+    # Wall-clock duration in ms, derived from the difference between the
+    # earliest and latest event `timestamp` for this session_id. This is the
+    # only field that matches "real time elapsed". The framework's
+    # `result.duration_ms` is broken for async-heavy sessions (only counts
+    # main-agent-active time), and `result.duration_api_ms` double-counts
+    # parallel sub-agent work.
+    wall_clock_ms: int = 0
+
 
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
+def _wall_clock_ms(events: list[tuple[int, dict]]) -> int:
+    """Span between the earliest and latest event `timestamp` (ISO 8601 with
+    Z suffix) across `events`. Returns 0 if no timestamps are available.
+
+    Used as the only honest "duration of this session" measurement, because
+    framework-reported duration_ms breaks for async sub-agents and
+    duration_api_ms double-counts parallel sub-agent work."""
+    from datetime import datetime
+    first_ts = None
+    last_ts = None
+    for _, obj in events:
+        ts_str = obj.get("timestamp")
+        if not ts_str:
+            continue
+        try:
+            t = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if first_ts is None or t < first_ts:
+            first_ts = t
+        if last_ts is None or t > last_ts:
+            last_ts = t
+    if first_ts is None or last_ts is None:
+        return 0
+    return int((last_ts - first_ts).total_seconds() * 1000)
+
 
 def _extract_tool_result_content(raw_content) -> str:
     if isinstance(raw_content, str):
@@ -434,8 +483,24 @@ class TraceParser:
             if typ not in ("assistant", "user"):
                 continue
 
-            if i in subagent_index:
-                subagent_records[subagent_index[i]].append((lineno, obj))
+            # Route by parent_tool_use_id, NOT by task_brackets index ranges.
+            # When the main agent dispatches a second sub-agent before the first
+            # one finishes (e.g. it doesn't strictly wait), the brackets overlap
+            # and `subagent_index[i] = tid` becomes last-write-wins, mis-routing
+            # any record (including the parent's own tool_result) that falls in
+            # the overlap. parent_tool_use_id is the authoritative pointer:
+            # main-agent records have it empty, sub-agent records carry their
+            # parent's tool_use_id. See c17 T17/T19 for the failure mode.
+            parent_tid = obj.get("parent_tool_use_id") or ""
+            if parent_tid:
+                subagent_records[parent_tid].append((lineno, obj))
+                # Be safe: a parent_tool_use_id we haven't seen via task_started
+                # would otherwise have no SubAgent metadata. Create a stub.
+                if parent_tid not in subagent_map:
+                    subagent_map[parent_tid] = SubAgent(
+                        task_id="", tool_use_id=parent_tid,
+                        description="", prompt="", status="unknown",
+                    )
             else:
                 main_records.append((lineno, obj))
 
@@ -465,8 +530,26 @@ class TraceParser:
             if tid in subagent_map:
                 subagent_map[tid].conversation = self._parse_conversation(records)
 
+        # Async sub-agents (`run_in_background: true`) leave no parented
+        # assistant/user records — the trace only carries `task_progress`
+        # snapshots. For each such sub-agent, synthesize an approximate turn
+        # list from its progress snapshots so the visualizer can show the
+        # internal activity (one row per progress snapshot).
+        for tid, sa in subagent_map.items():
+            if not sa.conversation and sa.progress_snapshots:
+                sa.is_async = True
+                sa.conversation = _synthesize_async_subagent_turns(
+                    sa.progress_snapshots
+                )
+
         # Attach SubAgent objects to their parent Agent ToolUse
         self._attach_subagents(session.conversation, subagent_map)
+
+        # Compute true wall-clock duration: span between earliest and latest
+        # `timestamp` field across all events for this session_id. Robust
+        # against async sub-agents (frame's duration_ms misses idle time)
+        # and against parallelism (frame's duration_api_ms double-counts).
+        session.wall_clock_ms = _wall_clock_ms(events)
 
         return session
 
@@ -858,41 +941,105 @@ _TITLE       = "#e0e0e0"
 
 # Bash command classification by leading word.
 _READ_CMDS = {
+    # Real shell commands
     "ls", "cat", "head", "tail", "find", "grep", "rg", "wc", "file",
     "stat", "du", "pwd", "which", "tree", "diff", "less", "more",
     "nm", "objdump", "readelf", "strings", "od", "xxd", "awk", "sed",
     "jq", "column", "sort", "uniq", "cut", "tr",
+    "ps", "pgrep", "pidof", "ldd", "ldconfig",
+    "echo", "printf",
+    # English-verb intent (used by async sub-agent progress descriptions
+    # that carry a prose summary instead of an actual shell command).
+    "list", "show", "view", "check", "verify", "search", "count",
+    "look", "examine", "read", "inspect", "scan", "lookup",
 }
 _WRITE_CMDS = {
     "cp", "mv", "mkdir", "touch", "rm", "rmdir", "ln", "chmod", "chown",
     "patch", "tar", "unzip", "zip",
+    # English-verb intent
+    "create", "delete", "remove", "write", "save", "make_dir", "rename",
 }
 _BUILD_CMDS = {
     "cargo", "cmake", "make", "ninja", "gcc", "clang", "g++", "clang++",
-    "rustc", "go", "python", "python3", "node", "npm", "yarn", "pnpm",
+    "rustc", "rustfmt", "clippy", "go", "python", "python3", "node",
+    "npm", "yarn", "pnpm",
     "ctest", "bear", "opt", "llvm-link", "llc", "ld", "ar",
     "bash", "sh", "zsh", "fish",
+    # English-verb intent
+    "compile", "build", "test", "run",
 }
 
 
 def _peel_bash(cmd: str) -> str:
-    """Strip wrapper prefixes (set/timeout/cd &&/env) and return the head."""
+    """Strip wrapper prefixes / loop scaffolding and return a simple head command.
+
+    Handles: set -..., timeout, cd X (&&|newline), env, leading comments,
+    backslash line-continuation, bare VAR=value assignments, echo "..." &&,
+    and for/while/until ...; do BODY; done (returns BODY's head)."""
     cmd = cmd.strip()
     while True:
         new_cmd = cmd
+        # Leading comment lines: "# foo\n..."
+        new_cmd = re.sub(r"^#[^\n]*\n+", "", new_cmd)
+        # Backslash line-continuation at start: "\\\n cmd"
+        new_cmd = re.sub(r"^\\\s*\n+", "", new_cmd)
+        # set -e; / set -o pipefail; / etc
         new_cmd = re.sub(r"^set\s+-\S+(\s+\S+)*\s*;\s*", "", new_cmd)
+        # timeout NN
         new_cmd = re.sub(r"^timeout\s+\S+\s+", "", new_cmd)
-        new_cmd = re.sub(r"^cd\s+\S+\s*&&\s*", "", new_cmd)
+        # cd X (followed by &&, ;, or newline)
+        new_cmd = re.sub(r"^cd\s+\S+\s*(?:&&|;|\n)\s*", "", new_cmd)
+        # env VAR=val ...
         new_cmd = re.sub(r"^env\s+(?:\w+=\S+\s+)+", "", new_cmd)
+        # Bare VAR=val assignments (one or more), incl. VAR=$(...) and VAR="..."
+        # Stops at the first token that isn't an assignment. Uses [\s\S] inside
+        # $(...) and quoted strings so multiline values are handled. Trailing
+        # separator can be whitespace or `;`.
+        new_cmd = re.sub(
+            r"""^(?:\w+=(?:"[^"]*"|'[^']*'|\$\([\s\S]*?\)|[^\s$"'(]\S*)[;\s]+)+""",
+            "", new_cmd,
+        )
+        # echo "..." &&  (a "report header" before the real cmd)
+        new_cmd = re.sub(
+            r"""^echo\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*""",
+            "", new_cmd,
+        )
+        new_cmd = new_cmd.lstrip()
         if new_cmd == cmd:
             break
         cmd = new_cmd
-    parts = re.split(r"[\|;]|&&", cmd, maxsplit=1)
+
+    # for/while/until ... do BODY; done — recurse into BODY
+    m = re.match(
+        r"^(?:for|while|until)\b.*?\bdo\s+(.+?)(?:;\s*done\b.*)?$",
+        cmd, re.DOTALL,
+    )
+    if m:
+        body = m.group(1).strip()
+        if body and body != cmd:
+            return _peel_bash(body)
+
+    # if COND; then BODY; (else ...;)? fi — recurse into BODY
+    m = re.match(
+        r"^if\b.*?;\s*then\s+(.+?)(?:;\s*(?:elif|else|fi)\b.*)?$",
+        cmd, re.DOTALL,
+    )
+    if m:
+        body = m.group(1).strip()
+        if body and body != cmd:
+            return _peel_bash(body)
+
+    # Split on first command separator (newline, |, ;, &&, ||).
+    parts = re.split(r"[\|;\n]|&&|\|\|", cmd, maxsplit=1)
     return parts[0].strip()
 
 
 def _classify_bash(cmd: str) -> str:
-    """Classify a bash command by its primary purpose."""
+    """Classify a bash command by its primary purpose.
+
+    Also handles English-prose descriptions emitted by async sub-agent
+    progress events (e.g. "Check compilation", "List source files") by
+    matching a lowercased leading verb against the same category sets."""
     # Write detection: redirect, tee, sed -i anywhere in the line.
     if (re.search(r"(^|\s)>>?\s", cmd)
             or re.search(r"\btee\s", cmd)
@@ -904,14 +1051,18 @@ def _classify_bash(cmd: str) -> str:
         return CAT_OTHER
     tokens = head.split()
     first = tokens[0] if tokens else ""
+    first_lc = first.lower()
 
     if first.startswith(("./", "/", "../")):
         return CAT_BUILD
-    if first in _READ_CMDS:
+    # Lowercase comparison so English-verb prose ("Check ...", "List ...")
+    # still matches. Real shell commands are already lowercase, so this
+    # doesn't change their classification.
+    if first_lc in _READ_CMDS:
         return CAT_READ
-    if first in _WRITE_CMDS:
+    if first_lc in _WRITE_CMDS:
         return CAT_WRITE
-    if first in _BUILD_CMDS:
+    if first_lc in _BUILD_CMDS:
         return CAT_BUILD
     return CAT_OTHER
 
@@ -930,12 +1081,79 @@ def _classify_tool(tu: ToolUse) -> str:
 
 def _tool_size(tu: ToolUse) -> int:
     """Visualization weight for a tool use, in characters."""
+    if tu.size_override is not None:
+        return tu.size_override
     if tu.name == "Write":
         return len(tu.input.get("content", ""))
     if tu.name == "Edit":
         return len(tu.input.get("new_string", ""))
     # All others: characters that came back into context.
     return len(tu.result.content) if tu.result else 0
+
+
+# Map from progress-event description prefix (per `last_tool_name`) to
+# regex that strips the prefix to recover the closest thing to the original
+# tool input. The prefix scheme is set by the framework, see how each tool
+# emits task_progress descriptions: e.g. Read → "Reading <path>", Bash →
+# "Running <agent-supplied-description>", etc.
+_PROGRESS_PREFIX = {
+    "Read":  re.compile(r"^Reading\s+", re.IGNORECASE),
+    "Write": re.compile(r"^Writing\s+", re.IGNORECASE),
+    "Edit":  re.compile(r"^Editing\s+", re.IGNORECASE),
+    "Glob":  re.compile(r"^Finding\s+", re.IGNORECASE),
+    "Grep":  re.compile(r"^Searching for\s+", re.IGNORECASE),
+    "Bash":  re.compile(r"^Running\s+", re.IGNORECASE),
+}
+
+
+def _synthesize_async_subagent_turns(
+    snapshots: list[ProgressSnapshot],
+) -> list[Turn]:
+    """Async sub-agents have no parented conversation records in the trace,
+    only `task_progress` snapshots. Build one pseudo-Turn per snapshot, each
+    holding a single ToolUse named after `last_tool_name`. Sizes use
+    `total_tokens` deltas as a proxy for "context grown by this tool call".
+
+    The synthesized turns are approximate — exact tool inputs/outputs are not
+    in the trace — but they are enough for the visualizer to render the
+    activity, and tooltips carry the framework-supplied description.
+
+    Per-tool input population: framework progress descriptions follow stable
+    prefix patterns ("Reading <path>", "Running <bash-desc>", ...). We strip
+    the prefix and put the body into the field _classify_tool / _segment_turn
+    expects (command for Bash, file_path for Read/Write/Edit, pattern for
+    Glob/Grep), so downstream classifiers see something useful instead of an
+    empty input dict.
+    """
+    turns: list[Turn] = []
+    prev_tokens = 0
+    for idx, snap in enumerate(snapshots):
+        token_delta = max(snap.total_tokens - prev_tokens, 0)
+        prev_tokens = snap.total_tokens
+        tool_name = snap.last_tool_name or "Bash"
+        # Strip the framework prefix to recover the body.
+        body = snap.description or ""
+        prefix_re = _PROGRESS_PREFIX.get(tool_name)
+        if prefix_re is not None:
+            body = prefix_re.sub("", body, count=1)
+        # Populate the input field downstream code looks at, by tool kind.
+        synthetic_input: dict = {"description": snap.description}
+        if tool_name == "Bash":
+            synthetic_input["command"] = body
+        elif tool_name in ("Read", "Write", "Edit"):
+            synthetic_input["file_path"] = body
+        elif tool_name in ("Glob", "Grep"):
+            synthetic_input["pattern"] = body
+        tu = ToolUse(
+            id=f"async-progress-{idx}",
+            name=tool_name,
+            input=synthetic_input,
+            size_override=token_delta,
+        )
+        turn = Turn(turn_index=len(turns) + 1)
+        turn.content_blocks.append(ContentBlock(type="tool_use", tool_use=tu))
+        turns.append(turn)
+    return turns
 
 
 def _think_size(turn: Turn) -> int:
@@ -973,21 +1191,30 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
         if size <= 0:
             continue
         cat = _classify_tool(tu)
+        # For synthesized async-sub-agent ToolUses the only input we have is
+        # `description` (lifted from a task_progress snapshot). Use it as a
+        # universal fallback when the usual fields aren't present.
+        desc_fallback = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
         if tu.name == "Bash":
             cmd = tu.input.get("command", "")
-            tip = f"$ {cmd[:400]}"
+            tip = f"$ {cmd[:400]}" if cmd else f"Bash: {desc_fallback}"
         elif tu.name in ("Read", "Glob", "Grep"):
-            target = tu.input.get("file_path") or tu.input.get("pattern", "")
+            target = (
+                tu.input.get("file_path")
+                or tu.input.get("pattern", "")
+                or desc_fallback
+            )
             tip = f"{tu.name}: {target}"
         elif tu.name in ("Write", "Edit"):
-            tip = f"{tu.name}: {tu.input.get('file_path', '')}"
+            target = tu.input.get("file_path", "") or desc_fallback
+            tip = f"{tu.name}: {target}"
         elif tu.name == "Agent":
             desc = tu.input.get("description", "")
             prompt_preview = tu.input.get("prompt", "")[:300].replace("\n", " ")
             result_preview = (tu.result.content[:300] if tu.result else "").replace("\n", " ")
             tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
         else:
-            tip = tu.name
+            tip = f"{tu.name}: {desc_fallback}" if desc_fallback else tu.name
         segs.append(_Segment(cat, size, tip))
 
     return segs
@@ -995,16 +1222,33 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
 
 @dataclass
 class _Row:
-    """One line in the SVG timeline. Either a turn (segments) or a context
-    compaction divider (compact set). Exactly one of segments / compact
-    carries the meaningful data."""
+    """One line in the SVG timeline. Either a turn (segments), a context
+    compaction divider (compact set), a blank spacer (spacer=True), or a
+    session summary banner (summary_text set).
+    `height` overrides the default row height."""
     label: str
     depth: int
     segments: list[_Segment] = field(default_factory=list)
     compact: Optional[CompactEvent] = None
+    spacer: bool = False
+    height: Optional[int] = None
+    summary_text: Optional[str] = None
 
 
-def _flatten_rows(sessions: list[Session]) -> list[_Row]:
+@dataclass
+class _Group:
+    """A contiguous span of rows belonging to one sub-agent dispatch.
+    Rendered as a thin vertical guide line in the indent gutter so siblings
+    are visually grouped. Async sub-agents draw the line dashed because the
+    row order is approximate (synthesized from progress snapshots)."""
+    depth: int       # depth of the sub-agent's own rows (parent_depth + 1)
+    start_idx: int   # first row index belonging to this sub-agent (inclusive)
+    end_idx: int     # last row index (inclusive)
+    tool_use: Optional[ToolUse] = None  # the parent's Agent ToolUse that spawned this group
+    is_async: bool = False
+
+
+def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
     """
     Flatten sessions + sub-agents into renderable rows.
 
@@ -1012,8 +1256,12 @@ def _flatten_rows(sessions: list[Session]) -> list[_Row]:
     spawned them, with depth = parent_depth + 1, so the SVG renderer can
     indent them visually. Top-level `compact_boundary` events are inserted
     between the turns they fall between.
+
+    Also returns a list of `_Group` markers, one per sub-agent dispatch,
+    so the renderer can draw a vertical guide line spanning each group.
     """
     rows: list[_Row] = []
+    groups: list[_Group] = []
 
     def emit(turns: list[Turn], prefix: str, depth: int,
              compacts_by_after: dict[int, list[CompactEvent]]) -> None:
@@ -1024,27 +1272,142 @@ def _flatten_rows(sessions: list[Session]) -> list[_Row]:
         for t in turns:
             label = f"{prefix}T{t.turn_index}"
             rows.append(_Row(label=label, depth=depth, segments=_segment_turn(t)))
+            # Number sub-agents within this turn so labels disambiguate them.
+            # A turn can issue several Agent calls (true parallel via multiple
+            # tool_use blocks in one message); without numbering, every
+            # sub-agent's "T1" looks identical to every other sub-agent's "T1".
+            sub_idx = 0
+            sub_count = sum(
+                1 for tu in t.tool_uses
+                if tu.name == "Agent" and tu.subagent is not None
+            )
             for tu in t.tool_uses:
                 if tu.name == "Agent" and tu.subagent:
-                    sub_prefix = f"{prefix}T{t.turn_index}/A:"
+                    sub_idx += 1
+                    sub_prefix = f"{prefix}T{t.turn_index}/A{sub_idx}:"
+                    grp_start = len(rows)
                     # Sub-agent compactions are not currently surfaced.
                     emit(tu.subagent.conversation, sub_prefix, depth + 1, {})
+                    grp_end = len(rows) - 1
+                    if grp_end >= grp_start:
+                        groups.append(_Group(
+                            depth=depth + 1,
+                            start_idx=grp_start, end_idx=grp_end,
+                            tool_use=tu,
+                            is_async=tu.subagent.is_async,
+                        ))
+                    # Insert a thin spacer between sibling sub-agents so the
+                    # boundary between A{n} and A{n+1} is visually obvious
+                    # without wasting a full row of vertical space.
+                    if sub_idx < sub_count:
+                        rows.append(_Row(
+                            label="", depth=depth + 1, spacer=True, height=8,
+                        ))
             for ev in compacts_by_after.get(t.turn_index, []):
                 rows.append(_Row(label="", depth=depth, compact=ev))
 
     for s_idx, s in enumerate(sessions, 1):
+        # Full-height blank row between sessions, so the visual transition
+        # from translation → verification is unmistakable.
+        if s_idx > 1:
+            rows.append(_Row(label="", depth=0, spacer=True))
         prefix = f"S{s_idx}." if len(sessions) > 1 else ""
         # Bucket compacts by the main turn they follow.
         by_after: dict[int, list[CompactEvent]] = defaultdict(list)
         for ev in s.compact_events:
             by_after[ev.after_turn_index].append(ev)
         emit(s.conversation, prefix, 0, by_after)
+        # Append a summary banner at the end of this session.
+        rows.append(_Row(
+            label="", depth=0, summary_text=_format_session_summary(s, s_idx),
+        ))
 
-    return rows
+    return rows, groups
+
+
+def _count_subagents(turns: list[Turn]) -> tuple[int, int]:
+    """Count (sync, async) sub-agents recursively across the turn tree."""
+    sync = 0
+    async_ = 0
+    for t in turns:
+        for blk in t.content_blocks:
+            if blk.type == "tool_use" and blk.tool_use and blk.tool_use.subagent:
+                sa = blk.tool_use.subagent
+                if sa.is_async:
+                    async_ += 1
+                else:
+                    sync += 1
+                ns, na = _count_subagents(sa.conversation)
+                sync += ns
+                async_ += na
+    return sync, async_
+
+
+def _format_duration(ms: int) -> str:
+    if ms <= 0: return "?"
+    s = ms // 1000
+    if s < 60: return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60: return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def _format_compact_int(n: int) -> str:
+    if n >= 1_000_000: return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:     return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _format_session_summary(s: Session, s_idx: int) -> str:
+    parts = [f"S{s_idx} {s.phase}:"]
+    r = s.result
+    # Use len(s.conversation) — the actual main-agent turn count we parsed.
+    # `result.num_turns` is a framework-side counter that reports something
+    # different (often only the final wrap-up turns), so don't trust it here.
+    parts.append(f"{len(s.conversation)} turns")
+    sync_n, async_n = _count_subagents(s.conversation)
+    if sync_n or async_n:
+        if async_n:
+            parts.append(f"{sync_n + async_n} sub-agents ({async_n} async)")
+        else:
+            parts.append(f"{sync_n} sub-agents")
+    if s.compact_events:
+        parts.append(f"{len(s.compact_events)} compactions")
+    # Token totals from result.model_usage (input + output across all models).
+    if r is not None and r.model_usage:
+        in_tok = sum(mu.input_tokens for mu in r.model_usage.values())
+        out_tok = sum(mu.output_tokens for mu in r.model_usage.values())
+        cache_r = sum(mu.cache_read_tokens for mu in r.model_usage.values())
+        if in_tok or out_tok or cache_r:
+            parts.append(
+                f"{_format_compact_int(in_tok + out_tok)} tok "
+                f"(in={_format_compact_int(in_tok)} out={_format_compact_int(out_tok)} "
+                f"cache_r={_format_compact_int(cache_r)})"
+            )
+    # Use the timestamp-derived wall clock — the only field that matches
+    # actual elapsed time. Frame-side `duration_ms` is broken for async
+    # sub-agents (only counts main-agent activity, missing idle wait), and
+    # `duration_api_ms` double-counts parallel sub-agent work.
+    # If parallel work compressed real time noticeably (api_ms > 1.3× wall),
+    # also report api_ms as a secondary "parallel work" figure.
+    if s.wall_clock_ms:
+        parts.append(_format_duration(s.wall_clock_ms))
+        if r is not None and r.duration_api_ms > s.wall_clock_ms * 13 // 10:
+            parts.append(
+                f"({_format_duration(r.duration_api_ms)} api, parallelized)"
+            )
+    elif r is not None and r.duration_ms:
+        parts.append(_format_duration(r.duration_ms))
+    if r is not None and r.total_cost_usd:
+        parts.append(f"${r.total_cost_usd:.2f}")
+    if r is not None and r.is_error:
+        parts.append(f"⚠ stop={r.stop_reason}")
+    return "   ".join(parts)
 
 
 def render_timeline_svg(sessions: list[Session]) -> str:
-    rows = _flatten_rows(sessions)
+    rows, groups = _flatten_rows(sessions)
     if not rows:
         return '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20"/>'
 
@@ -1052,16 +1415,29 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         (sum(seg.size for seg in row.segments) for row in rows), default=1
     ) or 1
     max_depth = max((row.depth for row in rows), default=0)
-    n_turn_rows = sum(1 for row in rows if row.compact is None)
+    n_turn_rows = sum(1 for row in rows if row.compact is None and not row.spacer)
 
     row_h = 14
     label_w = 90
     bar_w = 1400
     indent_px = 24
+    bar_inset = 8   # gap between the group guide line and the start of bars
     pad_top = 90
     pad_bottom = 30
-    height = pad_top + len(rows) * row_h + pad_bottom
-    width = label_w + max_depth * indent_px + bar_w + 40
+
+    # Pre-compute the y-offset and height of each row, so the renderer can
+    # support variable-height rows (e.g. thin sub-agent spacers).
+    row_y: list[int] = []
+    row_heights: list[int] = []
+    cursor = pad_top
+    for row in rows:
+        row_y.append(cursor)
+        h = row.height if row.height is not None else row_h
+        row_heights.append(h)
+        cursor += h
+    total_rows_height = cursor - pad_top
+    height = pad_top + total_rows_height + pad_bottom
+    width = label_w + max_depth * indent_px + bar_inset + bar_w + 40
 
     out: list[str] = []
     out.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -1090,9 +1466,12 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         )
         legend_x += 80
 
-    # X-axis tick marks (rough scale guide)
+    # X-axis tick marks (rough scale guide). Anchored at where depth-0 bars
+    # actually start (label_w + bar_inset), so the ticks line up with the
+    # left edge of the bar area.
+    tick_origin = label_w + bar_inset
     for frac in (0.25, 0.5, 0.75, 1.0):
-        x = label_w + bar_w * frac
+        x = tick_origin + bar_w * frac
         out.append(
             f'<line x1="{x}" y1="{pad_top - 6}" x2="{x}" y2="{height - pad_bottom}" '
             f'stroke="{_GRID}" stroke-dasharray="2,3"/>'
@@ -1103,8 +1482,74 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         )
 
     compact_color = "#c878d8"  # magenta-ish; stands out on dark bg
+
+    # Sub-agent group guide lines: a purple vertical stroke spanning all
+    # rows that belong to one sub-agent dispatch. Sits in the indent gutter
+    # at the column where bars would have started without `bar_inset`,
+    # `bar_inset` pixels to the left of the actual bars. Hovering the line
+    # surfaces the same tooltip as the parent's purple Agent bar segment.
+    group_color = CAT_COLORS.get(CAT_SUBAGENT, "#9b80c8")
+    for grp in groups:
+        gx = label_w + grp.depth * indent_px + 3
+        gy1 = row_y[grp.start_idx] + 1
+        gy2 = row_y[grp.end_idx] + row_heights[grp.end_idx] - 1
+        tooltip_lines = []
+        if grp.tool_use is not None:
+            tu = grp.tool_use
+            size = _tool_size(tu)
+            desc = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
+            prompt_preview = (
+                tu.input.get("prompt", "")[:300].replace("\n", " ")
+                if isinstance(tu.input, dict) else ""
+            )
+            result_preview = (
+                tu.result.content[:300] if tu.result else ""
+            ).replace("\n", " ")
+            tooltip_lines.append(f"{CAT_SUBAGENT}: {size:,} chars")
+            tooltip_lines.append(f"[task] {desc}")
+            tooltip_lines.append(f"[prompt] {prompt_preview}")
+            tooltip_lines.append(f"[result] {result_preview}")
+        tooltip = html.escape("\n".join(tooltip_lines)) if tooltip_lines else ""
+        # Async sub-agents: dashed line, signaling that the row order is
+        # only approximate (synthesized from progress snapshots, not a true
+        # API conversation).
+        dash_attr = ' stroke-dasharray="5,3"' if grp.is_async else ''
+        if tooltip:
+            out.append(
+                f'<g><title>{tooltip}</title>'
+                f'<line x1="{gx}" y1="{gy1}" x2="{gx}" y2="{gy2}" '
+                f'stroke="{group_color}" stroke-width="3"{dash_attr}/></g>'
+            )
+        else:
+            out.append(
+                f'<line x1="{gx}" y1="{gy1}" x2="{gx}" y2="{gy2}" '
+                f'stroke="{group_color}" stroke-width="3"{dash_attr}/>'
+            )
+
     for idx, row in enumerate(rows):
-        y = pad_top + idx * row_h
+        y = row_y[idx]
+        rh = row_heights[idx]
+
+        # Spacer: blank vertical gap between row groups (sub-agent siblings
+        # use a thin one; sessions use a full-row one). Draws nothing.
+        if row.spacer:
+            continue
+
+        # Session summary banner: end-of-session stats (turns, sub-agents,
+        # compactions, tokens, duration, cost). Spans the full width.
+        if row.summary_text is not None:
+            band_x = label_w
+            band_w = width - band_x - 40
+            out.append(
+                f'<rect x="{band_x}" y="{y}" width="{band_w}" '
+                f'height="{rh}" fill="#2a2f3a" stroke="{_GRID}" stroke-width="0.5"/>'
+            )
+            out.append(
+                f'<text x="{band_x + 8}" y="{y + 11}" '
+                f'fill="{_TITLE}" font-size="11" font-weight="bold">'
+                f'{html.escape(row.summary_text)}</text>'
+            )
+            continue
 
         # Compaction divider: full-width band with a label.
         if row.compact is not None:
@@ -1132,8 +1577,14 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             )
             continue
 
-        bar_start = label_w + row.depth * indent_px
+        # `gutter_x` is where the group guide line lives; bars start
+        # `bar_inset` pixels further to the right.
+        gutter_x = label_w + row.depth * indent_px
+        bar_start = gutter_x + bar_inset
         if idx % 2 == 0:
+            # Start the zebra stripe at bar_start (not gutter_x) so the
+            # `bar_inset` gap stays clear and doesn't paint over the
+            # purple group guide line.
             out.append(
                 f'<rect x="{bar_start}" y="{y}" '
                 f'width="{width - bar_start - 40}" '
@@ -1141,7 +1592,7 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             )
         label_fill = _TEXT_DIM if row.depth > 0 else _TEXT
         out.append(
-            f'<text x="{bar_start - 5}" y="{y + 11}" text-anchor="end" '
+            f'<text x="{gutter_x - 5}" y="{y + 11}" text-anchor="end" '
             f'fill="{label_fill}">{html.escape(row.label)}</text>'
         )
         x = float(bar_start)

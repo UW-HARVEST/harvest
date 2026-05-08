@@ -1,3 +1,4 @@
+use crate::patches::ErrorSpan;
 use cargo_metadata::diagnostic::{Diagnostic, DiagnosticLevel};
 use full_source::CargoPackage;
 use quantize_rust_spans::RustItemMap;
@@ -52,14 +53,10 @@ pub(crate) fn attribute_errors(
     build_result: &CargoBuildResult,
     item_map: &RustItemMap,
     cargo_package: &CargoPackage,
-) -> Result<
-    HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>>,
-    Box<dyn std::error::Error>,
-> {
+) -> Result<HashMap<ErrorSpan, Vec<Diagnostic>>, Box<dyn std::error::Error>> {
     let error_diagnostics = get_error_diagnostics(build_result);
 
-    let mut decl_errors: HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>> =
-        HashMap::new();
+    let mut decl_errors: HashMap<ErrorSpan, Vec<Diagnostic>> = HashMap::new();
 
     for msg in error_diagnostics {
         for span in &msg.spans {
@@ -87,8 +84,8 @@ pub(crate) fn attribute_errors(
 /// resolved to `Unbounded`), pull all of that file's diagnostics into the single
 /// `(Unbounded, Unbounded)` entry so the whole file is sent to the LLM as one unit.
 fn coalesce_errors(
-    mut decl_errors: HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>>,
-) -> HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>> {
+    mut decl_errors: HashMap<ErrorSpan, Vec<Diagnostic>>,
+) -> HashMap<ErrorSpan, Vec<Diagnostic>> {
     let unbounded_files: Vec<PathBuf> = decl_errors
         .keys()
         .filter(|(_, start, end)| {

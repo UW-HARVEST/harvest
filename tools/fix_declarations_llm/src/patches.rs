@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 pub(crate) type PatchSet = BTreeMap<(usize, usize), String>;
+pub(crate) type ErrorSpan = (PathBuf, Bound<usize>, Bound<usize>);
 
 /// Apply a set of non-overlapping byte-range patches to `source` in ascending order.
 ///
@@ -25,7 +26,7 @@ pub(crate) fn apply_patches(source: &mut Vec<u8>, patches: PatchSet) {
 }
 
 pub(crate) fn generate_patches(
-    decl_errors: &HashMap<(PathBuf, Bound<usize>, Bound<usize>), Vec<Diagnostic>>,
+    decl_errors: &HashMap<ErrorSpan, Vec<Diagnostic>>,
     cargo_package: &CargoPackage,
     fix_llm: &crate::fix_llm::FixLlm,
     interface_ctx: &str,

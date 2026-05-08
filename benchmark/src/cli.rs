@@ -37,6 +37,10 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub timeout: u64,
 
+    /// Number of LLM-based repair passes to attempt after a failed build.
+    #[arg(long, default_value = "2")]
+    pub repair_passes: usize,
+
     /// Filter benchmarks by regex pattern on directory names (keeps matching directories).
     /// Examples: ".*_lib$" (only libraries)
     /// Cannot be used together with --exclude.

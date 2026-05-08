@@ -15,6 +15,7 @@ write_output = { path = "tools/write_output" }
 c_ast = { path = "tools/c_ast" }
 modular_translation_llm = { path = "tools/modular_translation_llm" }
 quantize_rust_spans = { path = "tools/quantize_rust_spans" }
+fix_declarations_llm = { path = "tools/fix_declarations_llm" }
 translate_agentic = { path = "tools/translate_agentic" }
 verify_fix_agentic = { path = "tools/verify_fix_agentic" }
 log = "0.4.28"

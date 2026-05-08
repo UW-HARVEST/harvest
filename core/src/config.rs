@@ -43,6 +43,10 @@ pub struct Config {
     /// `tracing_subscriber::filter::EnvFilter` format.
     pub log_filter: String,
 
+    /// Maximum number of LLM-based repair passes to attempt after a failed build.
+    #[serde(default = "default_max_repair_passes")]
+    pub max_repair_passes: usize,
+
     /// Sub-configuration for each tool.
     pub tools: HashMap<String, serde_json::Value>,
 
@@ -52,6 +56,10 @@ pub struct Config {
     // commits that have different config options).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_json::Value>,
+}
+
+fn default_max_repair_passes() -> usize {
+    2
 }
 
 impl Config {
@@ -66,6 +74,7 @@ impl Config {
             agentic: false,
             agentic_verify: false,
             log_filter: "off".to_owned(),
+            max_repair_passes: 0,
             tools: Default::default(),
             unknown: Default::default(),
         }

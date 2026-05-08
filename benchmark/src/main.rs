@@ -15,7 +15,7 @@ use crate::io::{
     collect_program_dirs, ensure_output_directory, log_failing_programs, log_found_programs,
     log_summary_stats, validate_input_directory, write_csv_results, write_error_file,
 };
-use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source};
+use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source, write_output_result};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
@@ -40,22 +40,14 @@ impl TranspilationResult {
     pub fn from_ir(ir: &HarvestIR) -> Self {
         let translation_success = raw_cargo_package(ir).is_ok();
         let (build_success, rust_binary_path, build_error) = match cargo_build_result(ir) {
-            Ok(artifacts) => {
-                if artifacts.is_empty() {
-                    // Empty artifacts list indicates build succeeded but produced no output
-                    (
-                        false,
-                        None,
-                        Some("Build succeeded but produced no artifacts".to_string()),
-                    )
-                } else {
-                    let first = artifacts
-                        .iter()
-                        .find_map(|a| a.executable.as_ref().map(|e| e.as_std_path().into()));
-                    (true, first, None)
-                }
+            Ok(result) if result.success => {
+                let first = write_output_result(ir)
+                    .ok()
+                    .and_then(|r| r.executable.clone());
+                (true, first, None)
             }
-            Err(err) => (false, None, Some(err.clone())),
+            Ok(result) => (false, None, Some(result.err.clone())),
+            Err(err) => (false, None, Some(err)),
         };
 
         Self {
@@ -75,6 +67,7 @@ pub fn translate_c_directory_to_rust_project(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> TranspilationResult {
     let args: Arc<harvest_translate::cli::Args> = harvest_translate::cli::Args {
         input: Some(input_dir.to_path_buf()),
@@ -85,6 +78,7 @@ pub fn translate_c_directory_to_rust_project(
         modular,
         agentic,
         agentic_verify,
+        repair_passes,
     }
     .into();
     let mut config = harvest_translate::cli::initialize(args).expect("Failed to generate config");
@@ -126,6 +120,7 @@ pub fn translate_c_directory_to_rust_project(
 }
 
 /// Run all benchmarks for a list of programs
+#[allow(clippy::too_many_arguments)]
 pub fn run_all_benchmarks(
     program_dirs: &[PathBuf],
     output_dir: &Path,
@@ -134,6 +129,7 @@ pub fn run_all_benchmarks(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -152,6 +148,7 @@ pub fn run_all_benchmarks(
             modular,
             agentic,
             agentic_verify,
+            repair_passes,
         );
 
         results.push(result);
@@ -230,6 +227,7 @@ fn run_test_validation(
 }
 
 /// Run all benchmarks for a single program
+#[allow(clippy::too_many_arguments)]
 fn benchmark_single_program(
     program_dir: &Path,
     output_root_dir: &Path,
@@ -238,6 +236,7 @@ fn benchmark_single_program(
     modular: bool,
     agentic: bool,
     agentic_verify: bool,
+    repair_passes: usize,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -293,6 +292,7 @@ fn benchmark_single_program(
         modular,
         agentic,
         agentic_verify,
+        repair_passes,
     );
 
     result.translation_success = translation_result.translation_success;
@@ -485,6 +485,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.modular,
         args.agentic,
         args.agentic_verify,
+        args.repair_passes,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

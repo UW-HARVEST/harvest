@@ -25,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml_edit = { workspace = true }
 try_cargo_build = { version = "0.1.0", path = "../tools/try_cargo_build" }
+write_output = { workspace = true }
 wait-timeout = "0.2"
 walkdir = "2.0"
 

@@ -21,13 +21,16 @@ pub type BuildResult = Result<Vec<PathBuf>, Vec<CompilerMessage>>;
 /// - If the project builds successfully, it returns Ok(Ok(artifact_filenames)).
 /// - If the project fails to build, it returns Ok(Err(error_message)).
 /// - If there is an error running cargo, it returns Err.
-fn try_cargo_build(root: Arc<TempDir>) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
+fn try_cargo_build(
+    root: Arc<TempDir>,
+    name_source: &Path,
+) -> Result<CargoBuildResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
     let project_path = root.path().to_path_buf();
     let mut cargo = CargoToml::open(&project_path.join("Cargo.toml"))?;
     cargo.add_workspace();
-    cargo.normalize_name(&project_path);
+    cargo.normalize_name(name_source);
     cargo.save()?;
 
     // Run cargo build in the project directory
@@ -98,7 +101,7 @@ impl Tool for TryCargoBuild {
         cargo_package.materialize(root.path())?;
 
         // Validate that the Rust project builds
-        Ok(Box::new(try_cargo_build(root)?))
+        Ok(Box::new(try_cargo_build(root, &context.config.output)?))
     }
 }
 

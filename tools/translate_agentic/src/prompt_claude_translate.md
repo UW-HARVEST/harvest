@@ -184,25 +184,38 @@ reading just PLAN.md plus the listed C files.
    your analysis — but Invariants is fixed text. Reason: anything outside
    PLAN.md drifts after compaction; only PLAN.md content reliably comes back.
    Invariants must be byte-stable across the whole run.
-3. **Update the checkboxes and "Notes for future-me" as you go**, so a recovered
-   future-you can resume cleanly.
+3. **Update the checkboxes and "Notes for future-me" IMMEDIATELY after any
+   work completes** — whether it was you or a sub-agent.
+   Do NOT batch updates. Compaction can hit at any moment,
+   so every second of unrecorded progress is may lead to work being redone after a compaction.
 4. **After every compaction, re-read `PLAN.md` first thing.** Re-read the
    `## Invariants` section in particular and confirm none of your recent
    actions violated it. Then resume from the first unchecked subtask. Do not
    reconstruct state from memory; trust the file.
-5. **Sub-agents are encouraged for naturally parallel work** — for example,
-   translating multiple independent backends, encoder/decoder pairs, or
-   self-contained primitive modules that share no internal state with each
-   other. When you delegate to a sub-agent:
-   - The main agent retains PLAN.md ownership; the sub-agent does not edit
-     PLAN.md directly.
+5. **Delegate aggressively to sub-agents. Your context window is the
+   bottleneck of this whole run — protect it.** Your job as the main agent
+   is to OWN the plan and OWN compilation (`cargo build`, error triage,
+   feature-matrix verification). Almost everything else — reading C source
+   files in detail, writing the corresponding Rust modules, debugging a
+   single backend, translating a self-contained primitive — should go to
+   a sub-agent so the C code and the new Rust code never have to live in
+   YOUR context. Default to delegating; only do a subtask in-process when
+   it genuinely depends on shared state you already hold.
+
+   Things you keep:
+   - PLAN.md ownership (sub-agents do NOT edit PLAN.md)
+   - Cargo.toml / feature-gate decisions
+   - Running `cargo build` and routing the resulting errors
+   - The cross-module type/ABI design
+
+   When you delegate to a sub-agent:
    - Each sub-agent must report back what files it created/modified and any
      pitfalls it noticed.
    - Update PLAN.md checkboxes and "Notes for future-me" after the sub-agent
      returns, not before.
-   For sequential work that depends on prior architectural decisions or
-   shared types, do it yourself across your own compactions — PLAN.md makes
-   that safe.
+
+   Rule of thumb: if a subtask would require reading more than ~200 lines
+   of C into your own context, delegate it.
 
 ### 0.5 Token budget estimation per subtask
 

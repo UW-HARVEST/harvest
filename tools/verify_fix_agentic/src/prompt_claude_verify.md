@@ -134,6 +134,26 @@ Format per entry:
    yet `fixed`, your next action is to apply the fix, not re-confirm).
 7. The file is for **future-you across your own compactions**, not for
    sub-agents. Do not delegate; you maintain it yourself.
+8. **Delegate fixing work aggressively. Your context window is the
+   bottleneck — protect it.** Your job as the main agent is to OWN
+   HYPOTHESES.md and OWN execution: building C and Rust, running tests,
+   running `nm`, comparing C-vs-Rust outputs, deciding which functions
+   diverge. Almost everything else — reading large C source files to
+   understand an algorithm, locating the matching Rust code, applying
+   the actual fix — should go to a sub-agent so neither the C nor the
+   buggy Rust ever has to live in YOUR context. Default to delegating;
+   only do a fix in-process when it is a one-line change you can apply
+   from what you already see.
+
+   Things you keep:
+   - HYPOTHESES.md ownership (sub-agents do NOT edit HYPOTHESES.md)
+   - Building C / Rust, running cargo test, running nm, output comparison
+   - Hypothesis status updates after each test run
+   - Per-configuration coverage tracking
+
+   Rule of thumb: if investigating or fixing a hypothesis would require
+   reading more than ~200 lines of C or Rust into your own context,
+   delegate the fix to a sub-agent and let it report back what it changed.
 
 ### Recovery protocol (if you suspect you were just compacted)
 

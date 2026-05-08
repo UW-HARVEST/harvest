@@ -73,6 +73,8 @@ These rules govern verification. They must survive every compaction unchanged.
   Cargo.toml bug, not a test-command bug — fix the Cargo.toml so it exposes
   the bare values (either as primary names or as aliases pointing to the
   internal prefixed gates).
+- `[lib] name` and `[[bin]] name` MUST use underscores only — NO hyphens.
+  Hyphens cause manifest parse failure. Fix Cargo.toml if you see them.
 
 ### Boundaries
 - Do NOT modify anything in `c_src/`.

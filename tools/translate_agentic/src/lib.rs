@@ -186,11 +186,16 @@ fn invoke_agent(
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                 --append-system-prompt \"$APPEND_SYS\" \
                  --max-turns 200 \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))
             .env("PROMPT", prompt)
+            .env(
+                "APPEND_SYS",
+                "After any context compaction, you MUST first read PLAN.md.",
+            )
             .env("LOG", &log_path)
             .env("OPENSSL_DIR", &openssl_dir)
             .current_dir(work_dir)

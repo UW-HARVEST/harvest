@@ -124,6 +124,11 @@ When in doubt, re-read this section.
       opt_c_2k  = []           # NO   these features"
 - ALL feature combinations must compile (`cargo build --release --features <combo>`).
 
+### Cargo manifest target names
+- `[lib] name` and `[[bin]] name` MUST use underscores only — NO hyphens.
+  Hyphens in target names cause `cargo` to fail parsing the manifest entirely.
+  RIGHT: `name = "sphincs_plus"`, WRONG: `name = "sphincs-plus"`.
+
 ### C ABI
 - Public C exports use `#[unsafe(no_mangle)]` and `extern "C"` with exact C
   signatures (use `*const c_char`, `c_int`, etc. from `std::ffi`).

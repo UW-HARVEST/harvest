@@ -58,7 +58,6 @@ These rules govern verification. They must survive every compaction unchanged.
 
 ### AFTER ANY COMPACTION: `cat PLAN.md HYPOTHESES.md` is your FIRST action before anything.
 
-
 ### Ground truth
 - The C code is the authoritative reference. Rust outputs must match C
   byte-for-byte (binary stdout AND every public function output under
@@ -100,12 +99,12 @@ These rules govern verification. They must survive every compaction unchanged.
 ## Hypothesis log
 
 Format per entry:
-- ## H<N>: <one-line hypothesis>
-  - Status: open | confirmed | refuted | fixed
-  - Evidence: <how I think I know>
-  - Files/lines suspected: <file path:line>
-  - Action taken: <Edit/test/none yet>
-  - Outcome: <what happened after the action>
+### H<N>: <one-line hypothesis>
+- Status: open | confirmed | refuted | fixed
+- Evidence: <how I think I know>
+- Files/lines suspected: <file path:line>
+- Action taken: <Edit/test/none yet>
+- Outcome: <what happened after the action>
 ```
 
 **Rules of engagement with `HYPOTHESES.md`:**

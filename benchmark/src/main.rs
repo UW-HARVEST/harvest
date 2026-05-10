@@ -152,6 +152,7 @@ pub fn run_all_benchmarks(
     agentic_verify: bool,
     agentic_agent: Option<harvest_core::config::AgentKind>,
     agent_tools: bool,
+    agentic_model: Option<&str>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -172,6 +173,7 @@ pub fn run_all_benchmarks(
             agentic_verify,
             agentic_agent,
             agent_tools,
+            agentic_model,
         );
 
         results.push(result);
@@ -261,6 +263,7 @@ fn benchmark_single_program(
     agentic_verify: bool,
     agentic_agent: Option<harvest_core::config::AgentKind>,
     agent_tools: bool,
+    agentic_model: Option<&str>,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -326,21 +329,25 @@ fn benchmark_single_program(
     let mut effective_overrides = config_overrides.to_vec();
     if agentic {
         effective_overrides.push(format!(
-            "tools.translate_agentic.wishlist_output_path=\"{}\"",
+            "tools.translate_agentic.wishlist_output_path={}",
             wishlist_path.display()
         ));
         effective_overrides.push(format!(
-            "tools.verify_fix_agentic.wishlist_output_path=\"{}\"",
+            "tools.verify_fix_agentic.wishlist_output_path={}",
             wishlist_path.display()
         ));
         effective_overrides.push(format!(
-            "tools.translate_agentic.plan_output_path=\"{}\"",
+            "tools.translate_agentic.plan_output_path={}",
             plan_translate_path.display()
         ));
         effective_overrides.push(format!(
-            "tools.verify_fix_agentic.hypotheses_output_path=\"{}\"",
+            "tools.verify_fix_agentic.hypotheses_output_path={}",
             hypotheses_verify_path.display()
         ));
+        if let Some(m) = agentic_model {
+            effective_overrides.push(format!("tools.translate_agentic.model={m}"));
+            effective_overrides.push(format!("tools.verify_fix_agentic.model={m}"));
+        }
     }
 
     // Do the actual translation
@@ -570,6 +577,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agentic_verify,
         agentic_agent,
         args.agent_tools,
+        args.agentic_model.as_deref(),
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

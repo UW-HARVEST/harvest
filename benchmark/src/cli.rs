@@ -33,6 +33,12 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_agent: Option<String>,
 
+    /// Claude model to use for agentic translation/verification (requires --agentic).
+    /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// Defaults to "sonnet" when not specified.
+    #[arg(long, requires = "agentic")]
+    pub agentic_model: Option<String>,
+
     /// Provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
     /// Only meaningful when --agentic is set.
     #[arg(long, requires = "agentic")]

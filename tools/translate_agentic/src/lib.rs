@@ -101,7 +101,7 @@ impl Tool for TranslateAgentic {
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
         }
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref())?;
 
         // Copy the wishlist out before the tempdir is dropped.
         if local_wishlist.exists() {
@@ -161,13 +161,16 @@ fn invoke_agent(
     prompt: &str,
     timeout_secs: u64,
     agent: AgentKind,
+    model: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking translation agent ({agent}, timeout={timeout_secs}s)");
+    info!("Invoking translation agent ({agent}, model={}, timeout={timeout_secs}s)", model.unwrap_or("(cli default)"));
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("translation.log");
     let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
+
+    let model_flag = model.map(|_| "--model \"$MODEL\" ").unwrap_or_default();
 
     let status = match agent {
         AgentKind::Kiro => Command::new("bash")
@@ -181,25 +184,31 @@ fn invoke_agent(
             .env("OPENSSL_DIR", &openssl_dir)
             .current_dir(work_dir)
             .status()?,
-        AgentKind::Claude => Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --append-system-prompt \"$APPEND_SYS\" \
-                 --max-turns 200 \
-                 --output-format stream-json --verbose \
-                 < /dev/null 2>&1 | tee \"$LOG\"",
-            ))
-            .env("PROMPT", prompt)
-            .env(
-                "APPEND_SYS",
-                "After any context compaction, you MUST first read PLAN.md.",
-            )
-            .env("LOG", &log_path)
-            .env("OPENSSL_DIR", &openssl_dir)
-            .current_dir(work_dir)
-            .status()?,
+        AgentKind::Claude => {
+            let mut cmd = Command::new("bash");
+            cmd.arg("-c")
+                .arg(format!(
+                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                     {model_flag}\
+                     --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                     --append-system-prompt \"$APPEND_SYS\" \
+                     --max-turns 200 \
+                     --output-format stream-json --verbose \
+                     < /dev/null 2>&1 | tee \"$LOG\"",
+                ))
+                .env("PROMPT", prompt)
+                .env(
+                    "APPEND_SYS",
+                    "After any context compaction, you MUST first read PLAN.md.",
+                )
+                .env("LOG", &log_path)
+                .env("OPENSSL_DIR", &openssl_dir)
+                .current_dir(work_dir);
+            if let Some(m) = model {
+                cmd.env("MODEL", m);
+            }
+            cmd.status()?
+        }
     };
 
     if !status.success() {
@@ -303,6 +312,10 @@ pub struct Config {
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
+    /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
+    /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    pub model: Option<String>,
+
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).
@@ -322,6 +335,7 @@ pub struct Config {
 fn default_timeout_secs() -> u64 {
     1800
 }
+
 
 impl Config {
     fn validate(&self) {

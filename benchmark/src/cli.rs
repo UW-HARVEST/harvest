@@ -39,6 +39,13 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_model: Option<String>,
 
+    /// Use the pre-883e2e2 prompts (no PLAN.md / HYPOTHESES.md / Invariants /
+    /// sub-agent push) and skip the `--append-system-prompt` flag. For
+    /// controlled experiments measuring the impact of the anti-compaction
+    /// mechanism. Applies to both translator and verifier. Requires --agentic.
+    #[arg(long, requires = "agentic")]
+    pub no_plan: bool,
+
     /// Provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
     /// Only meaningful when --agentic is set.
     #[arg(long, requires = "agentic")]

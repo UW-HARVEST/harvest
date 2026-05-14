@@ -23,6 +23,7 @@ const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
 const PROMPT_CONFIGURABLE: &str = include_str!("prompt_configurable.md");
 const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
+const PROMPT_CLAUDE_TRANSLATE_NO_PLAN: &str = include_str!("prompt_claude_translate_no_plan.md");
 
 pub struct TranslateAgentic;
 
@@ -57,6 +58,7 @@ impl Tool for TranslateAgentic {
 
         let agent = context.config.agentic_agent;
         let translate_prompt = load_prompt(&config, &project_spec.kind, agent)?;
+        let no_plan = config.no_plan;
 
         // Set up a working directory that mirrors the layout the agent expects:
         //   case_dir/translated_rust/c_src/  <- materialized C source
@@ -101,7 +103,7 @@ impl Tool for TranslateAgentic {
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
         }
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref())?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan)?;
 
         // Copy the wishlist out before the tempdir is dropped.
         if local_wishlist.exists() {
@@ -162,8 +164,12 @@ fn invoke_agent(
     timeout_secs: u64,
     agent: AgentKind,
     model: Option<&str>,
+    no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking translation agent ({agent}, model={}, timeout={timeout_secs}s)", model.unwrap_or("(cli default)"));
+    info!(
+        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)")
+    );
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
@@ -171,6 +177,7 @@ fn invoke_agent(
     let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
 
     let model_flag = model.map(|_| "--model \"$MODEL\" ").unwrap_or_default();
+    let append_sys_flag = if no_plan { "" } else { "--append-system-prompt \"$APPEND_SYS\" " };
 
     let status = match agent {
         AgentKind::Kiro => Command::new("bash")
@@ -191,19 +198,21 @@ fn invoke_agent(
                     "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                      {model_flag}\
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                     --append-system-prompt \"$APPEND_SYS\" \
+                     {append_sys_flag}\
                      --max-turns 200 \
                      --output-format stream-json --verbose \
                      < /dev/null 2>&1 | tee \"$LOG\"",
                 ))
                 .env("PROMPT", prompt)
-                .env(
-                    "APPEND_SYS",
-                    "After any context compaction, you MUST first read PLAN.md.",
-                )
                 .env("LOG", &log_path)
                 .env("OPENSSL_DIR", &openssl_dir)
                 .current_dir(work_dir);
+            if !no_plan {
+                cmd.env(
+                    "APPEND_SYS",
+                    "After any context compaction, you MUST first read PLAN.md.",
+                );
+            }
             if let Some(m) = model {
                 cmd.env("MODEL", m);
             }
@@ -277,6 +286,7 @@ fn load_prompt(
     match agent {
         AgentKind::Claude => match &config.prompt_claude_translate {
             Some(p) => Ok(fs::read_to_string(p)?),
+            None if config.no_plan => Ok(PROMPT_CLAUDE_TRANSLATE_NO_PLAN.to_owned()),
             None => Ok(PROMPT_CLAUDE_TRANSLATE.to_owned()),
         },
         AgentKind::Kiro => {
@@ -315,6 +325,13 @@ pub struct Config {
     /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
     /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
     pub model: Option<String>,
+
+    /// If true, use the pre-anti-compaction prompt (no PLAN.md / Invariants /
+    /// sub-agent push) and skip the `--append-system-prompt` flag. Intended for
+    /// controlled experiments measuring the impact of the anti-compaction
+    /// mechanism added in 883e2e2.
+    #[serde(default)]
+    pub no_plan: bool,
 
 
     /// Destination path for the agent's tool wishlist file.

@@ -153,6 +153,7 @@ pub fn run_all_benchmarks(
     agentic_agent: Option<harvest_core::config::AgentKind>,
     agent_tools: bool,
     agentic_model: Option<&str>,
+    no_plan: bool,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -174,6 +175,7 @@ pub fn run_all_benchmarks(
             agentic_agent,
             agent_tools,
             agentic_model,
+            no_plan,
         );
 
         results.push(result);
@@ -264,6 +266,7 @@ fn benchmark_single_program(
     agentic_agent: Option<harvest_core::config::AgentKind>,
     agent_tools: bool,
     agentic_model: Option<&str>,
+    no_plan: bool,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -347,6 +350,10 @@ fn benchmark_single_program(
         if let Some(m) = agentic_model {
             effective_overrides.push(format!("tools.translate_agentic.model={m}"));
             effective_overrides.push(format!("tools.verify_fix_agentic.model={m}"));
+        }
+        if no_plan {
+            effective_overrides.push("tools.translate_agentic.no_plan=true".to_owned());
+            effective_overrides.push("tools.verify_fix_agentic.no_plan=true".to_owned());
         }
     }
 
@@ -578,6 +585,7 @@ fn run(args: Args) -> HarvestResult<()> {
         agentic_agent,
         args.agent_tools,
         args.agentic_model.as_deref(),
+        args.no_plan,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

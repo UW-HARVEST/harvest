@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
 const PROMPT_CLAUDE_VERIFY: &str = include_str!("prompt_claude_verify.md");
+const PROMPT_CLAUDE_VERIFY_NO_PLAN: &str = include_str!("prompt_claude_verify_no_plan.md");
 
 pub struct VerifyFixAgentic;
 
@@ -107,12 +108,12 @@ impl Tool for VerifyFixAgentic {
         let agent_work_dir = match agent {
             AgentKind::Kiro => {
                 let p = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
-                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref())?;
+                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan)?;
                 case_dir.to_path_buf()
             }
             AgentKind::Claude => {
                 write_claude_sandbox(case_dir)?;
-                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref())?;
+                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan)?;
                 translated.clone()
             }
         };
@@ -188,6 +189,7 @@ fn load_verify_prompt(
     match agent {
         AgentKind::Claude => match &config.prompt_claude_verify {
             Some(p) => Ok(fs::read_to_string(p)?),
+            None if config.no_plan => Ok(PROMPT_CLAUDE_VERIFY_NO_PLAN.to_owned()),
             None => Ok(PROMPT_CLAUDE_VERIFY.to_owned()),
         },
         AgentKind::Kiro => match &config.prompt_verify {
@@ -204,8 +206,12 @@ fn invoke_agent(
     timeout_secs: u64,
     agent: AgentKind,
     model: Option<&str>,
+    no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking verification agent ({agent}, model={}, timeout={timeout_secs}s)", model.unwrap_or("(cli default)"));
+    info!(
+        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)")
+    );
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
@@ -213,6 +219,7 @@ fn invoke_agent(
     let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
 
     let model_flag = model.map(|_| "--model \"$MODEL\" ").unwrap_or_default();
+    let append_sys_flag = if no_plan { "" } else { "--append-system-prompt \"$APPEND_SYS\" " };
 
     let status = match agent {
         AgentKind::Kiro => Command::new("bash")
@@ -233,18 +240,20 @@ fn invoke_agent(
                     "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                      {model_flag}\
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                     --append-system-prompt \"$APPEND_SYS\" \
+                     {append_sys_flag}\
                      --output-format stream-json --verbose \
                      < /dev/null 2>&1 | tee \"$LOG\"",
                 ))
                 .env("PROMPT", prompt)
-                .env(
-                    "APPEND_SYS",
-                    "After any context compaction, you MUST first read PLAN.md and HYPOTHESES.md.",
-                )
                 .env("LOG", &log_path)
                 .env("OPENSSL_DIR", &openssl_dir)
                 .current_dir(work_dir);
+            if !no_plan {
+                cmd.env(
+                    "APPEND_SYS",
+                    "After any context compaction, you MUST first read PLAN.md and HYPOTHESES.md.",
+                );
+            }
             if let Some(m) = model {
                 cmd.env("MODEL", m);
             }
@@ -310,6 +319,13 @@ pub struct Config {
     /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
     /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
     pub model: Option<String>,
+
+    /// If true, use the pre-anti-compaction prompt (no HYPOTHESES.md / Invariants
+    /// / sub-agent push) and skip the `--append-system-prompt` flag. Intended
+    /// for controlled experiments measuring the impact of the anti-compaction
+    /// mechanism added in 883e2e2.
+    #[serde(default)]
+    pub no_plan: bool,
 
 
     /// Destination path for the agent's tool wishlist file.

@@ -105,9 +105,23 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
         let Some((name, value)) = config_arg.split_once('=') else {
             panic!("failed to parse config value {config_arg:?}; no '=' found");
         };
-        settings = settings
-            .set_override(name, value)
-            .expect("settings override failed");
+        // The override pipeline ultimately lands in `tools: HashMap<String,
+        // serde_json::Value>`, which uses serde-json's strict deserialization.
+        // Passing every value as a String would reject bool/int-typed fields
+        // inside nested tool configs. Coerce values that look like typed JSON
+        // literals so they reach serde as the right kind. Strings that happen
+        // to look like paths/names don't parse as bool/int/float, so they fall
+        // through unchanged.
+        settings = if let Ok(b) = value.parse::<bool>() {
+            settings.set_override(name, b)
+        } else if let Ok(i) = value.parse::<i64>() {
+            settings.set_override(name, i)
+        } else if let Ok(f) = value.parse::<f64>() {
+            settings.set_override(name, f)
+        } else {
+            settings.set_override(name, value)
+        }
+        .expect("settings override failed");
     }
 
     if args.force {

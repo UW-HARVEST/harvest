@@ -2,6 +2,22 @@
 Translate the C code in c_src/ to Rust that produces **byte-identical output** for the same inputs.
 Write Cargo.toml and src/ files in the current directory (NOT in c_src/).
 
+**CRITICAL CONSTRAINT: Pure Rust Translation Only**
+
+You MUST faithfully translate ALL C source files to **pure Rust**. Do NOT use
+the `cc` crate (or any equivalent) in `build.rs` to compile or link the original
+C source code. The C source files in `c_src/` will NOT exist in the final test
+environment — the only code available at test time is the Rust you write. Any
+`extern "C"` FFI declarations must resolve to Rust implementations you provide,
+not to compiled C object files.
+
+A `build.rs` is allowed for legitimate build-time needs (code generation,
+feature detection, etc.), but it must NOT reference, compile, or link any
+file under `c_src/`.
+
+If the codebase is large, you must still translate all of it. No stubs, no
+placeholders, no shortcuts.
+
 ## Step 1: Analyze BEFORE writing any code
 
 Before writing a single line of Rust, you MUST:

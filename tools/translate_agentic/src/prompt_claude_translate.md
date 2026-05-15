@@ -149,6 +149,23 @@ When in doubt, re-read this section.
 ### Boundaries
 - Do NOT modify anything in `c_src/`.
 
+### Translation fidelity
+- You MUST faithfully translate ALL C source files to **pure Rust**. Do NOT use
+  the `cc` crate (or any equivalent) in `build.rs` to compile or link the
+  original C source code. The C source files in `c_src/` will NOT exist in
+  the final test environment — the only code available at test time is the
+  Rust you write. Any attempt to wrap C via a compiled static archive or
+  object file will fail at test time because the C files simply won't be
+  there.
+- A `build.rs` is allowed for legitimate build-time needs (code generation,
+  feature detection, etc.), but it must NOT reference, compile, or link any
+  file under `c_src/`.
+- No shortcuts: every function, every struct, every constant, every macro in
+  the C source must become a corresponding Rust implementation. Stub
+  functions that return 0 or a hardcoded value are NOT acceptable unless the
+  function's return value is defined by the API contract as a compile-time
+  constant.
+
 {AGENT_TOOLS_SECTION}
 
 ## Codebase summary

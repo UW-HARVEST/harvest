@@ -15,7 +15,9 @@ use crate::io::{
     collect_program_dirs, ensure_output_directory, log_failing_programs, log_found_programs,
     log_summary_stats, validate_input_directory, write_csv_results, write_error_file,
 };
-use crate::ir_utils::{cargo_build_result, raw_cargo_package, raw_source, write_output_result};
+use crate::ir_utils::{
+    all_cargo_packages, cargo_build_result, raw_cargo_package, raw_source, write_output_result,
+};
 use crate::logger::TeeLogger;
 use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
@@ -55,6 +57,22 @@ impl TranspilationResult {
             build_success,
             rust_binary_path,
             build_error,
+        }
+    }
+}
+
+/// Saves each intermediate CargoPackage produced during translation/repair into
+/// `{output_dir}/intermediate_builds/pass_N/` for diagnostic inspection.
+fn save_intermediate_builds(ir: &HarvestIR, output_dir: &Path) {
+    let packages = all_cargo_packages(ir);
+    if packages.is_empty() {
+        return;
+    }
+    let intermediate_dir = output_dir.join("intermediate_builds");
+    for (i, raw_dir) in packages.iter().enumerate() {
+        let pass_dir = intermediate_dir.join(format!("pass_{}", i));
+        if let Err(e) = raw_dir.materialize(&pass_dir) {
+            log::warn!("Failed to save intermediate build pass {}: {}", i, e);
         }
     }
 }
@@ -105,6 +123,7 @@ pub fn translate_c_directory_to_rust_project(
                 }
                 Err(e) => log::warn!("Failed to retrieve raw C source from IR: {}", e),
             }
+            save_intermediate_builds(&ir, output_dir);
             TranspilationResult::from_ir(&ir)
         }
         Err(e) => {

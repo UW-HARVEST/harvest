@@ -53,3 +53,11 @@ pub fn write_output_result(ir: &HarvestIR) -> Result<&WriteOutputResult, String>
         .map(|(_, r)| r)
         .ok_or_else(|| "No WriteOutputResult found in IR".into())
 }
+
+/// Extract all CargoPackage representations from the IR, in order.
+/// Each repair pass produces a new CargoPackage, so this returns one entry per pass.
+pub fn all_cargo_packages(ir: &HarvestIR) -> Vec<&RawDir> {
+    ir.get_by_representation::<CargoPackage>()
+        .map(|(_, r)| &r.dir)
+        .collect()
+}

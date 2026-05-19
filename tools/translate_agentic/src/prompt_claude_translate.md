@@ -29,6 +29,9 @@ Self-assessment:
 - Model: <your model name as best you know it>
 - Approximate usable context window: <e.g. 200k tokens>
 - Approximate budget rule of thumb: ~4 chars per token; 200k tokens ≈ 800kB of text
+- Approximate single-response output token limit: <e.g. 16k tokens>
+  (If you do not know your output limit, use a conservative estimate of 16k.
+   This limit caps how much Rust code a single sub-agent call can write.)
 ```
 
 ### 0.2 Cheap codebase reconnaissance (NO bulk reading)
@@ -92,6 +95,7 @@ amount of context loss.
 ## Self-assessment
 - Model: ...
 - Window: ...
+- Output token limit: ... (unknown → use 16k as conservative default)
 - Regime: small | medium | large
 
 ## Invariants (do not drift across compactions)
@@ -175,11 +179,30 @@ When in doubt, re-read this section.
 - Public API surface: <list of public functions/types>
 
 ## Translation subtasks
-Each subtask must be small enough to complete inside ONE uncompacted context
-window. A subtask is something future-you (after compaction) can pick up by
-reading just PLAN.md plus the listed C files.
+Each subtask must satisfy TWO constraints:
+1. **Context window**: the subtask's combined input (C source to read) + output
+   (Rust code to write) + tool overhead must fit within ONE uncompacted context
+   window.
+2. **Output token limit**: the Rust code a sub-agent writes in a single response
+   must fit within the single-response output token limit (see Self-assessment
+   above). If a module's Rust translation would exceed this limit, split the
+   module further.
 
-- [ ] T1: <name> — files: <list> — depends on: <other Tx>
+Subtask boundaries do NOT need to align with file boundaries. A large C file
+can be split into multiple subtasks by function group (e.g. "translate
+LZ4_compress_default and its callees" vs "translate LZ4_compress_HC and its
+callees"), as long as each subtask has well-defined inputs and outputs.
+
+Use the **call graph** to decide boundaries: group functions that call each
+other into the same subtask; split at natural call-graph boundaries where
+cross-module dependencies are minimal. Functions in different C files that
+call each other can still belong to the same subtask if that reduces
+cross-subtask coordination.
+
+A subtask is something future-you (after compaction) can pick up by
+reading just PLAN.md plus the listed C files/functions.
+
+- [ ] T1: <name> — files/functions: <list> — estimated output: ~Nk tokens — depends on: <other Tx>
 - [ ] T2: ...
 - [x] T3: ...   <!-- mark done as you go -->
 
@@ -230,6 +253,12 @@ reading just PLAN.md plus the listed C files.
      pitfalls it noticed.
    - Update PLAN.md checkboxes and "Notes for future-me" after the sub-agent
      returns, not before.
+   - **Size the subtask to fit within the sub-agent's output token limit.**
+     If a C file is too large for one sub-agent response (estimate: Rust
+     output ≈ C lines × 1.2, converted to tokens at ~10 tok/line), split it:
+     give the sub-agent a specific function range or module subset, not the
+     whole file. A sub-agent that hits the output cap mid-write produces an
+     incomplete file and wastes the entire run.
 
    Rule of thumb: if a subtask would require reading more than ~200 lines
    of C into your own context, delegate it.
@@ -245,9 +274,15 @@ it:
 - Tool overhead: each grep/ls/build-error round-trip costs a few hundred to a
   few thousand tokens.
 
-If a single subtask's estimated total exceeds **~50% of your remaining usable
-window**, split it further before starting. Better to add three subtasks than
-to be compacted mid-write.
+There are **two independent triggers** that require splitting a subtask further:
+
+1. **Context window trigger**: estimated total (input + output + overhead)
+   exceeds ~50% of your remaining usable window.
+2. **Output token limit trigger**: estimated Rust output alone exceeds your
+   single-response output token limit (from Self-assessment 0.1).
+
+Either trigger is sufficient to force a split. Better to add three subtasks
+than to be compacted mid-write or hit the output cap mid-file.
 
 ## Step 1: Analyze BEFORE writing any code
 

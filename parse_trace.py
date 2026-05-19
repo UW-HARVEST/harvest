@@ -746,8 +746,10 @@ def print_session_stats(sessions: list[Session]) -> None:
             print(f"    total_cost_usd: ${r.total_cost_usd:.4f}")
             for model, mu in r.model_usage.items():
                 print(f"    [{model}]")
+                print(f"      input_tokens:  {mu.input_tokens}")
                 print(f"      output_tokens: {mu.output_tokens}")
                 print(f"      cache_read:    {mu.cache_read_tokens}")
+                print(f"      cache_create:  {mu.cache_creation_tokens}")
                 print(f"      cost_usd:      ${mu.cost_usd:.4f}")
         print()
 
@@ -1379,11 +1381,13 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
         in_tok = sum(mu.input_tokens for mu in r.model_usage.values())
         out_tok = sum(mu.output_tokens for mu in r.model_usage.values())
         cache_r = sum(mu.cache_read_tokens for mu in r.model_usage.values())
-        if in_tok or out_tok or cache_r:
+        cache_c = sum(mu.cache_creation_tokens for mu in r.model_usage.values())
+        if in_tok or out_tok or cache_r or cache_c:
             parts.append(
-                f"{_format_compact_int(in_tok + out_tok)} tok "
+                f"{_format_compact_int(in_tok + out_tok)} new tok "
                 f"(in={_format_compact_int(in_tok)} out={_format_compact_int(out_tok)} "
-                f"cache_r={_format_compact_int(cache_r)})"
+                f"cache_r={_format_compact_int(cache_r)} "
+                f"cache_c={_format_compact_int(cache_c)})"
             )
     # Use the timestamp-derived wall clock — the only field that matches
     # actual elapsed time. Frame-side `duration_ms` is broken for async
@@ -1623,12 +1627,22 @@ def render_timeline_svg(sessions: list[Session]) -> str:
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
-        print("Usage: parse_trace.py <file> [--readable | --visualize]")
+        print("Usage: parse_trace.py <file> [-v] [-r] [-vr] [--readable] [--visualize]")
         sys.exit(1)
 
     path = args[0]
-    readable = "--readable" in args or "-r" in args
-    visualize = "--visualize" in args or "-v" in args
+
+    # Parse flags: support combined short flags (-vr, -rv) and long flags
+    flags: set[str] = set()
+    for arg in args[1:]:
+        if arg.startswith("--"):
+            flags.add(arg)
+        elif arg.startswith("-"):
+            for ch in arg[1:]:
+                flags.add(ch)
+
+    readable = "r" in flags or "--readable" in flags
+    visualize = "v" in flags or "--visualize" in flags
 
     parser = TraceParser()
     sessions = parser.parse_file(path)
@@ -1639,11 +1653,13 @@ if __name__ == "__main__":
         with open(out_path, "w") as f:
             f.write(content)
         print(f"Written to {out_path}  ({len(content):,} chars)")
-    elif visualize:
+
+    if visualize:
         out_path = path.rsplit(".", 1)[0] + "_timeline.svg"
         content = render_timeline_svg(sessions)
         with open(out_path, "w") as f:
             f.write(content)
         print(f"Written to {out_path}  ({len(content):,} chars)")
-    else:
+
+    if not readable and not visualize:
         print_session_stats(sessions)

@@ -9,6 +9,8 @@ pub mod util;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
+use generate_difftest_suite::GenerateDiffTestSuite;
+use generate_test_suite::GenerateTestSuite;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -39,6 +41,10 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+
+    // Test suite generation runs in parallel with translation (depends only on raw source).
+    let test_suite = scheduler.queue_after(GenerateTestSuite, &[load_src]);
+    let _diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[test_suite, load_src]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {

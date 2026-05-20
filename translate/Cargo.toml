@@ -32,6 +32,8 @@ fix_declarations_llm.workspace = true
 raw_source_to_cargo_llm.workspace = true
 translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
+generate_test_suite.workspace = true
+generate_difftest_suite.workspace = true
 
 [lints]
 workspace = true

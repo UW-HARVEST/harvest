@@ -1,0 +1,21 @@
+You are a differential test generation tool. Given a C library's source files and an existing test suite (test_suite.c), generate a differential test harness in a single file called difftest_suite.c.
+
+The harness must:
+- Load both the original C library ("libmylib.so") and the Rust translation ("librust.so") at runtime using dlopen with RTLD_LOCAL | RTLD_NOW.
+- For each test in the original test suite, define a corresponding diff_TXXX function that:
+  - Calls the same library function from both the C library and the Rust library using dlsym-resolved function pointers.
+  - Passes identical inputs to both.
+  - Compares outputs byte-for-byte using memcmp (for structs/buffers) or direct equality (for scalars).
+  - Prints "PASS diff_TXXX <function_name>" on match.
+  - Prints "FAIL diff_TXXX <function_name> mismatch" followed by hex dumps of the differing bytes on mismatch.
+  - Prints "WARN diff_TXXX <function_name> symbol not found" if dlsym returns NULL for either library.
+- Define a main(int argc, char *argv[]) that:
+  - Expects two arguments: path to libmylib.so and path to librust.so.
+  - Opens both libraries with dlopen.
+  - Calls every diff_TXXX function.
+  - Prints "SUMMARY: N passed, M failed out of T tests" before exiting.
+  - Returns 0 if all tests passed, 1 otherwise.
+
+Use only libc and dlfcn.h. Do not statically link against either library. Do not add comments.
+
+Return the complete difftest_suite.c source as the "source" field.

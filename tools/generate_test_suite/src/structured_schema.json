@@ -1,0 +1,10 @@
+{
+    "name": "source_file",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "source": { "type": "string" }
+        },
+        "required": ["source"]
+    }
+}

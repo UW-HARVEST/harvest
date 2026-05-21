@@ -115,23 +115,7 @@ pub struct ModularLLMUsageTotals {
 
 impl ModularLLMUsageTotals {
     pub fn total(&self) -> LLMUsageTotals {
-        LLMUsageTotals {
-            prompt_tokens: self.macros.prompt_tokens
-                + self.types.prompt_tokens
-                + self.interface.prompt_tokens
-                + self.functions.prompt_tokens
-                + self.cargo_toml.prompt_tokens,
-            output_tokens: self.macros.output_tokens
-                + self.types.output_tokens
-                + self.interface.output_tokens
-                + self.functions.output_tokens
-                + self.cargo_toml.output_tokens,
-            total_tokens: self.macros.total_tokens
-                + self.types.total_tokens
-                + self.interface.total_tokens
-                + self.functions.total_tokens
-                + self.cargo_toml.total_tokens,
-        }
+        self.macros + self.types + self.interface + self.functions + self.cargo_toml
     }
 }
 

@@ -86,9 +86,11 @@ impl Tool for GenerateTestSuite {
 
         let parsed: Response = serde_json::from_str(&response)?;
 
+        info!("Token usage [total] - {usage_totals}");
         info!(
-            "Token usage [total] - prompt: {}, output: {}, total: {}",
-            usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
+            "Generated test_suite.c ({} bytes):\n{}",
+            parsed.source.len(),
+            parsed.source
         );
 
         Ok(Box::new(TestSuite {

@@ -108,10 +108,7 @@ impl Tool for FixDiffFailures {
             out_dir.set_file(&file.path, file.contents.into())?;
         }
 
-        info!(
-            "Token usage [total] - prompt: {}, output: {}, total: {}",
-            usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
-        );
+        info!("Token usage [total] - {usage_totals}");
 
         Ok(Box::new(CargoPackage { dir: out_dir }))
     }

@@ -1,21 +1,49 @@
 You are a differential test generation tool. Given a C library's source files and an existing test suite (test_suite.c), generate a differential test harness in a single file called difftest_suite.c.
 
-The harness must:
-- Load both the original C library ("libmylib.so") and the Rust translation ("librust.so") at runtime using dlopen with RTLD_LOCAL | RTLD_NOW.
-- For each test in the original test suite, define a corresponding diff_TXXX function that:
-  - Calls the same library function from both the C library and the Rust library using dlsym-resolved function pointers.
-  - Passes identical inputs to both.
-  - Compares outputs byte-for-byte using memcmp (for structs/buffers) or direct equality (for scalars).
-  - Prints "PASS diff_TXXX <function_name>" on match.
-  - Prints "FAIL diff_TXXX <function_name> mismatch" followed by hex dumps of the differing bytes on mismatch.
-  - Prints "WARN diff_TXXX <function_name> symbol not found" if dlsym returns NULL for either library.
-- Define a main(int argc, char *argv[]) that:
-  - Expects two arguments: path to libmylib.so and path to librust.so.
-  - Opens both libraries with dlopen.
-  - Calls every diff_TXXX function.
-  - Prints "SUMMARY: N passed, M failed out of T tests" before exiting.
-  - Returns 0 if all tests passed, 1 otherwise.
+The file is compiled standalone with only system headers available. It MUST:
+- Include only system headers: #include <stdio.h>, #include <string.h>, #include <dlfcn.h>
+- NOT include any headers from the original C project (no #include "foo.h" or similar)
+- NOT statically link against either library
 
-Use only libc and dlfcn.h. Do not statically link against either library. Do not add comments.
+Follow this structure exactly:
+
+    #include <stdio.h>
+    #include <string.h>
+    #include <dlfcn.h>
+
+    static void *c_lib;
+    static void *rust_lib;
+
+    static void diff_T001(int *passed, int *failed) {
+        int (*c_fn)(int) = dlsym(c_lib, "function_name");
+        int (*rust_fn)(int) = dlsym(rust_lib, "function_name");
+        if (!c_fn || !rust_fn) { printf("WARN diff_T001 function_name symbol not found\n"); return; }
+        int c_result = c_fn(42);
+        int rust_result = rust_fn(42);
+        if (c_result == rust_result) { printf("PASS diff_T001 function_name\n"); (*passed)++; }
+        else { printf("FAIL diff_T001 function_name mismatch\n"); (*failed)++; }
+    }
+
+    int main(int argc, char *argv[]) {
+        if (argc != 3) { fprintf(stderr, "Usage: %s <libmylib.so> <librust.so>\n", argv[0]); return 1; }
+        c_lib = dlopen(argv[1], RTLD_LOCAL | RTLD_NOW);
+        rust_lib = dlopen(argv[2], RTLD_LOCAL | RTLD_NOW);
+        if (!c_lib || !rust_lib) { fprintf(stderr, "dlopen failed\n"); return 1; }
+        int passed = 0, failed = 0;
+        diff_T001(&passed, &failed);
+        printf("SUMMARY: %d passed, %d failed out of %d tests\n", passed, failed, passed + failed);
+        return failed > 0 ? 1 : 0;
+    }
+
+Rules:
+- dlopen calls go inside main(), never at file scope
+- Store dlopen handles in the static c_lib / rust_lib globals; pass those to dlsym, never RTLD_DEFAULT
+- Deduce function pointer types from the C source files; do not include headers to get them
+- For scalars use ==; for structs/arrays use memcmp
+- Each diff function receives int *passed and int *failed and increments the appropriate counter
+- Print "PASS diff_TXXX <function_name>" on match
+- Print "FAIL diff_TXXX <function_name> mismatch" on mismatch
+- Print "WARN diff_TXXX <function_name> symbol not found" if either dlsym returns NULL
+- Print "SUMMARY: N passed, M failed out of T tests" at the end of main()
 
 Return the complete difftest_suite.c source as the "source" field.

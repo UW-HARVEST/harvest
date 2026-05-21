@@ -344,10 +344,7 @@ pub fn translate_decls(
         usage_by_call.cargo_toml.total_tokens
     );
 
-    info!(
-        "token usage [total] - prompt: {}, output: {}, total: {}",
-        usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
-    );
+    info!("token usage [total] - {usage_totals}");
 
     Ok(TranslationResult {
         macros: macro_result.macros,

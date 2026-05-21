@@ -16,6 +16,7 @@ pub struct LLMUsageTotals {
     pub prompt_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    has_data: bool,
 }
 
 impl LLMUsageTotals {
@@ -25,6 +26,33 @@ impl LLMUsageTotals {
             self.prompt_tokens += u64::from(usage.prompt_tokens);
             self.output_tokens += u64::from(usage.completion_tokens);
             self.total_tokens += u64::from(usage.total_tokens);
+            self.has_data = true;
+        }
+    }
+}
+
+impl std::ops::Add for LLMUsageTotals {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            prompt_tokens: self.prompt_tokens + rhs.prompt_tokens,
+            output_tokens: self.output_tokens + rhs.output_tokens,
+            total_tokens: self.total_tokens + rhs.total_tokens,
+            has_data: self.has_data || rhs.has_data,
+        }
+    }
+}
+
+impl std::fmt::Display for LLMUsageTotals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.has_data {
+            write!(
+                f,
+                "prompt: {}, output: {}, total: {}",
+                self.prompt_tokens, self.output_tokens, self.total_tokens
+            )
+        } else {
+            f.write_str("unavailable")
         }
     }
 }

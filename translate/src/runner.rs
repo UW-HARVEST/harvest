@@ -6,9 +6,12 @@ use std::collections::HashMap;
 use std::iter::once;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::{self, JoinHandle, ThreadId, spawn};
+use std::time::{Duration, Instant};
 use tracing::{error, info, trace};
+
+const SUMMARY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Spawns off each tool execution in its own thread, and keeps track of those threads.
 pub struct ToolRunner {
@@ -49,20 +52,37 @@ impl ToolRunner {
         if self.invocations.is_empty() {
             return false;
         }
-        for thread_id in
-            once(self.receiver.recv().expect("sender dropped")).chain(self.receiver.try_iter())
-        {
+        let first_thread_id = loop {
+            match self.receiver.recv_timeout(SUMMARY_INTERVAL) {
+                Ok(thread_id) => break thread_id,
+                Err(RecvTimeoutError::Timeout) => {
+                    let summary = self
+                        .invocations
+                        .values()
+                        .map(|inv| format!("{} ({:.1?})", inv.name, inv.start_time.elapsed()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    info!("Still running: {summary}");
+                }
+                Err(RecvTimeoutError::Disconnected) => panic!("sender dropped"),
+            }
+        };
+        for thread_id in once(first_thread_id).chain(self.receiver.try_iter()) {
             let invocation = self
                 .invocations
                 .remove(&thread_id)
                 .expect("missing invocation");
+            let elapsed = invocation.start_time.elapsed();
+            let name = invocation.name;
             let completed_invocation = invocation
                 .join_handle
                 .join()
                 .expect("tool invocation thread panicked");
             let Ok(representation) = completed_invocation else {
+                info!("Tool {name} failed after {elapsed:.1?}");
                 continue;
             };
+            info!("Tool {name} completed in {elapsed:.1?}");
             self.ir_version += 1;
             // Need to add new representation before reporting IR version, so that reporter can see it.
             ir.insert_representation(invocation.id, representation);
@@ -86,7 +106,9 @@ impl ToolRunner {
         id: Id,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let sender = self.sender.clone();
+        let name = tool.name();
         let (tool_joiner, tool_reporter) = self.reporter.start_tool_run(&*tool)?;
+        let start_time = Instant::now();
         let join_handle = spawn(move || {
             let logger = tool_reporter.setup_thread_logger();
             let tool_run = tool_reporter.tool_run();
@@ -123,7 +145,7 @@ impl ToolRunner {
         });
         self.invocations.insert(
             join_handle.thread().id(),
-            RunningInvocation { id, join_handle },
+            RunningInvocation { id, name, start_time, join_handle },
         );
         trace!(
             "Adding invocation for tool. Current invocations: {:?}",
@@ -137,6 +159,8 @@ impl ToolRunner {
 /// thread.
 struct RunningInvocation {
     id: Id,
+    name: &'static str,
+    start_time: Instant,
     join_handle: JoinHandle<Result<Box<dyn Representation>, ()>>,
 }
 

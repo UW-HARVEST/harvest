@@ -145,7 +145,12 @@ impl ToolRunner {
         });
         self.invocations.insert(
             join_handle.thread().id(),
-            RunningInvocation { id, name, start_time, join_handle },
+            RunningInvocation {
+                id,
+                name,
+                start_time,
+                join_handle,
+            },
         );
         trace!(
             "Adding invocation for tool. Current invocations: {:?}",

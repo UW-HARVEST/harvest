@@ -1301,7 +1301,6 @@ dependencies = [
 name = "generate_difftest_suite"
 version = "0.1.0"
 dependencies = [
- "full_source",
  "generate_test_suite",
  "harvest_core",
  "serde",

@@ -38,7 +38,7 @@ Follow this structure exactly:
 Rules:
 - dlopen calls go inside main(), never at file scope
 - Store dlopen handles in the static c_lib / rust_lib globals; pass those to dlsym, never RTLD_DEFAULT
-- Deduce function pointer types from the C source files; do not include headers to get them
+- Deduce function pointer types from the test suite (the call sites show the argument types and return type); do not include any project headers
 - For scalars use ==; for structs/arrays use memcmp
 - Each diff function receives int *passed and int *failed and increments the appropriate counter
 - Print "PASS diff_TXXX <function_name>" on match

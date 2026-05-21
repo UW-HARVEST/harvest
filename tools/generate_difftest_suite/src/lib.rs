@@ -1,4 +1,3 @@
-use full_source::RawSource;
 use generate_test_suite::TestSuite;
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
@@ -50,39 +49,16 @@ impl Tool for GenerateDiffTestSuite {
             .get::<TestSuite>(inputs[0])
             .ok_or("generate_difftest_suite: no TestSuite in IR")?;
 
-        let raw_source = context
-            .ir_snapshot
-            .get::<RawSource>(inputs[1])
-            .ok_or("generate_difftest_suite: no RawSource in IR")?;
-
         let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, SYSTEM_PROMPT)?;
 
         #[derive(Serialize)]
-        struct InputFile {
-            path: String,
-            contents: String,
-        }
-
-        #[derive(Serialize)]
         struct RequestBody {
-            c_source_files: Vec<InputFile>,
             test_suite: String,
         }
-
-        let c_source_files = raw_source
-            .dir
-            .files_recursive()
-            .into_iter()
-            .map(|(path, contents)| InputFile {
-                path: path.to_string_lossy().into_owned(),
-                contents: String::from_utf8_lossy(contents).into_owned(),
-            })
-            .collect();
 
         let request = build_request(
             "Convert this test suite into a differential test harness using dlopen:",
             &RequestBody {
-                c_source_files,
                 test_suite: test_suite.source.clone(),
             },
         )?;

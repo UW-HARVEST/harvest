@@ -1,10 +1,25 @@
 {
-    "name": "source_file",
+    "name": "test_vectors",
     "schema": {
         "type": "object",
         "properties": {
-            "source": { "type": "string" }
+            "tests": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "function": { "type": "string" },
+                        "args": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["function", "args"],
+                    "additionalProperties": false
+                }
+            }
         },
-        "required": ["source"]
+        "required": ["tests"],
+        "additionalProperties": false
     }
 }

@@ -1301,17 +1301,6 @@ dependencies = [
 name = "generate_difftest_suite"
 version = "0.1.0"
 dependencies = [
- "generate_test_suite",
- "harvest_core",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "generate_test_suite"
-version = "0.1.0"
-dependencies = [
  "full_source",
  "harvest_core",
  "serde",
@@ -1449,7 +1438,6 @@ dependencies = [
  "fix_declarations_llm",
  "fix_diff_failures",
  "generate_difftest_suite",
- "generate_test_suite",
  "harvest_core",
  "libc",
  "load_raw_source",

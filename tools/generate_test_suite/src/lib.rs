@@ -4,8 +4,8 @@ use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 use tracing::info;
 
 const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
@@ -40,8 +40,7 @@ impl Tool for GenerateTestSuite {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        let config =
-            Config::deserialize(context.config.tools.get("generate_test_suite").unwrap())?;
+        let config = Config::deserialize(context.config.tools.get("generate_test_suite").unwrap())?;
 
         let raw_source = context
             .ir_snapshot
@@ -92,7 +91,9 @@ impl Tool for GenerateTestSuite {
             usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
         );
 
-        Ok(Box::new(TestSuite { source: parsed.source }))
+        Ok(Box::new(TestSuite {
+            source: parsed.source,
+        }))
     }
 }
 

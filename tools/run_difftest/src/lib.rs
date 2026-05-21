@@ -58,6 +58,17 @@ impl Tool for RunDiffTest {
             .get::<CargoPackage>(inputs[2])
             .ok_or("run_difftest: no CargoPackage in IR")?;
 
+        // Short-circuit for non-library projects.
+        let Some(ref c_so) = c_library.so_path else {
+            info!("run_difftest: project is not a library; returning empty result");
+            return Ok(Box::new(DiffTestResult {
+                passed: 0,
+                failed: 0,
+                total: 0,
+                failures: vec![],
+            }));
+        };
+
         // Materialize the Rust package with cdylib added, then build it.
         let rust_root = tempfile::tempdir()?;
         cargo_package.materialize(rust_root.path())?;
@@ -100,7 +111,7 @@ impl Tool for RunDiffTest {
         // Run the diff test binary.
         info!("Running diff test binary...");
         let output = Command::new(&bin_path)
-            .arg(&c_library.so_path)
+            .arg(c_so)
             .arg(&rust_so)
             .output()
             .map_err(|e| format!("run_difftest: failed to run difftest_bin: {e}"))?;
@@ -126,7 +137,12 @@ fn parse_output(output: &str) -> Box<DiffTestResult> {
     let total = passed + failed;
     info!("Diff test result: {passed}/{total} passed");
 
-    Box::new(DiffTestResult { passed, failed, total, failures })
+    Box::new(DiffTestResult {
+        passed,
+        failed,
+        total,
+        failures,
+    })
 }
 
 /// Returns the first `.so` file found directly in `dir` (non-recursive, skips subdirectories).

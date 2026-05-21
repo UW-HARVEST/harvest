@@ -10,9 +10,9 @@ use build_c_library::BuildCLibrary;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
+use fix_diff_failures::FixDiffFailures;
 use generate_difftest_suite::GenerateDiffTestSuite;
 use generate_test_suite::GenerateTestSuite;
-use run_difftest::RunDiffTest;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -20,6 +20,7 @@ use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use quantize_rust_spans::QuantizeRustSpans;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
+use run_difftest::{DiffTestResult, RunDiffTest};
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -87,10 +88,60 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             }
         }
 
-        // Baseline diff test run — establishes pass/fail before any diff repair loop.
-        let _diff_test_result =
-            scheduler.queue_after(RunDiffTest, &[diff_test_suite, c_library, current_pkg_id]);
-        scheduler.queue_after(WriteOutput, &[current_build_id]);
+        // Diff-repair loop — skipped for agentic (which has its own verify step) and when
+        // diff test prerequisites did not produce output (e.g. non-library project or LLM
+        // failure). The loop tracks the best-so-far CargoPackage by pass count; regressions
+        // are implicitly discarded by not advancing the best pointers.
+        let mut best_build_id = current_build_id;
+        if !config.agentic && ir.contains_id(diff_test_suite) && ir.contains_id(c_library) {
+            let mut best_cargo_id = current_pkg_id;
+            let mut best_diff_result_id =
+                scheduler.queue_after(RunDiffTest, &[diff_test_suite, c_library, current_pkg_id]);
+            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+            for _ in 0..config.max_diff_repair_passes {
+                let failed = ir
+                    .get::<DiffTestResult>(best_diff_result_id)
+                    .ok_or("transpile: no DiffTestResult in IR")?
+                    .failed;
+                if failed == 0 {
+                    break;
+                }
+                let fix = scheduler.queue_after(
+                    FixDiffFailures,
+                    &[best_diff_result_id, load_src, best_cargo_id],
+                );
+                let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                if !ir
+                    .get::<CargoBuildResult>(new_build)
+                    .is_some_and(|r| r.success)
+                {
+                    continue;
+                }
+
+                let new_result_id =
+                    scheduler.queue_after(RunDiffTest, &[diff_test_suite, c_library, fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                let old_passed = ir
+                    .get::<DiffTestResult>(best_diff_result_id)
+                    .ok_or("transpile: no best DiffTestResult")?
+                    .passed;
+                let new_passed = ir
+                    .get::<DiffTestResult>(new_result_id)
+                    .ok_or("transpile: no new DiffTestResult")?
+                    .passed;
+                if new_passed > old_passed {
+                    best_cargo_id = fix;
+                    best_build_id = new_build;
+                    best_diff_result_id = new_result_id;
+                }
+            }
+        }
+
+        scheduler.queue_after(WriteOutput, &[best_build_id]);
         scheduler.run_all(&mut runner, &mut ir, config)?;
 
         Ok(())

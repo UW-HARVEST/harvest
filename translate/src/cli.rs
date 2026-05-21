@@ -41,6 +41,10 @@ pub struct Args {
     #[arg(long, default_value = "2")]
     pub repair_passes: usize,
 
+    /// Number of diff-based repair passes to attempt after translation.
+    #[arg(long, default_value = "2")]
+    pub diff_repair_passes: usize,
+
     /// Prints out the location of the config file.
     #[arg(long)]
     pub print_config_path: bool,
@@ -122,6 +126,10 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
 
     settings = settings
         .set_override("max_repair_passes", args.repair_passes as i64)
+        .expect("settings override failed");
+
+    settings = settings
+        .set_override("max_diff_repair_passes", args.diff_repair_passes as i64)
         .expect("settings override failed");
 
     // We need to set an override so that deserializing the config does not error.

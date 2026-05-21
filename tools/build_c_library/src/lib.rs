@@ -9,15 +9,19 @@ use tempfile::TempDir;
 use tracing::info;
 
 /// The compiled C shared library artifact produced by running CMake on the C source.
+/// `so_path` is `None` when the project is not a library (diff testing is skipped for
+/// executables).
 pub struct CLibraryArtifact {
-    pub so_path: PathBuf,
-    // Keeps the temp directory alive for the lifetime of this artifact.
-    _root: Arc<TempDir>,
+    pub so_path: Option<PathBuf>,
+    _root: Option<Arc<TempDir>>,
 }
 
 impl std::fmt::Display for CLibraryArtifact {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "CLibraryArtifact({})", self.so_path.display())
+        match &self.so_path {
+            Some(p) => write!(f, "CLibraryArtifact({})", p.display()),
+            None => write!(f, "CLibraryArtifact(not applicable)"),
+        }
     }
 }
 
@@ -53,7 +57,11 @@ impl Tool for BuildCLibrary {
             .ok_or("build_c_library: no ProjectSpec in IR")?;
 
         if !matches!(project_spec.kind, ProjectKind::Library) {
-            return Err("build_c_library: project is not a library".into());
+            info!("build_c_library: project is not a library; skipping C build");
+            return Ok(Box::new(CLibraryArtifact {
+                so_path: None,
+                _root: None,
+            }));
         }
 
         let root = Arc::new(tempfile::tempdir()?);
@@ -90,7 +98,10 @@ impl Tool for BuildCLibrary {
             .ok_or("build_c_library: no .so found in build directory")?;
 
         info!("Found shared library: {}", so_path.display());
-        Ok(Box::new(CLibraryArtifact { so_path, _root: root }))
+        Ok(Box::new(CLibraryArtifact {
+            so_path: Some(so_path),
+            _root: Some(root),
+        }))
     }
 }
 

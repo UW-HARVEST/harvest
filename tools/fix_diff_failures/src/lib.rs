@@ -1,40 +1,24 @@
-use full_source::RawSource;
-use generate_test_suite::TestSuite;
+use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
+use harvest_core::fs::RawDir;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
+use run_difftest::DiffTestResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::info;
 
 const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
 
-/// A generated C differential test suite that loads both the C and Rust shared libraries via
-/// dlopen and compares their outputs on identical inputs.
-pub struct DiffTestSuite {
-    pub source: String,
-}
+pub struct FixDiffFailures;
 
-impl std::fmt::Display for DiffTestSuite {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(&self.source)
-    }
-}
-
-impl Representation for DiffTestSuite {
+impl Tool for FixDiffFailures {
     fn name(&self) -> &'static str {
-        "diff_test_suite"
-    }
-}
-
-pub struct GenerateDiffTestSuite;
-
-impl Tool for GenerateDiffTestSuite {
-    fn name(&self) -> &'static str {
-        "generate_difftest_suite"
+        "fix_diff_failures"
     }
 
     fn run(
@@ -42,48 +26,62 @@ impl Tool for GenerateDiffTestSuite {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        let config =
-            Config::deserialize(context.config.tools.get("generate_difftest_suite").unwrap())?;
+        let config = Config::deserialize(context.config.tools.get("fix_diff_failures").unwrap())?;
 
-        let test_suite = context
+        let diff_result = context
             .ir_snapshot
-            .get::<TestSuite>(inputs[0])
-            .ok_or("generate_difftest_suite: no TestSuite in IR")?;
-
+            .get::<DiffTestResult>(inputs[0])
+            .ok_or("fix_diff_failures: no DiffTestResult in IR")?;
         let raw_source = context
             .ir_snapshot
             .get::<RawSource>(inputs[1])
-            .ok_or("generate_difftest_suite: no RawSource in IR")?;
+            .ok_or("fix_diff_failures: no RawSource in IR")?;
+        let cargo_package = context
+            .ir_snapshot
+            .get::<CargoPackage>(inputs[2])
+            .ok_or("fix_diff_failures: no CargoPackage in IR")?;
 
         let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, SYSTEM_PROMPT)?;
 
         #[derive(Serialize)]
-        struct InputFile {
+        struct SourceFile {
             path: String,
             contents: String,
         }
 
         #[derive(Serialize)]
         struct RequestBody {
-            c_source_files: Vec<InputFile>,
-            test_suite: String,
+            c_source_files: Vec<SourceFile>,
+            rust_source_files: Vec<SourceFile>,
+            failures: Vec<String>,
         }
 
         let c_source_files = raw_source
             .dir
             .files_recursive()
             .into_iter()
-            .map(|(path, contents)| InputFile {
+            .map(|(path, contents)| SourceFile {
+                path: path.to_string_lossy().into_owned(),
+                contents: String::from_utf8_lossy(contents).into_owned(),
+            })
+            .collect();
+
+        let rust_source_files = cargo_package
+            .dir
+            .files_recursive()
+            .into_iter()
+            .map(|(path, contents)| SourceFile {
                 path: path.to_string_lossy().into_owned(),
                 contents: String::from_utf8_lossy(contents).into_owned(),
             })
             .collect();
 
         let request = build_request(
-            "Convert this test suite into a differential test harness using dlopen:",
+            "Fix the Rust code to match C behavior for the following failures:",
             &RequestBody {
                 c_source_files,
-                test_suite: test_suite.source.clone(),
+                rust_source_files,
+                failures: diff_result.failures.clone(),
             },
         )?;
 
@@ -92,20 +90,30 @@ impl Tool for GenerateDiffTestSuite {
         usage_totals.add_usage(usage.as_ref());
 
         #[derive(Deserialize)]
-        struct Response {
-            source: String,
+        struct OutputFiles {
+            files: Vec<OutputFile>,
         }
 
-        let parsed: Response = serde_json::from_str(&response)?;
+        #[derive(Deserialize)]
+        struct OutputFile {
+            path: PathBuf,
+            contents: String,
+        }
+
+        let files: OutputFiles = serde_json::from_str(&response)?;
+        info!("LLM returned {} files", files.files.len());
+
+        let mut out_dir = RawDir::default();
+        for file in files.files {
+            out_dir.set_file(&file.path, file.contents.into())?;
+        }
 
         info!(
             "Token usage [total] - prompt: {}, output: {}, total: {}",
             usage_totals.prompt_tokens, usage_totals.output_tokens, usage_totals.total_tokens
         );
 
-        Ok(Box::new(DiffTestSuite {
-            source: parsed.source,
-        }))
+        Ok(Box::new(CargoPackage { dir: out_dir }))
     }
 }
 
@@ -119,6 +127,6 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) {
-        unknown_field_warning("tools.generate_difftest_suite", &self.unknown);
+        unknown_field_warning("tools.fix_diff_failures", &self.unknown);
     }
 }

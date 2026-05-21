@@ -1,0 +1,15 @@
+[package]
+name = "run_difftest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+build_c_library.workspace = true
+full_source.workspace = true
+generate_difftest_suite.workspace = true
+harvest_core.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

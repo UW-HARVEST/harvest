@@ -700,6 +700,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "build_c_library"
+version = "0.1.0"
+dependencies = [
+ "build_project_spec",
+ "full_source",
+ "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "build_project_spec"
 version = "0.1.0"
 dependencies = [
@@ -1275,6 +1286,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "generate_difftest_suite"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "generate_test_suite",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "generate_test_suite"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1395,18 +1429,22 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
+ "build_c_library",
  "build_project_spec",
  "c_ast",
  "clap",
  "config",
  "directories",
  "fix_declarations_llm",
+ "generate_difftest_suite",
+ "generate_test_suite",
  "harvest_core",
  "libc",
  "load_raw_source",
  "modular_translation_llm",
  "quantize_rust_spans",
  "raw_source_to_cargo_llm",
+ "run_difftest",
  "serde",
  "serde_json",
  "thiserror",
@@ -2372,6 +2410,18 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "run_difftest"
+version = "0.1.0"
+dependencies = [
+ "build_c_library",
+ "full_source",
+ "generate_difftest_suite",
+ "harvest_core",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

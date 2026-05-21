@@ -6,11 +6,13 @@ mod runner;
 mod scheduler;
 pub mod util;
 
+use build_c_library::BuildCLibrary;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
 use generate_difftest_suite::GenerateDiffTestSuite;
 use generate_test_suite::GenerateTestSuite;
+use run_difftest::RunDiffTest;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -42,9 +44,10 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
 
-    // Test suite generation runs in parallel with translation (depends only on raw source).
+    // Test suite generation and C library build run in parallel with translation.
     let test_suite = scheduler.queue_after(GenerateTestSuite, &[load_src]);
-    let _diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[test_suite, load_src]);
+    let diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[test_suite, load_src]);
+    let c_library = scheduler.queue_after(BuildCLibrary, &[load_src, project_spec]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {
@@ -84,6 +87,9 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             }
         }
 
+        // Baseline diff test run — establishes pass/fail before any diff repair loop.
+        let _diff_test_result =
+            scheduler.queue_after(RunDiffTest, &[diff_test_suite, c_library, current_pkg_id]);
         scheduler.queue_after(WriteOutput, &[current_build_id]);
         scheduler.run_all(&mut runner, &mut ir, config)?;
 

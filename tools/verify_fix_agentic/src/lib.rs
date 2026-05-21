@@ -108,12 +108,12 @@ impl Tool for VerifyFixAgentic {
         let agent_work_dir = match agent {
             AgentKind::Kiro => {
                 let p = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
-                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan)?;
+                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env)?;
                 case_dir.to_path_buf()
             }
             AgentKind::Claude => {
                 write_claude_sandbox(case_dir)?;
-                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan)?;
+                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env)?;
                 translated.clone()
             }
         };
@@ -207,9 +207,11 @@ fn invoke_agent(
     agent: AgentKind,
     model: Option<&str>,
     no_plan: bool,
+    extra_env: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let use_ccr = model.map_or(false, |m| m.contains(','));
     info!(
-        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s, ccr={use_ccr})",
         model.unwrap_or("(cli default)")
     );
 
@@ -256,6 +258,13 @@ fn invoke_agent(
             }
             if let Some(m) = model {
                 cmd.env("MODEL", m);
+            }
+            for (k, v) in extra_env {
+                info!("Injecting env var: {k}");
+                cmd.env(k, v);
+            }
+            if use_ccr {
+                cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
             }
             cmd.status()?
         }
@@ -326,6 +335,12 @@ pub struct Config {
     /// mechanism added in 883e2e2.
     #[serde(default)]
     pub no_plan: bool,
+
+    /// Extra environment variables to inject into the agent process.
+    /// Useful for CCR provider API keys, proxy settings, etc.
+    /// Defined as a TOML table under `[tools.verify_fix_agentic.env]`.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 
 
     /// Destination path for the agent's tool wishlist file.

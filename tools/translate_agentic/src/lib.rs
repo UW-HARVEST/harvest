@@ -103,7 +103,7 @@ impl Tool for TranslateAgentic {
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
         }
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan)?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan, &config.env)?;
 
         // Copy the wishlist out before the tempdir is dropped.
         if local_wishlist.exists() {
@@ -165,10 +165,14 @@ fn invoke_agent(
     agent: AgentKind,
     model: Option<&str>,
     no_plan: bool,
+    extra_env: &HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let use_ccr = model.map_or(false, |m| m.contains(','));
+    // CCR mode: route through claude-code-router via ANTHROPIC_BASE_URL.
     info!(
-        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
-        model.unwrap_or("(cli default)")
+        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s, ccr={use_ccr}, extra_env={} vars)",
+        model.unwrap_or("(cli default)"),
+        extra_env.len()
     );
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
@@ -215,6 +219,15 @@ fn invoke_agent(
             }
             if let Some(m) = model {
                 cmd.env("MODEL", m);
+            }
+            // Inject extra environment variables (e.g. API keys for CCR providers).
+            for (k, v) in extra_env {
+                info!("Injecting env var: {k}");
+                cmd.env(k, v);
+            }
+            // CCR mode: point claude at the local CCR proxy.
+            if use_ccr {
+                cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
             }
             cmd.status()?
         }
@@ -324,6 +337,8 @@ pub struct Config {
 
     /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
     /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// When set to a "provider,model" format (e.g. "openrouter,deepseek/deepseek-v4-pro"),
+    /// the agent is invoked via `ccr code` instead of `claude`, routing through CCR.
     pub model: Option<String>,
 
     /// If true, use the pre-anti-compaction prompt (no PLAN.md / Invariants /
@@ -333,6 +348,15 @@ pub struct Config {
     #[serde(default)]
     pub no_plan: bool,
 
+    /// Extra environment variables to inject into the agent process.
+    /// Useful for CCR provider API keys, proxy settings, etc.
+    /// Defined as a TOML table under `[tools.translate_agentic.env]`.
+    /// Example:
+    ///   [tools.translate_agentic.env]
+    ///   OPENROUTER_API_KEY = "sk-or-..."
+    ///   OPENCODE_GO_API_KEY = "..."
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).

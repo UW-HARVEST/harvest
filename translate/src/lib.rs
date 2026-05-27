@@ -12,6 +12,7 @@ use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
 use fix_diff_failures::FixDiffFailures;
 use generate_difftest_suite::GenerateDiffTestSuite;
+use generate_exec_difftests::GenerateExecDifftests;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -44,9 +45,10 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
 
-    // Diff test suite generation and C library build run in parallel with translation.
+    // Diff test suite generation and C artifact build run in parallel with translation.
     let diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
     let c_library = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
+    let _exec_test_inputs = scheduler.queue_after(GenerateExecDifftests, &[load_src]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {

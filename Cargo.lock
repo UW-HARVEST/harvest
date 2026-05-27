@@ -1126,6 +1126,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec_runner"
+version = "0.1.0"
+dependencies = [
+ "wait-timeout",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1309,6 +1316,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "generate_exec_difftests"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1395,6 +1413,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
+ "exec_runner",
  "full_source",
  "harvest_core",
  "harvest_translate",
@@ -1438,6 +1457,7 @@ dependencies = [
  "fix_declarations_llm",
  "fix_diff_failures",
  "generate_difftest_suite",
+ "generate_exec_difftests",
  "harvest_core",
  "libc",
  "load_raw_source",

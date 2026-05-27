@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmark", "core", "tools/full_source", "tools/build_project_spec", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "tools/write_output", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/quantize_rust_spans", "tools/fix_declarations_llm", "tools/translate_agentic", "tools/verify_fix_agentic", "tools/generate_difftest_suite", "tools/build_c_artifact", "tools/run_difftest", "tools/fix_diff_failures"]
+members = ["benchmark", "core", "tools/full_source", "tools/build_project_spec", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "tools/write_output", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/quantize_rust_spans", "tools/fix_declarations_llm", "tools/translate_agentic", "tools/verify_fix_agentic", "tools/generate_difftest_suite", "tools/build_c_artifact", "tools/run_difftest", "tools/fix_diff_failures", "tools/exec_runner", "tools/generate_exec_difftests"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -22,6 +22,8 @@ generate_difftest_suite = { path = "tools/generate_difftest_suite" }
 build_c_artifact = { path = "tools/build_c_artifact" }
 run_difftest = { path = "tools/run_difftest" }
 fix_diff_failures = { path = "tools/fix_diff_failures" }
+exec_runner = { path = "tools/exec_runner" }
+generate_exec_difftests = { path = "tools/generate_exec_difftests" }
 log = "0.4.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

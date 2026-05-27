@@ -25,12 +25,16 @@ fn boundary_values_inner(ty: &str, structs: &StructMap, depth: usize) -> Vec<Str
 
     // String types (must come before generic pointer check)
     if is_string_type(ty) {
-        return vec!["NULL".to_string(), r#""""#.to_string(), r#""hello""#.to_string()];
+        return vec![
+            "NULL".to_string(),
+            r#""""#.to_string(),
+            r#""hello""#.to_string(),
+        ];
     }
 
     // Pointer types
-    if ty.ends_with('*') {
-        let inner = ty[..ty.len() - 1].trim();
+    if let Some(stripped) = ty.strip_suffix('*') {
+        let inner = stripped.trim();
         let inner_base = inner.trim_start_matches("const").trim();
 
         if inner_base == "void" {
@@ -56,10 +60,13 @@ fn boundary_values_inner(ty: &str, structs: &StructMap, depth: usize) -> Vec<Str
 
     // Struct types (by value)
     let struct_key = ty.trim_start_matches("struct").trim();
-    if let Some((compound_name, fields)) =
-        structs.get(struct_key).or_else(|| structs.get(ty))
-    {
-        return vec![struct_compound_literal(compound_name, fields, structs, depth + 1)];
+    if let Some((compound_name, fields)) = structs.get(struct_key).or_else(|| structs.get(ty)) {
+        return vec![struct_compound_literal(
+            compound_name,
+            fields,
+            structs,
+            depth + 1,
+        )];
     }
 
     // Primitive types
@@ -85,15 +92,9 @@ fn boundary_values_inner(ty: &str, structs: &StructMap, depth: usize) -> Vec<Str
         "uintptr_t" => &["0", "1"],
         "bool" | "_Bool" => &["0", "1"],
         "int8_t" | "int_least8_t" | "int_fast8_t" => &["0", "1", "-1", "INT8_MAX", "INT8_MIN"],
-        "int16_t" | "int_least16_t" | "int_fast16_t" => {
-            &["0", "1", "-1", "INT16_MAX", "INT16_MIN"]
-        }
-        "int32_t" | "int_least32_t" | "int_fast32_t" => {
-            &["0", "1", "-1", "INT32_MAX", "INT32_MIN"]
-        }
-        "int64_t" | "int_least64_t" | "int_fast64_t" => {
-            &["0", "1", "-1", "INT64_MAX", "INT64_MIN"]
-        }
+        "int16_t" | "int_least16_t" | "int_fast16_t" => &["0", "1", "-1", "INT16_MAX", "INT16_MIN"],
+        "int32_t" | "int_least32_t" | "int_fast32_t" => &["0", "1", "-1", "INT32_MAX", "INT32_MIN"],
+        "int64_t" | "int_least64_t" | "int_fast64_t" => &["0", "1", "-1", "INT64_MAX", "INT64_MIN"],
         "uint8_t" | "uint_least8_t" | "uint_fast8_t" => &["0", "1", "UINT8_MAX"],
         "uint16_t" | "uint_least16_t" | "uint_fast16_t" => &["0", "1", "UINT16_MAX"],
         "uint32_t" | "uint_least32_t" | "uint_fast32_t" => &["0", "1", "UINT32_MAX"],
@@ -143,7 +144,10 @@ pub(super) fn generate_test_vectors(
         let sig = &sigs[fn_name];
 
         if sig.param_types.is_empty() {
-            tests.push(TestVector { function: fn_name.clone(), args: vec![] });
+            tests.push(TestVector {
+                function: fn_name.clone(),
+                args: vec![],
+            });
             continue;
         }
 
@@ -161,14 +165,20 @@ pub(super) fn generate_test_vectors(
         let neutral: Vec<String> = value_sets.iter().map(|v| v[0].clone()).collect();
 
         // Baseline: all parameters at their neutral value
-        tests.push(TestVector { function: fn_name.clone(), args: neutral.clone() });
+        tests.push(TestVector {
+            function: fn_name.clone(),
+            args: neutral.clone(),
+        });
 
         // OVAT: vary each parameter through its non-neutral values
         for (i, values) in value_sets.iter().enumerate() {
             for val in values.iter().skip(1) {
                 let mut args = neutral.clone();
                 args[i] = val.clone();
-                tests.push(TestVector { function: fn_name.clone(), args });
+                tests.push(TestVector {
+                    function: fn_name.clone(),
+                    args,
+                });
             }
         }
     }

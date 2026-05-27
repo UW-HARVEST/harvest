@@ -102,7 +102,12 @@ fn extract_c_api(
         .collect();
 
     let llm = HarvestLLM::build(&config.llm, SCHEMA_API, PROMPT_API)?;
-    let request = build_request("Extract the public API from these C source files:", &RequestBody { files: request_files })?;
+    let request = build_request(
+        "Extract the public API from these C source files:",
+        &RequestBody {
+            files: request_files,
+        },
+    )?;
 
     let mut usage = LLMUsageTotals::default();
     let (response, u) = llm.invoke(&request)?;
@@ -115,7 +120,13 @@ fn extract_c_api(
         .functions
         .into_iter()
         .map(|f| {
-            (f.name, FnSig { return_type: f.return_type, param_types: f.param_types })
+            (
+                f.name,
+                FnSig {
+                    return_type: f.return_type,
+                    param_types: f.param_types,
+                },
+            )
         })
         .collect();
 

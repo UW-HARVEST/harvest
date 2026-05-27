@@ -1,4 +1,7 @@
+mod generators;
+
 use full_source::RawSource;
+use generators::{StructMap, TestVector, generate_test_vectors};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
@@ -9,8 +12,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::info;
 
-const STRUCTURED_OUTPUT_SCHEMA: &str = include_str!("structured_schema.json");
-const SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
+const SCHEMA_API: &str = include_str!("structured_schema_api.json");
+const PROMPT_API: &str = include_str!("system_prompt_api.txt");
 
 const TMPL_HEADER: &str = include_str!("templates/header.c");
 const TMPL_PROLOGUE: &str = include_str!("templates/test_prologue.c");
@@ -40,123 +43,96 @@ impl Representation for DiffTestSuite {
 
 pub struct GenerateDiffTestSuite;
 
-#[derive(Debug, Deserialize)]
-struct TestVector {
-    function: String,
-    args: Vec<String>,
+// ── Internal types ────────────────────────────────────────────────────────────
+
+pub(crate) struct FnSig {
+    pub(crate) return_type: String,
+    pub(crate) param_types: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct TestVectors {
-    tests: Vec<TestVector>,
-}
+// ── API extraction ────────────────────────────────────────────────────────────
 
-/// Parsed C function signature.
-struct FnSig {
+#[derive(Deserialize)]
+struct ApiFunction {
+    name: String,
     return_type: String,
     param_types: Vec<String>,
 }
 
-/// Given a single parameter declaration (e.g. `const char *s`, `int a`, `size_t`),
-/// strip the trailing name (if any) and return just the type.
-fn strip_param_name(param: &str) -> String {
-    let param = param.trim();
-    if param.is_empty() || param == "void" {
-        return param.to_string();
-    }
-    // Find the start of the last identifier — that is the parameter name.
-    // Everything before it (trimmed) is the type.
-    let name_start = param
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if name_start == 0 {
-        // Single token — it's an anonymous parameter, the whole thing is the type.
-        param.to_string()
-    } else {
-        param[..name_start].trim_end().to_string()
-    }
+#[derive(Deserialize)]
+struct ApiField {
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
 }
 
-/// Split `return_type fn_name` (the text before the `(` of a declaration) into its two parts.
-fn split_return_and_name(left: &str) -> Option<(String, String)> {
-    let left = left.trim();
-    let name_start = left
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let fn_name = left[name_start..].to_string();
-    let ret_type = left[..name_start].trim().to_string();
-    if fn_name.is_empty() || ret_type.is_empty() {
-        return None;
-    }
-    Some((ret_type, fn_name))
+#[derive(Deserialize)]
+struct ApiStruct {
+    name: String,
+    fields: Vec<ApiField>,
 }
 
-/// Parse public function signatures from the raw C source files.
-/// Each line of the form `ret_type fn_name(params) {` or `...;` that does not start
-/// with `static` is treated as a function declaration.
-fn parse_c_signatures(files: &[(PathBuf, &[u8])]) -> HashMap<String, FnSig> {
-    const SKIP_NAMES: &[&str] = &[
-        "if", "for", "while", "switch", "do", "return", "sizeof", "else", "typedef", "struct",
-        "enum", "union",
-    ];
+#[derive(Deserialize)]
+struct ApiResponse {
+    functions: Vec<ApiFunction>,
+    structs: Vec<ApiStruct>,
+}
 
-    let mut sigs = HashMap::new();
-
-    for (_, contents) in files {
-        let src = String::from_utf8_lossy(contents);
-        for line in src.lines() {
-            let trimmed = line.trim();
-
-            // Skip preprocessor directives, comments, and static/typedef definitions.
-            if trimmed.starts_with('#')
-                || trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-                || trimmed.starts_with("static")
-            {
-                continue;
-            }
-
-            // Must have `(` followed somewhere by `)`.
-            let Some(paren_open) = trimmed.find('(') else {
-                continue;
-            };
-            let Some(rel_close) = trimmed[paren_open..].find(')') else {
-                continue;
-            };
-            let paren_close = paren_open + rel_close;
-
-            // After `)` must come `{` or `;` (function definition or declaration).
-            let after = trimmed[paren_close + 1..].trim();
-            if !after.starts_with('{') && !after.starts_with(';') {
-                continue;
-            }
-
-            let left = trimmed[..paren_open].trim();
-            let params_str = trimmed[paren_open + 1..paren_close].trim();
-
-            let Some((ret_type, fn_name)) = split_return_and_name(left) else {
-                continue;
-            };
-
-            if SKIP_NAMES.contains(&fn_name.as_str()) {
-                continue;
-            }
-
-            let param_types: Vec<String> = if params_str.is_empty() || params_str == "void" {
-                vec![]
-            } else {
-                params_str.split(',').map(strip_param_name).collect()
-            };
-
-            sigs.insert(fn_name, FnSig { return_type: ret_type, param_types });
-        }
+fn extract_c_api(
+    files: &[(PathBuf, &[u8])],
+    config: &Config,
+) -> Result<(HashMap<String, FnSig>, StructMap), Box<dyn std::error::Error>> {
+    #[derive(Serialize)]
+    struct InputFile {
+        path: String,
+        contents: String,
     }
 
-    sigs
+    #[derive(Serialize)]
+    struct RequestBody {
+        files: Vec<InputFile>,
+    }
+
+    let request_files = files
+        .iter()
+        .map(|(path, contents)| InputFile {
+            path: path.to_string_lossy().into_owned(),
+            contents: String::from_utf8_lossy(contents).into_owned(),
+        })
+        .collect();
+
+    let llm = HarvestLLM::build(&config.llm, SCHEMA_API, PROMPT_API)?;
+    let request = build_request("Extract the public API from these C source files:", &RequestBody { files: request_files })?;
+
+    let mut usage = LLMUsageTotals::default();
+    let (response, u) = llm.invoke(&request)?;
+    usage.add_usage(u.as_ref());
+    info!("Token usage [api extraction] - {usage}");
+
+    let api: ApiResponse = serde_json::from_str(&response)?;
+
+    let sigs = api
+        .functions
+        .into_iter()
+        .map(|f| {
+            (f.name, FnSig { return_type: f.return_type, param_types: f.param_types })
+        })
+        .collect();
+
+    let structs = api
+        .structs
+        .into_iter()
+        .map(|s| {
+            let key = s.name.trim_start_matches("struct").trim().to_string();
+            let fields = s.fields.into_iter().map(|f| (f.name, f.ty)).collect();
+            (key, (s.name, fields))
+        })
+        .collect();
+
+    Ok((sigs, structs))
 }
+
+// ── C code generation ─────────────────────────────────────────────────────────
 
 fn fill(template: &str, subs: &[(&str, &str)]) -> String {
     subs.iter().fold(template.to_string(), |s, (k, v)| {
@@ -164,11 +140,11 @@ fn fill(template: &str, subs: &[(&str, &str)]) -> String {
     })
 }
 
-fn is_void_type(ty: &str) -> bool {
+pub(crate) fn is_void_type(ty: &str) -> bool {
     ty.trim() == "void"
 }
 
-fn is_scalar_type(ty: &str) -> bool {
+pub(crate) fn is_scalar_type(ty: &str) -> bool {
     matches!(
         ty.trim(),
         "int"
@@ -203,7 +179,7 @@ fn is_scalar_type(ty: &str) -> bool {
     )
 }
 
-fn is_string_type(ty: &str) -> bool {
+pub(crate) fn is_string_type(ty: &str) -> bool {
     matches!(
         ty.trim(),
         "char *" | "const char *" | "char*" | "const char*"
@@ -277,6 +253,8 @@ fn generate_difftest_c(tests: &[TestVector], sigs: &HashMap<String, FnSig>) -> S
     out
 }
 
+// ── Tool implementation ───────────────────────────────────────────────────────
+
 impl Tool for GenerateDiffTestSuite {
     fn name(&self) -> &'static str {
         "generate_difftest_suite"
@@ -287,8 +265,13 @@ impl Tool for GenerateDiffTestSuite {
         context: RunContext,
         inputs: Vec<Id>,
     ) -> Result<Box<dyn Representation>, Box<dyn std::error::Error>> {
-        let config =
-            Config::deserialize(context.config.tools.get("generate_difftest_suite").unwrap())?;
+        let config = Config::deserialize(
+            context
+                .config
+                .tools
+                .get("generate_difftest_suite")
+                .ok_or("generate_difftest_suite: missing config section")?,
+        )?;
 
         let raw_source = context
             .ir_snapshot
@@ -296,55 +279,25 @@ impl Tool for GenerateDiffTestSuite {
             .ok_or("generate_difftest_suite: no RawSource in IR")?;
 
         let files = raw_source.dir.files_recursive();
-        let sigs = parse_c_signatures(&files);
-        info!("Parsed signatures for {} public functions", sigs.len());
-
-        let llm = HarvestLLM::build(&config.llm, STRUCTURED_OUTPUT_SCHEMA, SYSTEM_PROMPT)?;
-
-        #[derive(Serialize)]
-        struct InputFile {
-            path: String,
-            contents: String,
-        }
-
-        #[derive(Serialize)]
-        struct RequestBody {
-            files: Vec<InputFile>,
-        }
-
-        let request_files = files
-            .iter()
-            .map(|(path, contents)| InputFile {
-                path: path.to_string_lossy().into_owned(),
-                contents: String::from_utf8_lossy(contents).into_owned(),
-            })
-            .collect();
-
-        let request = build_request(
-            "Generate test vectors for every public function in this C library:",
-            &RequestBody { files: request_files },
-        )?;
-
-        let mut usage_totals = LLMUsageTotals::default();
-        let (response, usage) = llm.invoke(&request)?;
-        usage_totals.add_usage(usage.as_ref());
-
-        let vectors: TestVectors = serde_json::from_str(&response)?;
-
-        info!("Token usage [total] - {usage_totals}");
+        let (sigs, structs) = extract_c_api(&files, &config)?;
         info!(
-            "Generated {} test vectors for {} functions",
-            vectors.tests.len(),
-            vectors
-                .tests
+            "Extracted {} public functions, {} struct types",
+            sigs.len(),
+            structs.len()
+        );
+
+        let tests = generate_test_vectors(&sigs, &structs);
+        info!(
+            "Generated {} test vectors across {} functions",
+            tests.len(),
+            tests
                 .iter()
                 .map(|t| t.function.as_str())
                 .collect::<std::collections::HashSet<_>>()
                 .len()
         );
 
-        let source = generate_difftest_c(&vectors.tests, &sigs);
-
+        let source = generate_difftest_c(&tests, &sigs);
         info!(
             "Generated difftest_suite.c ({} bytes):\n{}",
             source.len(),

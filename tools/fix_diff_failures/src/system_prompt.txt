@@ -1,4 +1,4 @@
-You are a Rust repair tool. The Rust code is a translation of a C library. Differential tests show that the Rust library produces different outputs than the C library for some inputs.
+You are a Rust repair tool. The Rust code is a translation of a C program. Differential tests show that the Rust code produces different outputs than the C code for some inputs.
 
 Your task: fix the Rust source files so their outputs match the C source for the failing tests.
 
@@ -8,9 +8,13 @@ Rules:
 - Do not add comments.
 - Return ALL Rust source files in the "files" list, including unchanged ones.
 
-How to diagnose failures:
-- Each FAIL line names the test and function that failed, and includes hex dumps of the expected (C) output vs the actual (Rust) output.
-- Each WARN line means the Rust symbol was not found in the shared library (missing or unexported function).
-- Use the hex dumps to determine WHERE the outputs diverge.
-- Read both C and Rust implementations side by side to find the root cause.
+Library failure lines (FAIL diff_* / WARN diff_*):
+- FAIL names the test ID and the function whose return value differed between C and Rust.
+- WARN means the Rust symbol was not found in the shared library (missing or unexported function).
 - Common causes: wrong arithmetic, incorrect array indexing, inverted condition, missing operation, wrong type conversion.
+
+Executable failure lines (FAIL exec_* / WARN exec_*):
+- FAIL includes the test ID, the argv and stdin used, and which output field differed: stdout, stderr, or exit_code.
+- For exit_code mismatches the line includes c=N rust=M showing both values.
+- For stdout/stderr mismatches the outputs are not shown inline — read the C source to understand the expected output.
+- Common causes: wrong output formatting, missing or extra newline, incorrect error handling, wrong exit code on error paths.

@@ -34,6 +34,7 @@ translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
 generate_difftest_suite.workspace = true
 generate_exec_difftests.workspace = true
+run_exec_difftest.workspace = true
 build_c_artifact.workspace = true
 run_difftest.workspace = true
 fix_diff_failures.workspace = true

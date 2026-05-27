@@ -1465,6 +1465,7 @@ dependencies = [
  "quantize_rust_spans",
  "raw_source_to_cargo_llm",
  "run_difftest",
+ "run_exec_difftest",
  "serde",
  "serde_json",
  "thiserror",
@@ -2440,6 +2441,20 @@ dependencies = [
  "full_source",
  "generate_difftest_suite",
  "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "run_exec_difftest"
+version = "0.1.0"
+dependencies = [
+ "build_c_artifact",
+ "exec_runner",
+ "full_source",
+ "generate_exec_difftests",
+ "harvest_core",
+ "run_difftest",
  "tempfile",
  "tracing",
 ]

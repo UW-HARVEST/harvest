@@ -21,6 +21,7 @@ use modular_translation_llm::ModularTranslationLlm;
 use quantize_rust_spans::QuantizeRustSpans;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use run_difftest::{DiffTestResult, RunDiffTest};
+use run_exec_difftest::RunExecDiffTest;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -48,7 +49,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Diff test suite generation and C artifact build run in parallel with translation.
     let diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
     let c_library = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
-    let _exec_test_inputs = scheduler.queue_after(GenerateExecDifftests, &[load_src]);
+    let exec_test_inputs = scheduler.queue_after(GenerateExecDifftests, &[load_src]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {
@@ -137,6 +138,58 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
                     best_cargo_id = fix;
                     best_build_id = new_build;
                     best_diff_result_id = new_result_id;
+                }
+            }
+        }
+
+        // Exec diff-repair loop — mirrors the library loop above, but for executable projects.
+        // RunExecDiffTest short-circuits for library projects, so the two loops never conflict.
+        if !config.agentic && ir.contains_id(exec_test_inputs) && ir.contains_id(c_library) {
+            let mut best_exec_cargo_id = current_pkg_id;
+            let mut best_exec_result_id = scheduler.queue_after(
+                RunExecDiffTest,
+                &[exec_test_inputs, c_library, current_pkg_id],
+            );
+            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+            for _ in 0..config.max_diff_repair_passes {
+                let failed = ir
+                    .get::<DiffTestResult>(best_exec_result_id)
+                    .ok_or("transpile: no exec DiffTestResult in IR")?
+                    .failed;
+                if failed == 0 {
+                    break;
+                }
+                let fix = scheduler.queue_after(
+                    FixDiffFailures,
+                    &[best_exec_result_id, load_src, best_exec_cargo_id],
+                );
+                let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                if !ir
+                    .get::<CargoBuildResult>(new_build)
+                    .is_some_and(|r| r.success)
+                {
+                    continue;
+                }
+
+                let new_result_id =
+                    scheduler.queue_after(RunExecDiffTest, &[exec_test_inputs, c_library, fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                let old_passed = ir
+                    .get::<DiffTestResult>(best_exec_result_id)
+                    .ok_or("transpile: no best exec DiffTestResult")?
+                    .passed;
+                let new_passed = ir
+                    .get::<DiffTestResult>(new_result_id)
+                    .ok_or("transpile: no new exec DiffTestResult")?
+                    .passed;
+                if new_passed > old_passed {
+                    best_exec_cargo_id = fix;
+                    best_build_id = new_build;
+                    best_exec_result_id = new_result_id;
                 }
             }
         }

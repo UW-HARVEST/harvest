@@ -33,7 +33,7 @@ raw_source_to_cargo_llm.workspace = true
 translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
 generate_difftest_suite.workspace = true
-build_c_library.workspace = true
+build_c_artifact.workspace = true
 run_difftest.workspace = true
 fix_diff_failures.workspace = true
 

@@ -1,5 +1,5 @@
 [package]
-name = "build_c_library"
+name = "build_c_artifact"
 version = "0.1.0"
 edition = "2024"
 

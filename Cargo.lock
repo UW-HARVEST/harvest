@@ -700,7 +700,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "build_c_library"
+name = "build_c_artifact"
 version = "0.1.0"
 dependencies = [
  "build_project_spec",
@@ -1429,7 +1429,7 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
- "build_c_library",
+ "build_c_artifact",
  "build_project_spec",
  "c_ast",
  "clap",
@@ -2416,7 +2416,7 @@ dependencies = [
 name = "run_difftest"
 version = "0.1.0"
 dependencies = [
- "build_c_library",
+ "build_c_artifact",
  "full_source",
  "generate_difftest_suite",
  "harvest_core",

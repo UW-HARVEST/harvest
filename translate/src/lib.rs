@@ -6,7 +6,7 @@ mod runner;
 mod scheduler;
 pub mod util;
 
-use build_c_library::BuildCLibrary;
+use build_c_artifact::BuildCArtifact;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
@@ -46,7 +46,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 
     // Diff test suite generation and C library build run in parallel with translation.
     let diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
-    let c_library = scheduler.queue_after(BuildCLibrary, &[load_src, project_spec]);
+    let c_library = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
         if config.agentic_verify {

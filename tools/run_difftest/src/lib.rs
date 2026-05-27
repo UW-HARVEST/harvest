@@ -1,4 +1,4 @@
-use build_c_library::CLibraryArtifact;
+use build_c_artifact::CArtifact;
 use full_source::CargoPackage;
 use generate_difftest_suite::DiffTestSuite;
 use harvest_core::cargo_utils::CargoToml;
@@ -51,8 +51,8 @@ impl Tool for RunDiffTest {
             .ok_or("run_difftest: no DiffTestSuite in IR")?;
         let c_library = context
             .ir_snapshot
-            .get::<CLibraryArtifact>(inputs[1])
-            .ok_or("run_difftest: no CLibraryArtifact in IR")?;
+            .get::<CArtifact>(inputs[1])
+            .ok_or("run_difftest: no CArtifact in IR")?;
         let cargo_package = context
             .ir_snapshot
             .get::<CargoPackage>(inputs[2])

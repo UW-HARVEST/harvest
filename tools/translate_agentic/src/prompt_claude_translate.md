@@ -161,6 +161,11 @@ When in doubt, re-read this section.
   Rust you write. Any attempt to wrap C via a compiled static archive or
   object file will fail at test time because the C files simply won't be
   there.
+- Do NOT import or depend on any existing Rust crate that implements, wraps,
+  re-exports, or compiles the same C library you are translating. Every line
+  of Rust code must be written by you. If a function needs to call out to
+  system libraries (e.g. POSIX APIs), use `libc` or equivalent thin FFI crates,
+  not crates that compile the library you are meant to translate.
 - A `build.rs` is allowed for legitimate build-time needs (code generation,
   feature detection, etc.), but it must NOT reference, compile, or link any
   file under `c_src/`.

@@ -11,6 +11,12 @@ environment — the only code available at test time is the Rust you write. Any
 `extern "C"` FFI declarations must resolve to Rust implementations you provide,
 not to compiled C object files.
 
+Do NOT import or depend on any existing Rust crate that implements, wraps,
+re-exports, or compiles the same C library you are translating. Every line
+of Rust code must be written by you. If a function needs to call out to
+system libraries (e.g. POSIX APIs), use `libc` or equivalent thin FFI crates,
+not crates that compile the library you are meant to translate.
+
 A `build.rs` is allowed for legitimate build-time needs (code generation,
 feature detection, etc.), but it must NOT reference, compile, or link any
 file under `c_src/`.

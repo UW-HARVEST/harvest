@@ -755,6 +755,7 @@ dependencies = [
 name = "c_ast"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "clang",
  "full_source",
  "harvest_core",

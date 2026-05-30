@@ -22,7 +22,7 @@ feature detection, etc.), but it must NOT reference, compile, or link any
 file under `c_src/`.
 
 If the codebase is large, you must still translate all of it. No stubs, no
-placeholders, no shortcuts.
+placeholders, no shortcuts. Never refuse or abort a translation because the codebase seems too big.
 
 ## Step 1: Analyze BEFORE writing any code
 

@@ -1102,6 +1102,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "emit_build_features"
+version = "0.1.0"
+dependencies = [
+ "build_config",
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1413,7 +1425,9 @@ dependencies = [
  "clap",
  "config",
  "directories",
+ "emit_build_features",
  "fix_declarations_llm",
+ "full_source",
  "harvest_core",
  "libc",
  "load_raw_source",

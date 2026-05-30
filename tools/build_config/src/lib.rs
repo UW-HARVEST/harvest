@@ -26,6 +26,7 @@ pub mod build_rs;
 pub mod ir;
 pub mod scanner;
 
+pub use build_rs::render_build_rs;
 pub use ir::{
     BuildConfigIR, ConditionalTarget, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping,
     SourceSelection, SourceVariant,

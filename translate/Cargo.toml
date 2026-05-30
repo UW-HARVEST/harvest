@@ -25,6 +25,7 @@ c_ast.workspace = true
 load_raw_source.workspace = true
 build_config.workspace = true
 build_project_spec.workspace = true
+emit_build_features.workspace = true
 modular_translation_llm.workspace = true
 try_cargo_build.workspace = true
 write_output.workspace = true
@@ -33,6 +34,9 @@ fix_declarations_llm.workspace = true
 raw_source_to_cargo_llm.workspace = true
 translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
+
+[dev-dependencies]
+full_source.workspace = true
 
 [lints]
 workspace = true

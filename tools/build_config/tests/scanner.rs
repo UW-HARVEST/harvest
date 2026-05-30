@@ -201,6 +201,13 @@ fn ir_display_matches_summary_format() {
 }
 
 #[test]
+fn ir_display_for_empty_ir() {
+    let dir = fixture("noconfig");
+    let ir = scan(&dir);
+    assert_eq!(format!("{ir}"), "BuildConfigIR { empty }");
+}
+
+#[test]
 fn materialize_writes_pretty_json() {
     use harvest_core::Representation as _;
     let dir = fixture("config_notests");

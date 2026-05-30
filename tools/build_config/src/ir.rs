@@ -148,6 +148,9 @@ pub struct SubdirVariant {
 
 impl fmt::Display for BuildConfigIR {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty {
+            return write!(f, "BuildConfigIR {{ empty }}");
+        }
         write!(
             f,
             "BuildConfigIR {{ {} vars, {} defines, {} source_selections, {} conditional_targets, {} subdir_selections }}",

@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::ir::{
     BuildConfigIR, ConditionalTarget, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping,
-    SourceSelection, SourceVariant,
+    SourceSelection, SourceVariant, SubdirSelection, SubdirVariant,
 };
 
 /// Top-level entry point. Given the project's `RawDir`, produce a
@@ -61,6 +61,7 @@ pub fn scan(dir: &RawDir) -> BuildConfigIR {
         defines: scanned.defines,
         source_selections: scanned.source_selections,
         conditional_targets: scanned.conditional_targets,
+        subdir_selections: scanned.subdir_selections,
         is_empty: false,
     }
 }
@@ -73,6 +74,7 @@ struct ScannedCmake {
     defines: Vec<DefineMapping>,
     source_selections: Vec<SourceSelection>,
     conditional_targets: Vec<ConditionalTarget>,
+    subdir_selections: Vec<SubdirSelection>,
     /// Variable name -> default value parsed from CMake (`set(... CACHE ...)`
     /// or `option(...)`).
     var_defaults: HashMap<String, Option<String>>,
@@ -166,22 +168,37 @@ struct Statement {
 
 fn scan_cmake(dir: &RawDir, config: &Configuration, files: &HashSet<PathBuf>) -> ScannedCmake {
     let known_vars: HashSet<&str> = config.variables.keys().map(String::as_str).collect();
+    // Map each configurable variable to the stringified values declared in
+    // `configuration.json`. Used by `handle_add_subdirectory` to enumerate the
+    // subtrees behind `add_subdirectory(${VAR})`. The stringification mirrors
+    // `build_variables` (`true`/`false` for booleans, decimal for numbers).
+    let var_values: HashMap<String, Vec<String>> = config
+        .variables
+        .iter()
+        .map(|(k, raw)| {
+            let values: Vec<String> = raw
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Bool(b) => Some(if *b { "true".to_string() } else { "false".to_string() }),
+                    Value::String(s) => Some(s.clone()),
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            (k.clone(), values)
+        })
+        .collect();
+
     let mut out = ScannedCmake::default();
-    // List variable name -> source list contents (the unsubstituted file
-    // pattern, with `rel_dir` already applied). We need this so we can
-    // resolve later `add_library`/`add_executable` references to
-    // `${BACKEND_SOURCES}` etc.
     let mut source_lists: HashMap<String, Vec<String>> = HashMap::new();
-    // Composed variable name -> CMake value (e.g. BUILD_PROFILE -> "${BACKEND}_${WORD_SIZE}").
     let mut composed_vars: HashMap<String, String> = HashMap::new();
-    // Subdirectory paths we have already scanned, so we do not loop on a
-    // cyclic CMake graph.
     let mut visited: HashSet<PathBuf> = HashSet::new();
 
     scan_cmake_file(
         dir,
         Path::new(""),
         &known_vars,
+        &var_values,
         files,
         &mut out,
         &mut source_lists,
@@ -205,6 +222,7 @@ fn scan_cmake_file(
     dir: &RawDir,
     rel_dir: &Path,
     known_vars: &HashSet<&str>,
+    var_values: &HashMap<String, Vec<String>>,
     files: &HashSet<PathBuf>,
     out: &mut ScannedCmake,
     source_lists: &mut HashMap<String, Vec<String>>,
@@ -296,6 +314,7 @@ fn scan_cmake_file(
                     dir,
                     rel_dir,
                     known_vars,
+                    var_values,
                     files,
                     out,
                     source_lists,
@@ -313,16 +332,19 @@ fn scan_cmake_file(
 /// - **Literal path**: recursively scan `<rel_dir>/<path>/CMakeLists.txt`.
 ///   Source paths defined inside that file are normalized to project-relative
 ///   form via [`normalize_join`].
-/// - **`${VAR}` reference**: variable-driven subdirectory selection is
-///   recognized but not yet modeled in the IR (each value of VAR would map
-///   to a distinct subtree of targets and sources). The scanner logs a
-///   warning and skips the call so the rest of the file scans cleanly.
+/// - **`${VAR}` reference**: enumerate the values of `VAR` declared in
+///   `configuration.json`. For each value whose `<rel_dir>/<value>/CMakeLists.txt`
+///   exists, scan it with a cloned snapshot of the surrounding source-list /
+///   composed-variable state and collect the IR fragment into a
+///   [`SubdirSelection`]. Variants do not see one another's defines, source
+///   lists, or targets.
 #[allow(clippy::too_many_arguments)]
 fn handle_add_subdirectory(
     args: &[String],
     dir: &RawDir,
     rel_dir: &Path,
     known_vars: &HashSet<&str>,
+    var_values: &HashMap<String, Vec<String>>,
     files: &HashSet<PathBuf>,
     out: &mut ScannedCmake,
     source_lists: &mut HashMap<String, Vec<String>>,
@@ -332,17 +354,72 @@ fn handle_add_subdirectory(
     let Some(first) = args.first() else { return };
     let text = arg_text(first);
 
-    // `add_subdirectory(${VAR})` -- variable-driven, not yet modeled.
-    if let Some(var) = as_single_var_ref(&text) {
-        if known_vars.contains(var) {
+    // `add_subdirectory(${VAR})` -- one subtree per value of VAR.
+    if let Some(var) = as_single_var_ref(&text)
+        && known_vars.contains(var)
+    {
+        let Some(values) = var_values.get(var) else {
             warn!(
-                "build_config: `add_subdirectory(${{{var}}})` at `{}` selects a \
-                 subdirectory based on a configurable variable; variable-driven \
-                 subdirectory selection is not yet modeled in BuildConfigIR -- skipping",
+                "build_config: `add_subdirectory(${{{var}}})` at `{}`, but `{var}` \
+                 has no values in `configuration.json`; skipping",
                 rel_dir.display(),
             );
             return;
+        };
+        let mut variants: Vec<SubdirVariant> = Vec::new();
+        for value in values {
+            let Some(child) = normalize_join(rel_dir, Path::new(value)) else {
+                continue;
+            };
+            // Variant subtrees must exist on disk; skip silently if not.
+            if dir.get_file(child.join("CMakeLists.txt")).is_err() {
+                continue;
+            }
+            // Fresh per-variant state, seeded from the surrounding scope so
+            // variants can see (but not mutate) outer accumulators.
+            let mut variant_out = ScannedCmake::default();
+            let mut variant_source_lists = source_lists.clone();
+            let mut variant_composed_vars = composed_vars.clone();
+            let mut variant_visited: HashSet<PathBuf> = HashSet::new();
+            scan_cmake_file(
+                dir,
+                &child,
+                known_vars,
+                var_values,
+                files,
+                &mut variant_out,
+                &mut variant_source_lists,
+                &mut variant_composed_vars,
+                &mut variant_visited,
+            );
+            // Resolve composed defines within the variant only.
+            rewrite_composed_defines(
+                &mut variant_out.defines,
+                &variant_composed_vars,
+                known_vars,
+            );
+            variants.push(SubdirVariant {
+                value: value.clone(),
+                path: child,
+                defines: variant_out.defines,
+                source_selections: variant_out.source_selections,
+                conditional_targets: variant_out.conditional_targets,
+                subdir_selections: variant_out.subdir_selections,
+            });
         }
+        if !variants.is_empty() {
+            out.subdir_selections.push(SubdirSelection {
+                driving_var: var.to_string(),
+                variants,
+            });
+        } else {
+            warn!(
+                "build_config: `add_subdirectory(${{{var}}})` at `{}` matched no \
+                 subdirectory with a `CMakeLists.txt`; nothing recorded",
+                rel_dir.display(),
+            );
+        }
+        return;
     }
 
     // Literal path.
@@ -358,6 +435,7 @@ fn handle_add_subdirectory(
         dir,
         &child,
         known_vars,
+        var_values,
         files,
         out,
         source_lists,
@@ -2130,34 +2208,191 @@ mod tests {
     }
 
     #[test]
-    fn add_subdirectory_skips_variable_form() {
+    fn add_subdirectory_variable_form_emits_one_variant_per_value() {
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"BACKEND": ["alpha", "beta"], "MODE": ["fast", "safe"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "set(BACKEND \"alpha\" CACHE STRING \"doc\")\n\
+                 set(MODE \"fast\" CACHE STRING \"doc\")\n\
+                 add_subdirectory(${BACKEND})\n",
+            ),
+            (
+                "alpha/CMakeLists.txt",
+                "add_compile_definitions(\"PICKED_MODE=${MODE}\")\n",
+            ),
+            (
+                "beta/CMakeLists.txt",
+                "add_compile_definitions(\"PICKED_MODE=${MODE}\")\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        // The variant subtrees do NOT leak into the top-level defines.
+        assert!(ir.defines.is_empty(), "ir.defines = {:?}", ir.defines);
+        assert_eq!(ir.subdir_selections.len(), 1);
+        let sel = &ir.subdir_selections[0];
+        assert_eq!(sel.driving_var, "BACKEND");
+        assert_eq!(sel.variants.len(), 2);
+        let alpha = sel.variants.iter().find(|v| v.value == "alpha").unwrap();
+        assert_eq!(alpha.path, PathBuf::from("alpha"));
+        assert_eq!(alpha.defines.len(), 1);
+        assert_eq!(alpha.defines[0].c_name, "PICKED_MODE");
+        assert_eq!(
+            alpha.defines[0].kind,
+            DefineKind::Bare {
+                var: "MODE".to_string()
+            }
+        );
+        let beta = sel.variants.iter().find(|v| v.value == "beta").unwrap();
+        assert_eq!(beta.path, PathBuf::from("beta"));
+        assert_eq!(beta.defines.len(), 1);
+        assert_eq!(beta.defines[0].c_name, "PICKED_MODE");
+    }
+
+    #[test]
+    fn add_subdirectory_variable_form_skips_missing_variant() {
+        // `BACKEND` declares two values but only `alpha/` exists on disk.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"BACKEND": ["alpha", "beta"], "MODE": ["fast"]}}"#,
+            ),
+            ("CMakeLists.txt", "add_subdirectory(${BACKEND})\n"),
+            (
+                "alpha/CMakeLists.txt",
+                "add_compile_definitions(\"TAG=${MODE}\")\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.subdir_selections.len(), 1);
+        let sel = &ir.subdir_selections[0];
+        assert_eq!(sel.variants.len(), 1);
+        assert_eq!(sel.variants[0].value, "alpha");
+    }
+
+    #[test]
+    fn add_subdirectory_variable_form_isolates_variants() {
+        // The `CMAKE_C_FLAGS` accumulator must NOT leak `alpha`'s `-DTAG=alpha`
+        // into the `beta` variant (and vice versa). Each variant's defines
+        // come only from its own subtree.
         let dir = build_dir(&[
             (
                 "configuration.json",
                 r#"{"configurable_variables": {"BACKEND": ["alpha", "beta"]}}"#,
             ),
-            (
-                "CMakeLists.txt",
-                "set(BACKEND \"alpha\" CACHE STRING \"doc\")\nadd_subdirectory(${BACKEND})\n",
-            ),
+            ("CMakeLists.txt", "add_subdirectory(${BACKEND})\n"),
             (
                 "alpha/CMakeLists.txt",
-                "add_compile_definitions(\"WOULD_BE_PICKED=${BACKEND}\")\n",
+                "set(CMAKE_C_FLAGS \"${CMAKE_C_FLAGS} -DTAG=${BACKEND}\")\n",
             ),
             (
                 "beta/CMakeLists.txt",
-                "add_compile_definitions(\"WOULD_BE_PICKED=${BACKEND}\")\n",
+                "set(CMAKE_C_FLAGS \"${CMAKE_C_FLAGS} -DTAG=${BACKEND}\")\n",
             ),
         ]);
         let ir = scan(&dir);
-        // Variable-driven add_subdirectory is not yet modeled in the IR, so
-        // none of the per-backend defines are picked up.
-        assert!(!ir.is_empty);
+        let sel = &ir.subdir_selections[0];
+        for variant in &sel.variants {
+            assert_eq!(
+                variant.defines.len(),
+                1,
+                "variant `{}` should record exactly one define (got {:?})",
+                variant.value,
+                variant.defines,
+            );
+            assert_eq!(variant.defines[0].c_name, "TAG");
+        }
+    }
+
+    #[test]
+    fn add_subdirectory_variable_form_nests() {
+        // A `add_subdirectory(${OUTER})` selection can itself contain a
+        // `add_subdirectory(${INNER})` selection inside one of its variants.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OUTER": ["x", "y"], "INNER": ["one", "two"], "MODE": ["fast"]}}"#,
+            ),
+            ("CMakeLists.txt", "add_subdirectory(${OUTER})\n"),
+            ("x/CMakeLists.txt", "add_subdirectory(${INNER})\n"),
+            (
+                "x/one/CMakeLists.txt",
+                "add_compile_definitions(\"DEEP=${MODE}\")\n",
+            ),
+            (
+                "x/two/CMakeLists.txt",
+                "add_compile_definitions(\"DEEP=${MODE}\")\n",
+            ),
+            (
+                "y/CMakeLists.txt",
+                "add_compile_definitions(\"SHALLOW=${MODE}\")\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.subdir_selections.len(), 1);
+        let outer = &ir.subdir_selections[0];
+        assert_eq!(outer.driving_var, "OUTER");
+
+        let x = outer.variants.iter().find(|v| v.value == "x").unwrap();
+        assert!(x.defines.is_empty(), "x.defines = {:?}", x.defines);
+        assert_eq!(x.subdir_selections.len(), 1);
+        let inner = &x.subdir_selections[0];
+        assert_eq!(inner.driving_var, "INNER");
+        assert_eq!(inner.variants.len(), 2);
+
+        let y = outer.variants.iter().find(|v| v.value == "y").unwrap();
+        assert_eq!(y.defines.len(), 1);
+        assert_eq!(y.defines[0].c_name, "SHALLOW");
+        assert!(y.subdir_selections.is_empty());
+    }
+
+    #[test]
+    fn add_subdirectory_variable_form_resolves_target_inside_variant() {
+        // Mirrors sphincs's `lib/${HASH_BACKEND}/CMakeLists.txt` pattern, where
+        // each variant subdir declares its own target and sources via the
+        // `*_SOURCES` indirection.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"HASH_BACKEND": ["blake", "haraka"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "set(HASH_BACKEND \"blake\" CACHE STRING \"doc\")\nadd_subdirectory(lib)\n",
+            ),
+            ("lib/CMakeLists.txt", "add_subdirectory(${HASH_BACKEND})\n"),
+            (
+                "lib/blake/CMakeLists.txt",
+                "set(BLAKE_SOURCES src/blake256.c)\n\
+                 add_library(blake SHARED ${BLAKE_SOURCES})\n",
+            ),
+            (
+                "lib/haraka/CMakeLists.txt",
+                "set(HARAKA_SOURCES src/haraka.c)\n\
+                 add_library(haraka SHARED ${HARAKA_SOURCES})\n",
+            ),
+            ("lib/blake/src/blake256.c", "// stub\n"),
+            ("lib/haraka/src/haraka.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert!(ir.source_selections.is_empty());
+        assert_eq!(ir.subdir_selections.len(), 1);
+        let sel = &ir.subdir_selections[0];
+        assert_eq!(sel.driving_var, "HASH_BACKEND");
+        let blake = sel.variants.iter().find(|v| v.value == "blake").unwrap();
+        assert_eq!(blake.path, PathBuf::from("lib/blake"));
+        // Source paths are normalized project-relative.
         assert!(
-            ir.defines.is_empty(),
-            "expected no defines for variable-driven add_subdirectory, got {:?}",
-            ir.defines,
+            blake.source_selections.is_empty(),
+            "no `${{VAR}}` in sources, so no SourceSelection inside the variant; \
+             blake.source_selections = {:?}",
+            blake.source_selections,
         );
+        let haraka = sel.variants.iter().find(|v| v.value == "haraka").unwrap();
+        assert_eq!(haraka.path, PathBuf::from("lib/haraka"));
     }
 
     #[test]

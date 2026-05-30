@@ -23,6 +23,12 @@ pub struct BuildConfigIR {
     pub defines: Vec<DefineMapping>,
     pub source_selections: Vec<SourceSelection>,
     pub conditional_targets: Vec<ConditionalTarget>,
+    /// Subdirectory trees selected by a configurable variable -- one
+    /// [`SubdirSelection`] per `add_subdirectory(${VAR})` site, with one
+    /// [`SubdirVariant`] per value of `VAR` whose subdirectory exists on disk.
+    /// Always empty when [`Self::is_empty`] is `true`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subdir_selections: Vec<SubdirSelection>,
     pub is_empty: bool,
 }
 
@@ -102,15 +108,54 @@ pub struct ConditionalTarget {
     pub files: Vec<PathBuf>,
 }
 
+/// One `add_subdirectory(${VAR})` invocation.
+///
+/// Each value of `driving_var` whose corresponding subdirectory exists on disk
+/// is scanned independently (with the parent scope's `${VAR}_SOURCES`
+/// accumulators cloned, not shared) and contributes a [`SubdirVariant`]. Two
+/// variants under the same selection never see each other's defines, target
+/// definitions, or source lists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubdirSelection {
+    /// The configurable variable that drives subdirectory selection.
+    pub driving_var: String,
+    /// One entry per value of `driving_var` whose `CMakeLists.txt` was found.
+    pub variants: Vec<SubdirVariant>,
+}
+
+/// IR fragment captured by scanning one subdirectory of a [`SubdirSelection`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubdirVariant {
+    /// The value of the driving variable selecting this variant.
+    pub value: String,
+    /// Project-relative path of the subdirectory whose `CMakeLists.txt` was
+    /// scanned (e.g. `lib/blake`).
+    pub path: PathBuf,
+    /// Defines emitted inside this variant subtree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defines: Vec<DefineMapping>,
+    /// Per-target source selections inside this variant subtree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_selections: Vec<SourceSelection>,
+    /// `if(VAR) ... endif()`-gated targets inside this variant subtree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditional_targets: Vec<ConditionalTarget>,
+    /// Nested [`SubdirSelection`]s if this variant's subtree contains its own
+    /// `add_subdirectory(${VAR})` calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subdir_selections: Vec<SubdirSelection>,
+}
+
 impl fmt::Display for BuildConfigIR {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "BuildConfigIR {{ {} vars, {} defines, {} source_selections, {} conditional_targets }}",
+            "BuildConfigIR {{ {} vars, {} defines, {} source_selections, {} conditional_targets, {} subdir_selections }}",
             self.variables.len(),
             self.defines.len(),
             self.source_selections.len(),
             self.conditional_targets.len(),
+            self.subdir_selections.len(),
         )
     }
 }

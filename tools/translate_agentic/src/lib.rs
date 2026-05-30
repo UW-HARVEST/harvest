@@ -203,7 +203,7 @@ fn invoke_agent(
                      {model_flag}\
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
                      {append_sys_flag}\
-                     --max-turns 400 \
+                     --max-turns 1000 \
                      --output-format stream-json --verbose \
                      < /dev/null 2>&1 | tee \"$LOG\"",
                 ))
@@ -374,7 +374,7 @@ pub struct Config {
 }
 
 fn default_timeout_secs() -> u64 {
-    18000
+    36000
 }
 
 

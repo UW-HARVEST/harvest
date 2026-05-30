@@ -9,6 +9,7 @@ pub mod util;
 use build_config::BuildConfig;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
+use emit_build_features::EmitBuildFeatures;
 use fix_declarations_llm::FixDeclarationsLlm;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
@@ -39,7 +40,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let _build_cfg = scheduler.queue_after(BuildConfig, &[load_src]);
+    let build_cfg = scheduler.queue_after(BuildConfig, &[load_src]);
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
@@ -54,6 +55,12 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     } else {
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
     };
+    // EmitBuildFeatures consumes the translated CargoPackage plus the
+    // BuildConfigIR and produces a (possibly mutated) CargoPackage. On
+    // is_empty IRs (the entire current TRACTOR corpus) it is a no-op pass-
+    // through, so byte-for-byte behavior is preserved for projects without
+    // a `configuration.json`.
+    let translate = scheduler.queue_after(EmitBuildFeatures, &[translate, build_cfg]);
     let mut current_pkg_id = translate;
     let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
 
@@ -91,4 +98,79 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     collector.diagnostics(); // TODO: Return this value (see issue 51)
     result?;
     Ok(ir)
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod emit_build_features_tests {
+    //! Scheduler-level smoke test for [`emit_build_features::EmitBuildFeatures`].
+    //!
+    //! Lives here (not in `tools/emit_build_features/tests/`) because the
+    //! `Scheduler`/`ToolRunner` types are private to this crate. The test
+    //! confirms the no-op short-circuit when `BuildConfigIR.is_empty == true`:
+    //! the `CargoPackage` is forwarded byte-for-byte. That is the contract the
+    //! entire current TRACTOR corpus depends on.
+    use crate::runner::ToolRunner;
+    use crate::scheduler::Scheduler;
+    use build_config::BuildConfigIR;
+    use emit_build_features::EmitBuildFeatures;
+    use full_source::CargoPackage;
+    use harvest_core::HarvestIR;
+    use harvest_core::config::Config;
+    use harvest_core::diagnostics::Collector;
+    use harvest_core::fs::RawDir;
+    use harvest_core::test_util::MockTool;
+    use std::sync::Arc;
+
+    /// The canonical `Cargo.toml` body the mock CargoPackage carries through.
+    /// On the no-op path EmitBuildFeatures must produce the exact same bytes.
+    const CARGO_TOML: &[u8] =
+        b"[package]\nname = \"noop_smoke\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
+
+    fn mock_cargo_package() -> CargoPackage {
+        let mut dir = RawDir::default();
+        dir.set_file("Cargo.toml", CARGO_TOML.to_vec()).unwrap();
+        CargoPackage { dir }
+    }
+
+    #[test]
+    fn emit_build_features_is_noop_on_empty_ir() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Arc::new(Config::mock());
+        let collector = Collector::initialize(&config).unwrap();
+        let mut runner = ToolRunner::new(collector.reporter());
+        let mut ir = HarvestIR::default();
+
+        let mut scheduler = Scheduler::default();
+        let pkg_id = scheduler.queue(
+            MockTool::new()
+                .name("mock_cargo_package")
+                .run(|_, _| Ok(Box::new(mock_cargo_package()))),
+        );
+        let cfg_id =
+            scheduler.queue(MockTool::new().name("mock_build_config_empty").run(|_, _| {
+                Ok(Box::new(BuildConfigIR {
+                    is_empty: true,
+                    ..Default::default()
+                }))
+            }));
+        let out_id = scheduler.queue_after(EmitBuildFeatures, &[pkg_id, cfg_id]);
+
+        scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+        let out_pkg = ir
+            .get::<CargoPackage>(out_id)
+            .expect("EmitBuildFeatures must produce a CargoPackage");
+        // Byte-for-byte equality with the input: the no-op contract.
+        assert_eq!(
+            out_pkg.dir.get_file("Cargo.toml").unwrap(),
+            CARGO_TOML,
+            "no-op path must not mutate Cargo.toml"
+        );
+        // No build.rs must have been added.
+        assert!(
+            out_pkg.dir.get_file("build.rs").is_err(),
+            "no-op path must not emit a build.rs"
+        );
+        Ok(())
+    }
 }

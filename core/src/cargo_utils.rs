@@ -42,10 +42,32 @@ impl CargoToml {
         })
     }
 
+    /// Parses a `Cargo.toml` from in-memory bytes. The returned handle has no associated
+    /// on-disk path, so [`save`](CargoToml::save) will fail; use [`to_string`](CargoToml::to_string)
+    /// to serialize the result.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let content = std::str::from_utf8(bytes)
+            .map_err(|e| format!("Cargo.toml is not valid UTF-8: {e}"))?;
+        let doc: DocumentMut = content
+            .parse()
+            .map_err(|e| format!("failed to parse in-memory Cargo.toml: {e}"))?;
+        Ok(Self {
+            doc,
+            path: std::path::PathBuf::new(),
+        })
+    }
+
     /// Writes the in-memory document back to disk.
     pub fn save(&self) -> Result<()> {
         fs::write(&self.path, self.doc.to_string())?;
         Ok(())
+    }
+
+    /// Consumes this handle and returns the serialized `Cargo.toml` bytes, matching what
+    /// [`save`](CargoToml::save) would write. Use [`Display`](std::fmt::Display) (e.g.
+    /// `cargo.to_string()`) for non-consuming inspection.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.doc.to_string().into_bytes()
     }
 
     /// Returns the value of `[package].name` from the in-memory document.
@@ -194,8 +216,7 @@ impl CargoToml {
         }
     }
 
-    /// Sets `[features].default` to the given list. Reserved for multi-config support.
-    #[allow(dead_code)]
+    /// Sets `[features].default` to the given list.
     pub fn set_default_features(&mut self, features: &[String]) {
         let feat = self
             .doc
@@ -208,6 +229,51 @@ impl CargoToml {
             }
             t.insert("default", toml_edit::value(arr));
         }
+    }
+
+    /// Inserts `name = []` into `[features]`, creating the table if necessary.
+    /// Idempotent: leaves an existing entry untouched.
+    pub fn add_feature(&mut self, name: &str) {
+        let feat = self
+            .doc
+            .entry("features")
+            .or_insert_with(|| Item::Table(Table::new()));
+        let Some(t) = feat.as_table_mut() else {
+            return;
+        };
+        if t.contains_key(name) {
+            return;
+        }
+        t.insert(name, toml_edit::value(Array::new()));
+    }
+
+    /// Adds multiple features. Inputs are sorted before insertion so the resulting
+    /// `[features]` ordering is deterministic regardless of caller order.
+    pub fn add_features<I: IntoIterator<Item = String>>(&mut self, names: I) {
+        let mut names: Vec<String> = names.into_iter().collect();
+        names.sort();
+        for name in names {
+            self.add_feature(&name);
+        }
+    }
+
+    /// Sets `[package].build = "<script>"`. Idempotent: replaces any existing value.
+    pub fn set_build_script(&mut self, script: &str) {
+        let pkg = self
+            .doc
+            .entry("package")
+            .or_insert_with(|| Item::Table(Table::new()));
+        if let Some(t) = pkg.as_table_mut() {
+            t.insert("build", toml_edit::value(script));
+        }
+    }
+}
+
+impl std::fmt::Display for CargoToml {
+    /// Serializes the in-memory document to the same textual form
+    /// [`save`](CargoToml::save) would write to disk.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.doc, f)
     }
 }
 
@@ -387,6 +453,78 @@ mod tests {
         let mut cargo = CargoToml::open(f.path()).unwrap();
         cargo.update_dependency_path("nonexistent", "../path"); // must not panic
         cargo.save().unwrap();
+    }
+
+    #[test]
+    fn test_from_bytes_round_trip() {
+        let input = "[package]\nname = \"x\"\n";
+        let cargo = CargoToml::from_bytes(input.as_bytes()).unwrap();
+        assert_eq!(cargo.to_string(), input);
+        assert_eq!(cargo.package_name(), Some("x".into()));
+    }
+
+    #[test]
+    fn test_from_bytes_invalid_utf8() {
+        assert!(CargoToml::from_bytes(&[0xff, 0xfe, 0xfd]).is_err());
+    }
+
+    #[test]
+    fn test_add_feature_creates_table() {
+        let mut cargo = CargoToml::from_bytes(b"[package]\nname = \"x\"\n").unwrap();
+        cargo.add_feature("foo");
+        let out = cargo.to_string();
+        assert!(out.contains("[features]"));
+        assert!(out.contains("foo = []"));
+    }
+
+    #[test]
+    fn test_add_feature_idempotent() {
+        let mut cargo =
+            CargoToml::from_bytes(b"[package]\nname = \"x\"\n\n[features]\nfoo = []\n").unwrap();
+        cargo.add_feature("foo");
+        let out = cargo.to_string();
+        // Only one occurrence of `foo = []` should remain.
+        assert_eq!(out.matches("foo = []").count(), 1);
+    }
+
+    #[test]
+    fn test_add_features_sorted() {
+        let mut cargo = CargoToml::from_bytes(b"[package]\nname = \"x\"\n").unwrap();
+        cargo.add_features(["b_x".to_string(), "a_x".to_string(), "c_x".to_string()]);
+        let out = cargo.to_string();
+        let a = out.find("a_x").unwrap();
+        let b = out.find("b_x").unwrap();
+        let c = out.find("c_x").unwrap();
+        assert!(
+            a < b && b < c,
+            "features should appear in sorted order: {out}"
+        );
+    }
+
+    #[test]
+    fn test_set_build_script() {
+        let mut cargo = CargoToml::from_bytes(b"[package]\nname = \"x\"\n").unwrap();
+        cargo.set_build_script("build.rs");
+        let out = cargo.to_string();
+        assert!(out.contains("build = \"build.rs\""));
+    }
+
+    #[test]
+    fn test_set_build_script_idempotent() {
+        let mut cargo =
+            CargoToml::from_bytes(b"[package]\nname = \"x\"\nbuild = \"old.rs\"\n").unwrap();
+        cargo.set_build_script("build.rs");
+        let out = cargo.to_string();
+        assert_eq!(out.matches("build = \"build.rs\"").count(), 1);
+        assert!(!out.contains("old.rs"));
+    }
+
+    #[test]
+    fn test_set_default_features() {
+        let mut cargo = CargoToml::from_bytes(b"[package]\nname = \"x\"\n").unwrap();
+        cargo.set_default_features(&["a".into(), "b".into()]);
+        let out = cargo.to_string();
+        assert!(out.contains("default = [\"a\", \"b\"]"));
     }
 
     #[test]

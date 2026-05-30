@@ -1,0 +1,15 @@
+[package]
+name = "preset_skeleton"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+APP_MODE_fast = []
+APP_MODE_safe = []
+BACKEND_alpha = []
+BACKEND_beta = []
+ENABLE_EXTRA = []
+WORD_SIZE_32 = []
+WORD_SIZE_64 = []
+default = ["APP_MODE_fast", "BACKEND_alpha", "WORD_SIZE_32"]

@@ -241,7 +241,7 @@ fn scan_cmake_file(
         );
         return;
     };
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
     let statements = join_statements(&text);
 
     // Stack of `if`-guard variables, local to this file. `Some(name)` means we

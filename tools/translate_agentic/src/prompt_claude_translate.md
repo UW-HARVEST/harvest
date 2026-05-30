@@ -219,6 +219,9 @@ reading just PLAN.md plus the listed C files/functions.
 - [ ] T2: ...
 - [x] T3: ...   <!-- mark done as you go -->
 
+If the project includes a test harness entry
+point that is not part of the original library, plan to translate it early.
+
 ## Notes for future-me (post-compaction)
 - Decisions already made and why
 - Cargo features chosen and what they gate
@@ -266,12 +269,21 @@ reading just PLAN.md plus the listed C files/functions.
      pitfalls it noticed.
    - Update PLAN.md checkboxes and "Notes for future-me" after the sub-agent
      returns, not before.
-   - **Size the subtask to fit within the sub-agent's output token limit.**
+   - Size the subtask to fit within the sub-agent's output token limit.
      If a C file is too large for one sub-agent response (estimate: Rust
      output ≈ C lines × 1.2, converted to tokens at ~10 tok/line), split it:
      give the sub-agent a specific function range or module subset, not the
      whole file. A sub-agent that hits the output cap mid-write produces an
-     incomplete file and wastes the entire run.
+     incomplete file and wastes the entire run. If a sub-agent returns with
+     truncated output, treat it as a signal that the task was too large —
+     split it into smaller pieces on the next attempt, do NOT retry the same
+     task at the same size.
+   - Pre-inject dependencies into the sub-agent prompt. Before launching
+     a sub-agent, think about what types, constants, or function signatures
+     it will need from other modules. Either include the relevant type definitions directly in the
+     sub-agent's prompt, or instruct it to search with specific `grep` commands
+     rather than reading entire files. Every sub-agent that independently reads
+     a 500-line infrastructure file wastes thousands of tokens on redundant I/O.
 
    Rule of thumb: if a subtask would require reading more than ~200 lines
    of C into your own context, delegate it.
@@ -339,12 +351,12 @@ the next unchecked subtask.
 
 ## Step 3: Translate
 
-Translate **one subtask at a time** (per `PLAN.md`). Do not skip ahead. After
-each subtask completes (its piece of code compiles or its phase is done):
+Translate according to `PLAN.md`, preferably multiple sub-agents for parallelizable tasks. After
+each subtask completes:
 
 1. Mark the subtask `[x]` in `PLAN.md`.
 2. Append any relevant decision/pitfall to "Notes for future-me" in `PLAN.md`.
-3. Then start the next subtask.
+3. Then start more subtasks.
 
 The translation rules (C ABI, behavioral fidelity, crate constraints, c_src/
 boundary) are in the `## Invariants` section of `PLAN.md`. They are the

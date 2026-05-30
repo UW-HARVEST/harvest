@@ -179,7 +179,11 @@ fn scan_cmake(dir: &RawDir, config: &Configuration, files: &HashSet<PathBuf>) ->
             let values: Vec<String> = raw
                 .iter()
                 .filter_map(|v| match v {
-                    Value::Bool(b) => Some(if *b { "true".to_string() } else { "false".to_string() }),
+                    Value::Bool(b) => Some(if *b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    }),
                     Value::String(s) => Some(s.clone()),
                     Value::Number(n) => Some(n.to_string()),
                     _ => None,
@@ -393,11 +397,7 @@ fn handle_add_subdirectory(
                 &mut variant_visited,
             );
             // Resolve composed defines within the variant only.
-            rewrite_composed_defines(
-                &mut variant_out.defines,
-                &variant_composed_vars,
-                known_vars,
-            );
+            rewrite_composed_defines(&mut variant_out.defines, &variant_composed_vars, known_vars);
             variants.push(SubdirVariant {
                 value: value.clone(),
                 path: child,
@@ -2096,7 +2096,10 @@ mod tests {
 
     #[test]
     fn normalize_join_returns_none_when_escapes_root() {
-        assert_eq!(normalize_join(Path::new("lib"), Path::new("../../oops")), None);
+        assert_eq!(
+            normalize_join(Path::new("lib"), Path::new("../../oops")),
+            None
+        );
     }
 
     #[test]

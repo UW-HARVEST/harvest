@@ -6,6 +6,7 @@ mod runner;
 mod scheduler;
 pub mod util;
 
+use build_config::BuildConfig;
 use build_project_spec::BuildProjectSpec;
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
@@ -38,6 +39,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
+    let _build_cfg = scheduler.queue_after(BuildConfig, &[load_src]);
     let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
     let translate = if config.agentic {
         let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);

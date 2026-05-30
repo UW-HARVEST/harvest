@@ -700,6 +700,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "build_config"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "build_project_spec"
 version = "0.1.0"
 dependencies = [
@@ -1395,6 +1407,7 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "c_ast",
  "clap",

@@ -187,11 +187,19 @@ When in doubt, re-read this section.
 Each subtask must satisfy TWO constraints:
 1. **Context window**: the subtask's combined input (C source to read) + output
    (Rust code to write) + tool overhead must fit within ONE uncompacted context
-   window.
+   window. A safe rule: the total token count (C source + Rust output + tool
+   calls) for a single subtask should not exceed **30%** of your usable context
+   window. If it would, split the subtask further.
 2. **Output token limit**: the Rust code a sub-agent writes in a single response
    must fit within the single-response output token limit (see Self-assessment
-   above). If a module's Rust translation would exceed this limit, split the
-   module further.
+   above). **Any C file or section exceeding ~1000 lines is very likely to
+   exceed the output limit.** There are two strategies to handle this:
+   - **Preferred**: split at the plan level — assign different function groups
+     or line ranges of the same file to different subtasks/sub-agents.
+   - **Fallback**: instruct the sub-agent explicitly to write the Rust file in
+     multiple smaller Write calls, rather than attempting one giant write. Even if the
+     context window can hold the entire file at once, the output token limit
+     still applies to each individual response.
 
 Subtask boundaries do NOT need to align with file boundaries. A large C file
 can be split into multiple subtasks by function group (e.g. "translate

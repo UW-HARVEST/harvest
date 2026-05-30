@@ -847,6 +847,134 @@ def _fmt_turns(turns: list[Turn], out: list[str], indent: str = "") -> None:
         out.append("")
 
 
+
+# ---------------------------------------------------------------------------
+# File I/O Analysis (--file-io)
+# ---------------------------------------------------------------------------
+
+def _normalize_io_path(path: str) -> str:
+    """Normalize /tmp/.tmpXXX/translated_rust/... to relative form."""
+    path = re.sub(r'^/tmp/\.tmp\w+/translated_rust/', '', path)
+    path = re.sub(r'^\./', '', path)
+    return path.strip()
+
+
+def _extract_bash_files(cmd: str) -> list[str]:
+    """Extract file paths referenced in a Bash command."""
+    files = set()
+    for m in re.finditer(r'(?:c_src|src)/[\w./-]+\.(?:c|h|rs|toml)', cmd):
+        files.add(m.group(0))
+    for m in re.finditer(r'/tmp/\.tmp\w+/translated_rust/([\w./-]+\.(?:c|h|rs|toml))', cmd):
+        files.add(m.group(1))
+    return list(files)
+
+
+def _estimate_read_bytes(offset: int, limit: int) -> int:
+    return max(0, (limit - offset + 1)) * 80
+
+
+def _flatten_tool_uses(sessions: list[Session]) -> list[tuple[str, ToolUse]]:
+    """Yield (session_id, ToolUse) recursively including sub-agents."""
+    stack: list[tuple[str, Session]] = [(s.session_id, s) for s in sessions]
+    while stack:
+        sid, sess = stack.pop()
+        for turn in sess.conversation:
+            for tu in turn.tool_uses:
+                yield (sid, tu)
+                if tu.subagent is not None:
+                    stack.append((tu.subagent.task_id or sid, tu.subagent))
+
+
+def generate_file_io_report(sessions: list[Session]) -> dict:
+    """Return structured dict of per-file I/O patterns."""
+    file_ops: dict[str, list[dict]] = defaultdict(list)
+
+    for sid, tu in _flatten_tool_uses(sessions):
+        inp = tu.input if isinstance(tu.input, dict) else {}
+        ts = ''
+        if tu.result and hasattr(tu.result, 'timestamp'):
+            ts = tu.result.timestamp or ''
+
+        if tu.name == 'Read':
+            fp = inp.get('file_path', '')
+            if not fp:
+                continue
+            np = _normalize_io_path(fp)
+            offset = inp.get('offset', 1)
+            limit = inp.get('limit', 500)
+            if isinstance(offset, list): offset = offset[0] if offset else 1
+            if isinstance(limit, list): limit = limit[0] if limit else 500
+            if not isinstance(offset, int): offset = 1
+            if not isinstance(limit, int): limit = 500
+            file_ops[np].append({
+                'op': 'read', 'session': sid, 'ts': ts,
+                'bytes': _estimate_read_bytes(offset, limit),
+                'offset': offset, 'limit': limit,
+            })
+
+        elif tu.name == 'Write':
+            fp = inp.get('file_path', '')
+            if not fp:
+                continue
+            np = _normalize_io_path(fp)
+            clen = len(inp.get('content', '')) if isinstance(inp.get('content', ''), str) else 0
+            file_ops[np].append({
+                'op': 'write', 'session': sid, 'ts': ts, 'bytes': clen,
+            })
+
+        elif tu.name == 'Edit':
+            fp = inp.get('file_path', '')
+            if not fp:
+                continue
+            np = _normalize_io_path(fp)
+            old_l = len(inp.get('old_string', '')) if isinstance(inp.get('old_string', ''), str) else 0
+            new_l = len(inp.get('new_string', '')) if isinstance(inp.get('new_string', ''), str) else 0
+            file_ops[np].append({
+                'op': 'edit', 'session': sid, 'ts': ts,
+                'old_len': old_l, 'new_len': new_l,
+            })
+
+        elif tu.name == 'Bash':
+            cmd = inp.get('command', '')
+            for fp in _extract_bash_files(cmd):
+                np = _normalize_io_path(fp)
+                file_ops[np].append({
+                    'op': 'bash_ref', 'session': sid, 'ts': ts,
+                    'cmd': cmd[:200],
+                })
+
+    files = {}
+    for fp in sorted(file_ops.keys()):
+        ops = file_ops[fp]
+        reads = [o for o in ops if o['op'] == 'read']
+        writes = [o for o in ops if o['op'] == 'write']
+        edits = [o for o in ops if o['op'] == 'edit']
+        bash_refs = [o for o in ops if o['op'] == 'bash_ref']
+        files[fp] = {
+            'read_count': len(reads),
+            'write_count': len(writes),
+            'edit_count': len(edits),
+            'bash_ref_count': len(bash_refs),
+            'total_read_bytes': sum(o.get('bytes', 0) for o in reads),
+            'total_write_bytes': sum(o.get('bytes', 0) for o in writes),
+            'sessions': sorted(set(o['session'][:8] for o in ops)),
+            'ops': ops,
+        }
+
+    return {
+        'files': files,
+        'summary': {
+            'total_files': len(files),
+            'total_read_bytes': sum(f['total_read_bytes'] for f in files.values()),
+            'total_write_bytes': sum(f['total_write_bytes'] for f in files.values()),
+            'total_reads': sum(f['read_count'] for f in files.values()),
+            'total_writes': sum(f['write_count'] for f in files.values()),
+            'total_edits': sum(f['edit_count'] for f in files.values()),
+            'total_bash_refs': sum(f['bash_ref_count'] for f in files.values()),
+        },
+    }
+
+
 def build_readable_history(sessions: list[Session]) -> str:
     """
     Build a human-readable narrative of the full agent execution.
@@ -1627,12 +1755,12 @@ def render_timeline_svg(sessions: list[Session]) -> str:
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
-        print("Usage: parse_trace.py <file> [-v] [-r] [-vr] [--readable] [--visualize]")
+        print("Usage: parse_trace.py <file> [-v] [-r] [-f] [--readable] [--visualize] [--file-io]")
         sys.exit(1)
 
     path = args[0]
 
-    # Parse flags: support combined short flags (-vr, -rv) and long flags
+    # Parse flags: -v, -r, -f, --readable, --visualize, --file-io
     flags: set[str] = set()
     for arg in args[1:]:
         if arg.startswith("--"):
@@ -1643,6 +1771,7 @@ if __name__ == "__main__":
 
     readable = "r" in flags or "--readable" in flags
     visualize = "v" in flags or "--visualize" in flags
+    file_io = "f" in flags or "--file-io" in flags
 
     parser = TraceParser()
     sessions = parser.parse_file(path)
@@ -1661,5 +1790,13 @@ if __name__ == "__main__":
             f.write(content)
         print(f"Written to {out_path}  ({len(content):,} chars)")
 
-    if not readable and not visualize:
+    if file_io:
+        import json as _json
+        out_path = path.rsplit(".", 1)[0] + "_file_io.json"
+        report = generate_file_io_report(sessions)
+        with open(out_path, "w") as f:
+            _json.dump(report, f, indent=2)
+        print(f"Written to {out_path}")
+
+    if not readable and not visualize and not file_io:
         print_session_stats(sessions)

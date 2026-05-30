@@ -70,4 +70,11 @@ pub struct Args {
     /// Cannot be used together with --filter.
     #[arg(long, conflicts_with = "filter")]
     pub exclude: Option<String>,
+
+    /// Unix timestamp. If set with --agentic-verify, the verification agent
+    /// will wait until this time before starting. Useful for aligning with
+    /// the 5-hour free window reset. If the current time is already past the
+    /// timestamp, verification starts immediately.
+    #[arg(long, requires = "agentic_verify")]
+    pub wait_until: Option<u64>,
 }

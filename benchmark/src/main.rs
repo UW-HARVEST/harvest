@@ -154,6 +154,7 @@ pub fn run_all_benchmarks(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    wait_until: Option<u64>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -176,6 +177,7 @@ pub fn run_all_benchmarks(
             agent_tools,
             agentic_model,
             no_plan,
+            wait_until,
         );
 
         results.push(result);
@@ -267,6 +269,7 @@ fn benchmark_single_program(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    wait_until: Option<u64>,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -354,6 +357,9 @@ fn benchmark_single_program(
         if no_plan {
             effective_overrides.push("tools.translate_agentic.no_plan=true".to_owned());
             effective_overrides.push("tools.verify_fix_agentic.no_plan=true".to_owned());
+        }
+        if let Some(ts) = wait_until {
+            effective_overrides.push(format!("tools.verify_fix_agentic.wait_until={ts}"));
         }
     }
 
@@ -586,6 +592,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agent_tools,
         args.agentic_model.as_deref(),
         args.no_plan,
+        args.wait_until,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

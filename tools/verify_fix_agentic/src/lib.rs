@@ -45,6 +45,22 @@ impl Tool for VerifyFixAgentic {
         )?;
         config.validate();
 
+        // Wait until the specified timestamp if --wait-until was given
+        if let Some(target_ts) = config.wait_until {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if now < target_ts {
+                let wait_secs = target_ts - now;
+                info!("Waiting {wait_secs}s until Unix timestamp {target_ts}");
+                std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+                info!("Wait complete, starting verification");
+            } else {
+                info!("Target timestamp {target_ts} already passed (now={now}), starting immediately");
+            }
+        }
+
         let agent = context.config.agentic_agent;
 
         let cargo_package = context
@@ -355,6 +371,13 @@ pub struct Config {
     /// If absent, any hypotheses log the agent writes is preserved only inside the
     /// CargoPackage and may be lost in downstream tooling.
     pub hypotheses_output_path: Option<PathBuf>,
+
+    /// Unix timestamp. If set, the verification agent will sleep until this
+    /// time before starting. Used to align with the 5-hour free window reset.
+    /// If the current time is already past the timestamp, verification starts
+    /// immediately.
+    #[serde(default)]
+    pub wait_until: Option<u64>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

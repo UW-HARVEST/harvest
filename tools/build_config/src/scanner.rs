@@ -2630,7 +2630,11 @@ mod tests {
             ("beta/src/lib.c", "// stub\n"),
         ]);
         let ir = scan(&dir);
-        assert!(ir.targets.is_empty(), "top-level targets = {:?}", ir.targets);
+        assert!(
+            ir.targets.is_empty(),
+            "top-level targets = {:?}",
+            ir.targets
+        );
         assert_eq!(ir.subdir_selections.len(), 1);
         let sel = &ir.subdir_selections[0];
         assert_eq!(sel.variants.len(), 2);

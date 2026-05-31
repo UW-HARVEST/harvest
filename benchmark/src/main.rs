@@ -98,6 +98,7 @@ pub fn translate_c_directory_to_rust_project(
         modular,
         agentic,
         agentic_verify,
+        agentic_agent: None,
         repair_passes,
     }
     .into();

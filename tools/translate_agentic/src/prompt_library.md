@@ -12,6 +12,7 @@ This is a LIBRARY. Requirements:
 - Preserve the exact C function signatures (use *const c_char, c_int, etc. from std::ffi)
 - Do NOT fix bugs in the original C code — if the C has incorrect behavior, reproduce it exactly
 - Preserve the exact order of error checks and validation
+- Do NOT use the `openssl` crate or any OpenSSL bindings; use pure-Rust crates instead (e.g., `aes` for AES, `sha2` for SHA-256)
 - Use safe Rust internally where possible
 
 Run 'cargo build --release' and fix any errors until it compiles.

@@ -72,38 +72,38 @@ benchmark Test-Corpus/Public-Tests output/ --exclude=".*skip.*"
 The expected directory structure of the `INPUT_DIR` of `benchmark` is as follows:
 ```
 .
-├── 001_helloworld
-│   ├── test_case
-│   │   ├── <build files>
-│   │   └── src
-│   │       └── main.c
-│   └── test_vectors
-│       ├── test1.json
-│       ├── ...
-│       └── test3.json
-├── 002_stdin_echo
-└── ...
+|-- 001_helloworld
+|   |-- test_case
+|   |   |-- <build files>
+|   |   `-- src
+|   |       `-- main.c
+|   `-- test_vectors
+|       |-- test1.json
+|       |-- ...
+|       `-- test3.json
+|-- 002_stdin_echo
+`-- ...
 ```
-This mirrors the format used in the TRACTOR benchmark repository (e.g., `Test-Corpus/Public-Tests/B01_synthetic`). The layout is mostly self-explanatory, but additional documentation can be found in the TRACTOR repository’s README.
+This mirrors the format used in the TRACTOR benchmark repository (e.g., `Test-Corpus/Public-Tests/B01_synthetic`). The layout is mostly self-explanatory, but additional documentation can be found in the TRACTOR repository's README.
 
 
 ### Output Format
 The output directory structure of the `OUTPUT_DIR` of `benchmark` is as follows:
 ```
 .
-├── output.log
-├── results.csv
-├── 001_helloworld/
-│   ├── Cargo.toml
-│   └── src
-│       └── main.rs
-│   ├── c_src
-│   │   └── main.c
-│   ├── failed_tests
-│   │   └── test01.json
-│   ├── results.err
-├── 002_stdin_echo/
-└── ...
+|-- output.log
+|-- results.csv
+|-- 001_helloworld/
+|   |-- Cargo.toml
+|   |-- src
+|   |   `-- main.rs
+|   |-- c_src
+|   |   `-- main.c
+|   |-- failed_tests
+|   |   `-- test01.json
+|   `-- results.err
+|-- 002_stdin_echo/
+`-- ...
 ```
 
 - `output.log`: The raw output log, which includes the model used, the token budget, and fine-grained results (every test's result, including expected vs actual output).  

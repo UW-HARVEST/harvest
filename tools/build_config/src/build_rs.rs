@@ -47,12 +47,60 @@ pub fn render_build_rs(cfg: &BuildConfigIR) -> String {
     if !cfg.defines.is_empty() {
         out.push('\n');
         for define in &cfg.defines {
-            render_define(&mut out, &cfg.variables, define);
+            render_define(&mut out, &cfg.variables, define, "    ");
         }
+    }
+
+    // Per-subdir-variant define emissions. Wrapped in an
+    // `if has_<drivvar>_<value> { ... } else if ... { ... }` chain so the
+    // variant whose driving feature is active at build time contributes its
+    // defines. Variants with no defines and subdir_selections whose driving
+    // var is not a top-level enum are skipped.
+    for ss in &cfg.subdir_selections {
+        render_subdir_variant_defines(&mut out, &cfg.variables, ss);
     }
 
     out.push_str("}\n");
     out
+}
+
+/// Emit a feature-gated chain of `if`/`else if` blocks, one per variant with
+/// at least one define. Each block contains the variant's defines rendered
+/// at the inner indent level. Skips the entire subdir_selection if its
+/// driving variable is not a known top-level enum variable (the `has_*`
+/// bindings used by the chain are produced only by [`render_enum_block`]).
+fn render_subdir_variant_defines(
+    out: &mut String,
+    vars: &[ConfigVariable],
+    ss: &crate::ir::SubdirSelection,
+) {
+    let Some(driving) = vars.iter().find(|v| v.name == ss.driving_var) else {
+        return;
+    };
+    if !matches!(driving.kind, ConfigVarKind::Enum { .. }) {
+        return;
+    }
+    let lower = ss.driving_var.to_lowercase();
+
+    let mut first = true;
+    for variant in &ss.variants {
+        if variant.defines.is_empty() {
+            continue;
+        }
+        let val_lc = variant.value.to_lowercase();
+        if first {
+            out.push_str(&format!("\n    if has_{lower}_{val_lc} {{\n"));
+            first = false;
+        } else {
+            out.push_str(&format!("    }} else if has_{lower}_{val_lc} {{\n"));
+        }
+        for define in &variant.defines {
+            render_define(out, vars, define, "        ");
+        }
+    }
+    if !first {
+        out.push_str("    }\n");
+    }
 }
 
 /// Render an enum variable's full block: cfg declarations, env reads, assertion,
@@ -129,7 +177,7 @@ fn is_enum(vars: &[ConfigVariable], name: &str) -> bool {
     )
 }
 
-fn render_define(out: &mut String, vars: &[ConfigVariable], define: &DefineMapping) {
+fn render_define(out: &mut String, vars: &[ConfigVariable], define: &DefineMapping, indent: &str) {
     let c_name = &define.c_name;
     match &define.kind {
         // Bare: `-DNAME=${VAR}` -- emit cargo:rustc-env=NAME=<value>. The value
@@ -141,7 +189,7 @@ fn render_define(out: &mut String, vars: &[ConfigVariable], define: &DefineMappi
             }
             let lower = var.to_lowercase();
             out.push_str(&format!(
-                "    println!(\"cargo:rustc-env={c_name}={{}}\", {lower}_value);\n",
+                "{indent}println!(\"cargo:rustc-env={c_name}={{}}\", {lower}_value);\n",
             ));
         }
         // QuotedString: `-DNAME="${VAR}"` -- same as bare for build.rs purposes;
@@ -152,7 +200,7 @@ fn render_define(out: &mut String, vars: &[ConfigVariable], define: &DefineMappi
             }
             let lower = var.to_lowercase();
             out.push_str(&format!(
-                "    println!(\"cargo:rustc-env={c_name}={{}}\", {lower}_value);\n",
+                "{indent}println!(\"cargo:rustc-env={c_name}={{}}\", {lower}_value);\n",
             ));
         }
         // Composed: substitute each `{X}` placeholder with the corresponding
@@ -165,7 +213,7 @@ fn render_define(out: &mut String, vars: &[ConfigVariable], define: &DefineMappi
                 return;
             }
             out.push_str(&format!(
-                "    println!(\"cargo:rustc-env={c_name}={fmt}\", {args});\n",
+                "{indent}println!(\"cargo:rustc-env={c_name}={fmt}\", {args});\n",
                 args = args.join(", "),
             ));
         }
@@ -393,5 +441,186 @@ mod tests {
         let opens = out.matches('{').count();
         let closes = out.matches('}').count();
         assert_eq!(opens, closes, "unbalanced braces in:\n{out}");
+    }
+
+    // ---------- subdir_selections variant defines ----------
+
+    /// Sphincs-shape: a top-level `HASH_BACKEND` variable selects a subdir
+    /// variant whose own `add_compile_definitions("PARAMS=${PARAMS_KEY}")` is
+    /// captured as a QuotedString define inside that variant. The generated
+    /// build.rs must wrap the per-variant emission in an `if has_hash_backend_blake { ... }`
+    /// block so it fires only when that feature is active.
+    #[test]
+    fn renders_variant_define_inside_feature_gated_block() {
+        use crate::ir::{SubdirSelection, SubdirVariant};
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "HASH_BACKEND".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["blake".into(), "sha2".into()],
+                        numeric: false,
+                    },
+                    default: Some("blake".into()),
+                },
+                ConfigVariable {
+                    name: "PARAMS_KEY".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["sphincs_blake_128s".into()],
+                        numeric: false,
+                    },
+                    default: Some("sphincs_blake_128s".into()),
+                },
+            ],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: std::path::PathBuf::from("lib/blake"),
+                    defines: vec![DefineMapping {
+                        c_name: "PARAMS".into(),
+                        kind: DefineKind::QuotedString {
+                            var: "PARAMS_KEY".into(),
+                        },
+                        source_vars: vec!["PARAMS_KEY".into()],
+                    }],
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let out = render_build_rs(&ir);
+        assert!(
+            out.contains("if has_hash_backend_blake {"),
+            "missing feature-gated block in:\n{out}",
+        );
+        // The emission is indented inside the if block (8 spaces).
+        assert!(
+            out.contains("        println!(\"cargo:rustc-env=PARAMS={}\", params_key_value);"),
+            "expected indented variant define in:\n{out}",
+        );
+    }
+
+    /// Two variants each with their own define: the generated build.rs uses
+    /// `if has_..._blake { ... } else if has_..._sha2 { ... }` -- a single
+    /// chained if-else, not two separate ifs.
+    #[test]
+    fn renders_two_variant_defines_as_if_elseif_chain() {
+        use crate::ir::{SubdirSelection, SubdirVariant};
+        let make_variant = |value: &str| SubdirVariant {
+            value: value.into(),
+            path: std::path::PathBuf::from(format!("lib/{value}")),
+            defines: vec![DefineMapping {
+                c_name: "PARAMS".into(),
+                kind: DefineKind::QuotedString {
+                    var: "PARAMS_KEY".into(),
+                },
+                source_vars: vec!["PARAMS_KEY".into()],
+            }],
+            source_selections: Vec::new(),
+            conditional_targets: Vec::new(),
+            subdir_selections: Vec::new(),
+            targets: Vec::new(),
+        };
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "HASH_BACKEND".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["blake".into(), "sha2".into()],
+                        numeric: false,
+                    },
+                    default: Some("blake".into()),
+                },
+                ConfigVariable {
+                    name: "PARAMS_KEY".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["a".into()],
+                        numeric: false,
+                    },
+                    default: Some("a".into()),
+                },
+            ],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![make_variant("blake"), make_variant("sha2")],
+            }],
+            ..Default::default()
+        };
+        let out = render_build_rs(&ir);
+        assert!(out.contains("if has_hash_backend_blake {"), "out:\n{out}");
+        assert!(
+            out.contains("} else if has_hash_backend_sha2 {"),
+            "out:\n{out}",
+        );
+        // Two `println!` lines for PARAMS, one per branch.
+        let count = out.matches("cargo:rustc-env=PARAMS=").count();
+        assert_eq!(count, 2, "expected 2 PARAMS emissions, got {count}:\n{out}");
+    }
+
+    /// Anti-regression: a flat IR (no `subdir_selections`) produces the
+    /// exact same output as before the descent was added. The
+    /// `example_p02` fixture is flat, so we exercise it here. The marker
+    /// for the new code is a line that opens with `    if has_<...> {` and
+    /// is followed by a newline (multi-line block); the existing inline
+    /// `if has_<...> { println!(...); ... }` in `render_enum_block` does
+    /// not match that shape.
+    #[test]
+    fn flat_ir_unchanged_by_subdir_descent() {
+        let out = render_build_rs(&example_p02());
+        for line in out.lines() {
+            assert!(
+                !(line.starts_with("    if has_") && line.ends_with("{")),
+                "unexpected variant-defines block line: {line:?}\nout:\n{out}",
+            );
+            assert!(
+                !line.starts_with("    } else if has_"),
+                "unexpected else-if block line: {line:?}\nout:\n{out}",
+            );
+        }
+    }
+
+    /// A subdir_selection whose variants have empty `defines` produces no
+    /// new code at all -- the feature-gated block is suppressed.
+    #[test]
+    fn empty_variant_defines_emit_nothing() {
+        use crate::ir::{SubdirSelection, SubdirVariant};
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![ConfigVariable {
+                name: "HASH_BACKEND".into(),
+                kind: ConfigVarKind::Enum {
+                    values: vec!["blake".into()],
+                    numeric: false,
+                },
+                default: Some("blake".into()),
+            }],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: std::path::PathBuf::from("lib/blake"),
+                    defines: Vec::new(),
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let out = render_build_rs(&ir);
+        // No multi-line `if has_...` block opener should appear.
+        for line in out.lines() {
+            assert!(
+                !(line.starts_with("    if has_hash_backend") && line.ends_with("{")),
+                "unexpected variant block when defines are empty: {line:?}",
+            );
+        }
     }
 }

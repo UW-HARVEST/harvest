@@ -5,6 +5,7 @@ log_filter = "info"
 modular = false
 agentic = false
 agentic_verify = false
+agentic_agent = "kiro"
 max_repair_passes = 2
 
 [tools.raw_source_to_cargo_llm]

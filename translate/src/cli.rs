@@ -4,7 +4,7 @@
 use clap::Parser;
 use config::FileFormat::Toml;
 use directories::ProjectDirs;
-use harvest_core::config::Config;
+use harvest_core::config::{AgentKind, Config};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,11 @@ pub struct Args {
     /// Run the agentic verify-and-fix stage after translation (requires --agentic).
     #[arg(long, requires = "agentic")]
     pub agentic_verify: bool,
+
+    /// Which external agent to use for agentic translation and verification
+    /// (kiro | claude). Defaults to kiro for backward compatibility.
+    #[arg(long, requires = "agentic", value_parser = parse_agent_kind)]
+    pub agentic_agent: Option<AgentKind>,
 
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
@@ -120,6 +125,12 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
             .expect("settings override failed");
     }
 
+    if let Some(agent) = args.agentic_agent {
+        settings = settings
+            .set_override("agentic_agent", agent.to_string())
+            .expect("settings override failed");
+    }
+
     settings = settings
         .set_override("max_repair_passes", args.repair_passes as i64)
         .expect("settings override failed");
@@ -152,6 +163,17 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
         config.output = output.clone();
     }
     config
+}
+
+/// Parser for the `--agentic-agent` flag's value (`kiro` or `claude`).
+fn parse_agent_kind(s: &str) -> Result<AgentKind, String> {
+    match s.to_lowercase().as_str() {
+        "kiro" => Ok(AgentKind::Kiro),
+        "claude" => Ok(AgentKind::Claude),
+        other => Err(format!(
+            "unknown agent kind: {other} (expected: kiro, claude)"
+        )),
+    }
 }
 
 /// Returns the config file path, given the config directory.

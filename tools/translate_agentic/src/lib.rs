@@ -10,7 +10,7 @@ use build_config::prompt_ext::build_system_prompt;
 use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::cargo_utils::{CargoToml, strip_for_lib};
-use harvest_core::config::unknown_field_warning;
+use harvest_core::config::{AgentKind, unknown_field_warning};
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
@@ -23,6 +23,7 @@ use tracing::{info, warn};
 
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
+const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
 
 /// Agent-only structural notes appended after the variable-listing section
 /// when `BuildConfigIR.is_empty == false`. Says only the things that are
@@ -93,11 +94,14 @@ impl Tool for TranslateAgentic {
             .get::<BuildConfigIR>(inputs[2])
             .ok_or("No BuildConfigIR representation found in IR")?;
 
+        let agent = context.config.agentic_agent;
         let translate_prompt = load_prompt(
             &config.prompt_executable,
             &config.prompt_library,
+            &config.prompt_claude_translate,
             &project_spec.kind,
             build_cfg,
+            agent,
         )?;
 
         // Set up a working directory that mirrors the layout the agent expects:
@@ -111,7 +115,7 @@ impl Tool for TranslateAgentic {
         info!("Working directory: {}", case_dir.display());
 
         let translated = case_dir.join("translated_rust");
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs)?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
 
         if !translated.join("Cargo.toml").exists() {
             return Err("Agent did not produce a Cargo.toml".into());
@@ -137,32 +141,49 @@ impl Tool for TranslateAgentic {
     }
 }
 
-/// Invokes the translation agent in `work_dir` with the given prompt and timeout.
+/// Invokes the translation agent in `work_dir` with the given prompt and
+/// timeout. The shell command differs per [`AgentKind`]: Kiro invokes
+/// `kiro-cli chat`; Claude invokes `claude -p`.
 fn invoke_agent(
     work_dir: &Path,
     prompt: &str,
     timeout_secs: u64,
+    agent: AgentKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking translation agent (timeout={}s)", timeout_secs);
+    info!("Invoking translation agent ({agent}, timeout={timeout_secs}s)");
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("translation.log");
+    let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
 
-    let status = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
-             --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
-        ))
-        .env("PROMPT", prompt)
-        .env("LOG", &log_path)
-        .env(
-            "OPENSSL_DIR",
-            std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into()),
-        )
-        .current_dir(work_dir)
-        .status()?;
+    let status = match agent {
+        AgentKind::Kiro => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
+                 --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+        AgentKind::Claude => Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                 --max-turns 50 \
+                 --output-format stream-json --verbose \
+                 < /dev/null 2>&1 | tee \"$LOG\"",
+            ))
+            .env("PROMPT", prompt)
+            .env("LOG", &log_path)
+            .env("OPENSSL_DIR", &openssl_dir)
+            .current_dir(work_dir)
+            .status()?,
+    };
 
     if !status.success() {
         warn!("Translation agent exited with {status}");
@@ -195,42 +216,60 @@ fn post_process(
     Ok(())
 }
 
-/// Loads the translate prompt for the given project kind.
+/// Loads the translate prompt.
 ///
-/// When a config-path override is provided it is used verbatim. Otherwise the
-/// built-in legacy prompt (`prompt_executable.md` / `prompt_library.md`) is
-/// the base, and when `BuildConfigIR.is_empty == false` two extensions are
-/// appended:
+/// Selection depends on [`AgentKind`]:
 ///
-/// 1. The shared configurable-variables section materialized from the IR by
-///    [`build_system_prompt`]. The variable inventory, default values, and
-///    cfg/env attribution rules are listed concretely so the agent does not
-///    have to discover them from `c_src/configuration.json`.
-/// 2. A small set of agent-specific structural notes
-///    ([`AGENTIC_CONSTRAINTS`]) about not writing `build.rs` and emitting
-///    per-variant modules.
+/// - [`AgentKind::Kiro`] (default): the per-kind built-in prompt
+///   (`prompt_executable.md` / `prompt_library.md`) is the base; on a
+///   non-empty `BuildConfigIR` it is extended with the shared
+///   configurable-variables section from [`build_system_prompt`] and the
+///   Kiro-specific [`AGENTIC_CONSTRAINTS`].
+/// - [`AgentKind::Claude`]: the unified `prompt_claude_translate.md` is the
+///   base. It already documents the configurability rules inline, so it is
+///   returned as-is on the empty-IR path. On a non-empty IR the shared
+///   variable-listing section from [`build_system_prompt`] is appended so
+///   the agent sees the concrete variable inventory; the Kiro-only
+///   sub-task-decomposition constraints are not appended (they reference
+///   `kiro-cli` invocations).
 ///
-/// When `is_empty == true` the legacy prompt is returned byte-for-byte.
+/// Tool-config path overrides take precedence within each agent's branch:
+/// `prompt_executable` / `prompt_library` for Kiro, `prompt_claude_translate`
+/// for Claude. When supplied, the override file is returned verbatim and
+/// the caller is responsible for any configurable-variables wording.
 fn load_prompt(
     prompt_executable: &Option<PathBuf>,
     prompt_library: &Option<PathBuf>,
+    prompt_claude_translate: &Option<PathBuf>,
     kind: &ProjectKind,
     build_cfg: &BuildConfigIR,
+    agent: AgentKind,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let (config_path, legacy) = match kind {
-        ProjectKind::Executable => (prompt_executable, PROMPT_EXECUTABLE),
-        ProjectKind::Library => (prompt_library, PROMPT_LIBRARY),
-    };
-    if let Some(p) = config_path {
-        // Config-path overrides are used verbatim -- the caller supplies the
-        // full prompt and is responsible for any configurable-variables wording.
-        return Ok(fs::read_to_string(p)?);
+    match agent {
+        AgentKind::Kiro => {
+            let (config_path, legacy) = match kind {
+                ProjectKind::Executable => (prompt_executable, PROMPT_EXECUTABLE),
+                ProjectKind::Library => (prompt_library, PROMPT_LIBRARY),
+            };
+            if let Some(p) = config_path {
+                return Ok(fs::read_to_string(p)?);
+            }
+            if build_cfg.is_empty {
+                return Ok(legacy.to_owned());
+            }
+            let with_vars = build_system_prompt(legacy, build_cfg);
+            Ok(format!("{with_vars}{AGENTIC_CONSTRAINTS}"))
+        }
+        AgentKind::Claude => {
+            if let Some(p) = prompt_claude_translate {
+                return Ok(fs::read_to_string(p)?);
+            }
+            if build_cfg.is_empty {
+                return Ok(PROMPT_CLAUDE_TRANSLATE.to_owned());
+            }
+            Ok(build_system_prompt(PROMPT_CLAUDE_TRANSLATE, build_cfg))
+        }
     }
-    if build_cfg.is_empty {
-        return Ok(legacy.to_owned());
-    }
-    let with_vars = build_system_prompt(legacy, build_cfg);
-    Ok(format!("{with_vars}{AGENTIC_CONSTRAINTS}"))
 }
 
 #[cfg(test)]
@@ -263,7 +302,15 @@ mod tests {
     /// With an empty IR, the executable path returns the legacy prompt verbatim.
     #[test]
     fn load_prompt_empty_ir_executable_returns_legacy() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert_eq!(
             prompt, PROMPT_EXECUTABLE,
             "empty IR must return legacy executable prompt byte-for-byte"
@@ -273,7 +320,15 @@ mod tests {
     /// With an empty IR, the library path returns the legacy prompt verbatim.
     #[test]
     fn load_prompt_empty_ir_library_returns_legacy() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Library, &empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Library,
+            &empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert_eq!(
             prompt, PROMPT_LIBRARY,
             "empty IR must return legacy library prompt byte-for-byte"
@@ -287,7 +342,15 @@ mod tests {
     /// names with the same casing as `BuildConfigIR.variables[].name`.
     #[test]
     fn load_prompt_non_empty_ir_executable_extends_legacy() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &non_empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &non_empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert!(
             prompt.starts_with(PROMPT_EXECUTABLE),
             "extended prompt must start with the legacy executable prompt"
@@ -303,7 +366,15 @@ mod tests {
     /// agentic constraints suffix.
     #[test]
     fn load_prompt_non_empty_ir_library_extends_legacy() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Library, &non_empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Library,
+            &non_empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert!(
             prompt.starts_with(PROMPT_LIBRARY),
             "extended prompt must start with the legacy library prompt"
@@ -328,7 +399,15 @@ mod tests {
             }],
             ..Default::default()
         };
-        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &ir).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &ir,
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert!(prompt.contains("#[cfg(feature = \"ENABLE_EXTRA\")]"));
         assert!(!prompt.contains("#[cfg(feature = \"enable_extra\")]"));
     }
@@ -336,7 +415,15 @@ mod tests {
     /// Non-empty IR includes sub-task decomposition guidance (kiro-cli invocation).
     #[test]
     fn load_prompt_non_empty_ir_includes_subtask_decomposition() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &non_empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &non_empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert!(
             prompt.contains("kiro-cli chat --no-interactive --trust-all-tools"),
             "agentic constraints must include kiro-cli subagent invocation"
@@ -352,7 +439,15 @@ mod tests {
     /// Empty IR must NOT include the sub-task decomposition guidance.
     #[test]
     fn load_prompt_empty_ir_omits_subtask_decomposition() {
-        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &empty_ir()).unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert!(
             !prompt.contains("kiro-cli chat --no-interactive --trust-all-tools"),
             "empty IR must not include kiro-cli guidance"
@@ -371,15 +466,134 @@ mod tests {
         let prompt = load_prompt(
             &Some(p.clone()),
             &None,
+            &None,
             &ProjectKind::Executable,
             &non_empty_ir(),
+            AgentKind::Kiro,
         )
         .unwrap();
         assert_eq!(prompt, "CUSTOM_PROMPT");
 
         // Same override with empty IR -- still verbatim.
-        let prompt2 = load_prompt(&Some(p), &None, &ProjectKind::Executable, &empty_ir()).unwrap();
+        let prompt2 = load_prompt(
+            &Some(p),
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
         assert_eq!(prompt2, "CUSTOM_PROMPT");
+    }
+
+    // ---------- Claude agent path ----------
+
+    /// Claude path with empty IR returns the unified Claude prompt verbatim,
+    /// regardless of the project kind. The Kiro per-kind prompts are not
+    /// touched.
+    #[test]
+    fn load_prompt_claude_empty_ir_returns_claude_prompt() {
+        for kind in [ProjectKind::Executable, ProjectKind::Library] {
+            let prompt =
+                load_prompt(&None, &None, &None, &kind, &empty_ir(), AgentKind::Claude).unwrap();
+            assert_eq!(
+                prompt, PROMPT_CLAUDE_TRANSLATE,
+                "claude empty-IR must return the unified prompt byte-for-byte ({kind})",
+            );
+        }
+    }
+
+    /// Claude path with non-empty IR appends the configurable-variables
+    /// section from `build_system_prompt`. The Kiro-only sub-task
+    /// decomposition (kiro-cli references) is not appended.
+    #[test]
+    fn load_prompt_claude_non_empty_ir_extends_with_vars_only() {
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &None,
+            &ProjectKind::Executable,
+            &non_empty_ir(),
+            AgentKind::Claude,
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with(PROMPT_CLAUDE_TRANSLATE),
+            "claude non-empty prompt must start with the unified base",
+        );
+        assert!(prompt.contains("## Configurable variables"));
+        assert!(prompt.contains("#[cfg(BACKEND_alpha)]"));
+        assert!(
+            !prompt.contains("kiro-cli chat --no-interactive --trust-all-tools"),
+            "claude path must not include kiro-cli sub-task decomposition",
+        );
+    }
+
+    /// The Claude config-path override is honored verbatim regardless of IR.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn load_prompt_claude_config_override_is_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("custom_claude.md");
+        fs::write(&p, b"CUSTOM_CLAUDE_PROMPT").unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &Some(p.clone()),
+            &ProjectKind::Library,
+            &non_empty_ir(),
+            AgentKind::Claude,
+        )
+        .unwrap();
+        assert_eq!(prompt, "CUSTOM_CLAUDE_PROMPT");
+
+        let prompt2 = load_prompt(
+            &None,
+            &None,
+            &Some(p),
+            &ProjectKind::Library,
+            &empty_ir(),
+            AgentKind::Claude,
+        )
+        .unwrap();
+        assert_eq!(prompt2, "CUSTOM_CLAUDE_PROMPT");
+    }
+
+    /// The Kiro `prompt_claude_translate` config field is ignored on the
+    /// Kiro path, and vice versa.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn load_prompt_kiro_ignores_claude_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("claude.md");
+        fs::write(&p, b"CLAUDE_OVERRIDE").unwrap();
+        let prompt = load_prompt(
+            &None,
+            &None,
+            &Some(p),
+            &ProjectKind::Executable,
+            &empty_ir(),
+            AgentKind::Kiro,
+        )
+        .unwrap();
+        // Kiro path returns the legacy executable prompt; the Claude-only
+        // override is not consulted.
+        assert_eq!(prompt, PROMPT_EXECUTABLE);
+    }
+
+    /// The Claude prompt asserts the corrected case-preserving rule -- not
+    /// the milestone3 "lowercase" wording that contradicts EmitBuildFeatures.
+    #[test]
+    fn claude_prompt_documents_case_preserving_features() {
+        assert!(
+            !PROMPT_CLAUDE_TRANSLATE.contains("exact same name in lowercase"),
+            "the milestone3 lowercase rule was wrong and must not survive in the ported prompt",
+        );
+        assert!(
+            PROMPT_CLAUDE_TRANSLATE.contains("EmitBuildFeatures"),
+            "the ported Claude prompt should defer the [features] block to EmitBuildFeatures",
+        );
     }
 }
 
@@ -391,6 +605,10 @@ pub struct Config {
 
     /// Override path for the library translation prompt.
     pub prompt_library: Option<PathBuf>,
+
+    /// Override path for the Claude unified translation prompt. Only used
+    /// when `core::config::Config::agentic_agent == AgentKind::Claude`.
+    pub prompt_claude_translate: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]

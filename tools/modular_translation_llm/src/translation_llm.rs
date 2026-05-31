@@ -141,35 +141,42 @@ impl ModularTranslationLLM {
     /// Initializes separate HarvestLLM instances for each type of translation task with the
     /// appropriate system prompts and structured output schemas.
     ///
-    /// When `build_cfg.is_empty == false`, the cargo_toml system prompt is extended with a
-    /// configurable-variables section that instructs the LLM not to write a `[features]` block
-    /// (since `EmitBuildFeatures` owns that) and teaches it the cfg/env rules for each variable.
+    /// When `build_cfg.is_empty == false`, every per-declaration system prompt is extended
+    /// with a configurable-variables section that teaches the LLM the cfg gating rules for
+    /// each variable (and, for the cargo_toml prompt, not to write a `[features]` block since
+    /// `EmitBuildFeatures` owns that). The macros/types/functions/interface prompts need this
+    /// too: that is where the cfg-gated declarations are actually emitted, so without it those
+    /// translations hardcode the default configuration. When the IR is empty the extension is
+    /// a no-op and each prompt is byte-identical to its static base.
     pub fn build(
         config: &Config,
         build_cfg: &BuildConfigIR,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let macros_system_prompt = build_system_prompt(SYSTEM_PROMPT_MACROS, build_cfg);
         let macros_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_MACROS,
-            SYSTEM_PROMPT_MACROS,
+            &macros_system_prompt,
         )?;
+        let types_system_prompt = build_system_prompt(SYSTEM_PROMPT_TYPES, build_cfg);
         let types_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_TYPES,
-            SYSTEM_PROMPT_TYPES,
+            &types_system_prompt,
         )?;
+        let functions_system_prompt = build_system_prompt(SYSTEM_PROMPT_FUNCTIONS, build_cfg);
         let functions_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS,
-            SYSTEM_PROMPT_FUNCTIONS,
+            &functions_system_prompt,
         )?;
+        let interface_system_prompt = build_system_prompt(SYSTEM_PROMPT_INTERFACE, build_cfg);
         let interface_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_INTERFACE,
-            SYSTEM_PROMPT_INTERFACE,
+            &interface_system_prompt,
         )?;
-        // Build the cargo_toml system prompt programmatically: start with the static base,
-        // then append the configurable-variables section only when the IR is non-empty.
+        // The cargo_toml prompt additionally gains the "do not write [features]" guidance.
         let cargo_toml_system_prompt = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, build_cfg);
         let cargo_toml_llm = HarvestLLM::build(
             &config.llm,

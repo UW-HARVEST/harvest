@@ -38,8 +38,13 @@ pub fn build_configurable_vars_section(cfg: &BuildConfigIR) -> String {
     );
 
     out.push_str(
-        "Apply the following rules when translating `#ifdef`/`#if` guards that test \
-        these variables:\n\n",
+        "Select configurable behavior at compile time using `#[cfg(...)]` gating only. \
+        Emit a gated definition for EVERY value of each variable -- do NOT hardcode a single \
+        default value, and do NOT read a variable's value through `env!(...)` or any \
+        environment variable that `build.rs` may emit, even for numeric variables. The \
+        configuration contract is the Cargo feature cfgs; the translated code must change \
+        behavior when a different feature is selected. Apply the following rules when \
+        translating `#ifdef`/`#if` guards that test these variables:\n\n",
     );
 
     for var in &cfg.variables {
@@ -56,8 +61,10 @@ pub fn build_configurable_vars_section(cfg: &BuildConfigIR) -> String {
                     .map(|v| format!("`#[cfg({name}_{v})]`", name = var.name))
                     .collect();
                 out.push_str(&format!(
-                    "- `{name}` (enum, values: {values}): use bare cfg -- {variants} \
-                    (NOT `feature = ...`)\n",
+                    "- `{name}` (enum, values: {values}): select the value with bare cfg -- \
+                    {variants} (NOT `feature = ...`, and NOT `env!`). Provide one \
+                    `#[cfg({name}_<value>)]`-gated item (e.g. a `const`, `fn`, or `use`) per \
+                    value rather than reading the value dynamically.\n",
                     name = var.name,
                     values = values.join(", "),
                     variants = variants.join(" / "),
@@ -197,5 +204,15 @@ mod tests {
     fn no_features_block_instruction() {
         let result = build_system_prompt(BASE_PROMPT, &nonempty_ir());
         assert!(result.contains("do NOT write a `[features]` block"));
+    }
+
+    /// Variables must be gated on cfg, not hardcoded and not read via env!/build-script vars.
+    #[test]
+    fn variables_mandate_cfg_not_env_or_hardcode() {
+        let result = build_system_prompt(BASE_PROMPT, &nonempty_ir());
+        assert!(result.contains("`#[cfg(...)]` gating only"));
+        assert!(result.contains("do NOT hardcode a single"));
+        // Enum guidance explicitly rules out env! as the selection mechanism.
+        assert!(result.contains("NOT `env!`"));
     }
 }

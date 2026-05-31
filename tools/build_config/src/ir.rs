@@ -29,6 +29,14 @@ pub struct BuildConfigIR {
     /// Always empty when [`Self::is_empty`] is `true`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subdir_selections: Vec<SubdirSelection>,
+    /// Every `add_executable` / `add_library` declared at the top level of
+    /// the project, regardless of whether the target's source list also
+    /// participates in a [`SourceSelection`] or [`ConditionalTarget`]. Used by
+    /// [`Self::has_executable_target`] / [`Self::has_library_target`] as the
+    /// primary inventory; the older selection-based heuristics remain as a
+    /// fallback for IRs that pre-date this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<TargetDecl>,
     pub is_empty: bool,
 }
 
@@ -100,6 +108,27 @@ pub struct SourceVariant {
     pub files: Vec<PathBuf>,
 }
 
+/// One `add_executable` / `add_library` declaration, captured verbatim from
+/// CMake.
+///
+/// `files` lists only the literal paths that the declaration mentions (after
+/// expansion of `set(NAME_SOURCES ...)` accumulators) -- paths that still
+/// contain `${VAR}` placeholders are dropped, because those are tracked by
+/// the per-value variant in [`SourceSelection`] / [`SubdirSelection`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TargetDecl {
+    pub name: String,
+    pub kind: TargetKind,
+    pub files: Vec<PathBuf>,
+}
+
+/// Kind of an `add_*` declaration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TargetKind {
+    Executable,
+    Library,
+}
+
 /// A target whose entire definition lives inside `if(VAR) ... endif()`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConditionalTarget {
@@ -144,38 +173,36 @@ pub struct SubdirVariant {
     /// `add_subdirectory(${VAR})` calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subdir_selections: Vec<SubdirSelection>,
+    /// Every `add_executable` / `add_library` declared inside this variant
+    /// subtree. See [`TargetDecl`] for the `files` shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<TargetDecl>,
 }
 
 impl BuildConfigIR {
-    /// Returns `true` when the IR records at least one executable target
-    /// (either a `source_selection` with `target` naming an executable, or a
-    /// `conditional_target` that is an executable). When the IR `is_empty` this
-    /// always returns `false` so callers can fall back to legacy line-prefix
-    /// matching in `CMakeLists.txt`.
+    /// Returns `true` when the IR records at least one `add_executable`
+    /// declaration in [`Self::targets`].
     ///
-    /// The heuristic: an executable target is any target whose name does NOT
-    /// look like a library (i.e. it is not already known to be a library via
-    /// `has_library_target`). In practice, the scanner records the raw CMake
-    /// target name and the project kind is determined by the call site that
-    /// actually reads `add_executable` / `add_library` from `CMakeLists.txt`.
+    /// When [`Self::targets`] is populated (the modern path), the answer is
+    /// derived directly from the scanner's record of every `add_executable`
+    /// call. Older IRs that pre-date the `targets` field fall through to the
+    /// selection-based heuristic (a target appearing in `source_selections`
+    /// or in `conditional_targets` without being shadowed by a library).
     ///
-    /// The scanner does not classify targets as executable vs. library -- it
-    /// records them by name as they appear in source-selection /
-    /// conditional-target patterns. This helper therefore acts as a lightweight
-    /// **presence check**: if the IR is non-empty and contains any target that
-    /// is associated with a source-selection or conditional-target entry, the
-    /// project has at least *some* configurable target (executable or library).
-    /// Consumers (`build_project_spec`) use it in conjunction with
-    /// `has_library_target` to decide project kind; when both return `false`
-    /// (empty IR) they fall back to the legacy line-prefix matcher.
+    /// When [`Self::is_empty`] is `true`, this returns `false` unconditionally
+    /// so callers can fall back to legacy line-prefix matching in
+    /// `CMakeLists.txt`.
     pub fn has_executable_target(&self) -> bool {
         if self.is_empty {
             return false;
         }
-        // A non-empty IR with at least one source selection or conditional
-        // target that does not overlap with library targets indicates an
-        // executable. We detect this by checking all known targets and
-        // returning `true` when any target is not a library target.
+        if !self.targets.is_empty() {
+            return self
+                .targets
+                .iter()
+                .any(|t| matches!(t.kind, TargetKind::Executable));
+        }
+        // Fallback: selection-based heuristic for IRs that pre-date `targets`.
         let lib_targets = self.library_targets();
         let all_targets = self.all_target_names();
         all_targets
@@ -184,21 +211,25 @@ impl BuildConfigIR {
             || (!all_targets.is_empty() && lib_targets.is_empty())
     }
 
-    /// Returns `true` when the IR records at least one library target.
+    /// Returns `true` when the IR records at least one `add_library`
+    /// declaration in [`Self::targets`].
     ///
-    /// The scanner marks a target as a library when the CMake pattern was
-    /// `add_library(TARGET ...)`. Because the scanner stores targets by name
-    /// without a kind tag, we apply the naming convention used throughout the
-    /// HARVEST test corpus: a target whose name ends with `_lib` or equals
-    /// the package name suffixed with `_lib`, or any target that appears only
-    /// in `conditional_targets` with a `gate_var` (which typically guard
-    /// optional libraries in `example_P02`).
+    /// When [`Self::targets`] is populated, the answer comes directly from
+    /// the scanner. Older IRs fall through to the heuristic that treats
+    /// conditional-only targets as libraries (see [`Self::library_targets`]).
     ///
-    /// When `is_empty` this returns `false` unconditionally.
+    /// When [`Self::is_empty`] is `true`, this returns `false`.
     pub fn has_library_target(&self) -> bool {
         if self.is_empty {
             return false;
         }
+        if !self.targets.is_empty() {
+            return self
+                .targets
+                .iter()
+                .any(|t| matches!(t.kind, TargetKind::Library));
+        }
+        // Fallback for IRs that pre-date `targets`.
         !self.library_targets().is_empty()
     }
 
@@ -243,12 +274,13 @@ impl fmt::Display for BuildConfigIR {
         }
         write!(
             f,
-            "BuildConfigIR {{ {} vars, {} defines, {} source_selections, {} conditional_targets, {} subdir_selections }}",
+            "BuildConfigIR {{ {} vars, {} defines, {} source_selections, {} conditional_targets, {} subdir_selections, {} targets }}",
             self.variables.len(),
             self.defines.len(),
             self.source_selections.len(),
             self.conditional_targets.len(),
             self.subdir_selections.len(),
+            self.targets.len(),
         )
     }
 }

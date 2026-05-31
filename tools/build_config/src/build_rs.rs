@@ -289,6 +289,7 @@ mod tests {
             source_selections: vec![],
             conditional_targets: vec![],
             subdir_selections: vec![],
+            targets: vec![],
             is_empty: false,
         }
     }

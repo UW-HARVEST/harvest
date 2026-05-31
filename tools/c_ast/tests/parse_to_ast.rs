@@ -67,6 +67,7 @@ fn synthetic_build_config_with_backend() -> BuildConfigIR {
         }],
         conditional_targets: Vec::new(),
         subdir_selections: Vec::new(),
+        targets: Vec::new(),
         is_empty: false,
     }
 }

@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::ir::{
     BuildConfigIR, ConditionalTarget, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping,
-    SourceSelection, SourceVariant, SubdirSelection, SubdirVariant,
+    SourceSelection, SourceVariant, SubdirSelection, SubdirVariant, TargetDecl, TargetKind,
 };
 
 /// Top-level entry point. Given the project's `RawDir`, produce a
@@ -62,6 +62,7 @@ pub fn scan(dir: &RawDir) -> BuildConfigIR {
         source_selections: scanned.source_selections,
         conditional_targets: scanned.conditional_targets,
         subdir_selections: scanned.subdir_selections,
+        targets: scanned.targets,
         is_empty: false,
     }
 }
@@ -75,6 +76,7 @@ struct ScannedCmake {
     source_selections: Vec<SourceSelection>,
     conditional_targets: Vec<ConditionalTarget>,
     subdir_selections: Vec<SubdirSelection>,
+    targets: Vec<TargetDecl>,
     /// Variable name -> default value parsed from CMake (`set(... CACHE ...)`
     /// or `option(...)`).
     var_defaults: HashMap<String, Option<String>>,
@@ -299,8 +301,14 @@ fn scan_cmake_file(
                 handle_add_definitions(&stmt.args, known_vars, out, inside_gate);
             }
             "add_library" | "add_executable" => {
+                let kind = if stmt.command == "add_executable" {
+                    TargetKind::Executable
+                } else {
+                    TargetKind::Library
+                };
                 handle_target_definition(
                     &stmt.args,
+                    kind,
                     known_vars,
                     source_lists,
                     rel_dir,
@@ -405,6 +413,7 @@ fn handle_add_subdirectory(
                 source_selections: variant_out.source_selections,
                 conditional_targets: variant_out.conditional_targets,
                 subdir_selections: variant_out.subdir_selections,
+                targets: variant_out.targets,
             });
         }
         if !variants.is_empty() {
@@ -1005,8 +1014,10 @@ fn extract_defines_from_flags(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_target_definition(
     args: &[String],
+    kind: TargetKind,
     known_vars: &HashSet<&str>,
     source_lists: &HashMap<String, Vec<String>>,
     rel_dir: &Path,
@@ -1049,6 +1060,21 @@ fn handle_target_definition(
         // `lib/CMakeLists.txt` like `src/main.c` becomes `lib/src/main.c`.
         file_args.push(prefix_source_path(rel_dir, &text));
     }
+
+    // Record every declaration in `targets`, regardless of how it is later
+    // classified into source_selections / conditional_targets. Literal file
+    // paths only -- `${VAR}` patterns are tracked in their respective
+    // selections, so dropping them here keeps `targets` byte-stable.
+    let literal_files: Vec<PathBuf> = file_args
+        .iter()
+        .filter(|f| !f.contains("${"))
+        .map(PathBuf::from)
+        .collect();
+    out.targets.push(TargetDecl {
+        name: target.clone(),
+        kind,
+        files: literal_files,
+    });
 
     // If a known variable expands within any file path, treat this as a
     // SourceSelection.
@@ -2467,5 +2493,188 @@ mod tests {
         assert_eq!(alpha.files, vec![PathBuf::from("lib/src/backend_alpha.c")]);
         let beta = sel.variants.iter().find(|v| v.value == "beta").unwrap();
         assert_eq!(beta.files, vec![PathBuf::from("lib/src/backend_beta.c")]);
+    }
+
+    // ---------- target inventory (`BuildConfigIR.targets`) ----------
+
+    #[test]
+    fn plain_add_executable_populates_targets() {
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OP": ["add", "mul"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "add_executable(driver src/main.c src/util.c)\n",
+            ),
+            ("src/main.c", "// stub\n"),
+            ("src/util.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.targets.len(), 1, "ir = {ir}");
+        let t = &ir.targets[0];
+        assert_eq!(t.name, "driver");
+        assert_eq!(t.kind, TargetKind::Executable);
+        assert_eq!(
+            t.files,
+            vec![PathBuf::from("src/main.c"), PathBuf::from("src/util.c")]
+        );
+        assert!(ir.has_executable_target());
+        assert!(!ir.has_library_target());
+    }
+
+    #[test]
+    fn plain_add_library_populates_targets() {
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OP": ["add"]}}"#,
+            ),
+            ("CMakeLists.txt", "add_library(foo STATIC src/foo.c)\n"),
+            ("src/foo.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.targets.len(), 1);
+        let t = &ir.targets[0];
+        assert_eq!(t.name, "foo");
+        assert_eq!(t.kind, TargetKind::Library);
+        assert_eq!(t.files, vec![PathBuf::from("src/foo.c")]);
+        assert!(ir.has_library_target());
+        assert!(!ir.has_executable_target());
+    }
+
+    #[test]
+    fn mixed_executable_and_library_both_recorded() {
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OP": ["add"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "add_library(core STATIC src/core.c)\n\
+                 add_executable(driver src/main.c)\n",
+            ),
+            ("src/core.c", "// stub\n"),
+            ("src/main.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.targets.len(), 2);
+        assert!(
+            ir.targets
+                .iter()
+                .any(|t| t.name == "core" && t.kind == TargetKind::Library)
+        );
+        assert!(
+            ir.targets
+                .iter()
+                .any(|t| t.name == "driver" && t.kind == TargetKind::Executable)
+        );
+        assert!(ir.has_executable_target());
+        assert!(ir.has_library_target());
+    }
+
+    #[test]
+    fn variant_selected_target_populates_both_targets_and_source_selections() {
+        // `add_library(core ${CORE_SOURCES})` where CORE_SOURCES contains a
+        // `${BACKEND}` pattern: the per-value file list goes into
+        // `source_selections`, while `targets` still records the declaration
+        // (with no literal paths, since the only file path was a `${VAR}`
+        // pattern).
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"BACKEND": ["alpha", "beta"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "set(BACKEND \"alpha\" CACHE STRING \"doc\")\n\
+                 set(CORE_SOURCES src/backend_${BACKEND}.c)\n\
+                 add_library(core ${CORE_SOURCES})\n",
+            ),
+            ("src/backend_alpha.c", "// stub\n"),
+            ("src/backend_beta.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        // source_selections still has its variant-per-value entry.
+        assert_eq!(ir.source_selections.len(), 1);
+        assert_eq!(ir.source_selections[0].target, "core");
+        // targets also has the declaration -- with no literal files, because
+        // the only file argument was a `${BACKEND}`-templated path.
+        assert_eq!(ir.targets.len(), 1);
+        assert_eq!(ir.targets[0].name, "core");
+        assert_eq!(ir.targets[0].kind, TargetKind::Library);
+        assert!(ir.targets[0].files.is_empty());
+        assert!(ir.has_library_target());
+    }
+
+    #[test]
+    fn target_inside_variant_subdir_populates_variant_targets_only() {
+        // `add_subdirectory(${BACKEND})` with each variant subdir declaring its
+        // own `add_library`. Variant `targets` get the per-subdir declarations;
+        // the top-level `targets` stays empty.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"BACKEND": ["alpha", "beta"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "set(BACKEND \"alpha\" CACHE STRING \"doc\")\n\
+                 add_subdirectory(${BACKEND})\n",
+            ),
+            ("alpha/CMakeLists.txt", "add_library(alpha_lib src/lib.c)\n"),
+            ("alpha/src/lib.c", "// stub\n"),
+            ("beta/CMakeLists.txt", "add_library(beta_lib src/lib.c)\n"),
+            ("beta/src/lib.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert!(
+            ir.targets.is_empty(),
+            "top-level targets = {:?}",
+            ir.targets
+        );
+        assert_eq!(ir.subdir_selections.len(), 1);
+        let sel = &ir.subdir_selections[0];
+        assert_eq!(sel.variants.len(), 2);
+        let alpha = sel.variants.iter().find(|v| v.value == "alpha").unwrap();
+        assert_eq!(alpha.targets.len(), 1);
+        assert_eq!(alpha.targets[0].name, "alpha_lib");
+        assert_eq!(alpha.targets[0].kind, TargetKind::Library);
+        assert_eq!(
+            alpha.targets[0].files,
+            vec![PathBuf::from("alpha/src/lib.c")]
+        );
+        let beta = sel.variants.iter().find(|v| v.value == "beta").unwrap();
+        assert_eq!(beta.targets.len(), 1);
+        assert_eq!(beta.targets[0].name, "beta_lib");
+    }
+
+    #[test]
+    fn b02_macrodepth_shape_has_executable_target_directly() {
+        // Mirrors the shape of Test-Corpus/.../B02_synthetic/macrodepth_add_5:
+        // configuration.json declares vars but the executable target has no
+        // variable in its file list. Before this followup the legacy
+        // line-prefix matcher in `build_project_spec` was needed to identify
+        // it; now `has_executable_target` answers from the IR directly.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OP": ["add", "mul"], "REPEAT": ["1", "5"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "add_executable(driver src/mdcore.c src/mdmain.c)\n",
+            ),
+            ("src/mdcore.c", "// stub\n"),
+            ("src/mdmain.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert!(!ir.is_empty);
+        assert!(
+            ir.has_executable_target(),
+            "should be answerable from `targets`; ir = {ir}"
+        );
     }
 }

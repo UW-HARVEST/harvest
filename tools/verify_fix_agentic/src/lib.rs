@@ -6,7 +6,7 @@
 //! compares their outputs, and iteratively fixes the Rust code until the two agree (or the agent
 //! gives up). This is dynamic, execution-based verification, not a static or formal analysis.
 
-use build_config::{BuildConfigIR, ConfigVarKind, DefineKind};
+use build_config::{BuildConfigIR, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
 use harvest_core::fs::RawDir;
@@ -159,10 +159,20 @@ fn extract_cmake_flags(case_dir: &Path, build_cfg: &BuildConfigIR) -> String {
 /// Derive `-D` flags from a non-empty [`BuildConfigIR`] using each variable's
 /// default value.
 ///
-/// For each variable that has a `default`, we emit `-D<C_NAME>=<default>`.
-/// The C name is resolved through [`DefineMapping`] entries: if a define
-/// mapping references the variable we use the mapping's `c_name` and apply
-/// the appropriate quoting; otherwise we fall back to the variable name.
+/// Two passes:
+///
+/// 1. **Top-level pass** -- for each variable that has a `default`, emit
+///    `-D<C_NAME>=<default>`. The C name is resolved through
+///    [`DefineMapping`] entries: if a define mapping references the variable
+///    we use the mapping's `c_name` and apply the appropriate quoting;
+///    otherwise we fall back to the variable name.
+///
+/// 2. **Subdir-variant pass** -- for each `SubdirSelection` whose
+///    `driving_var` is a top-level variable with a default, locate the
+///    variant whose `value` equals that default and emit a flag for each of
+///    its `defines`. This keeps per-backend `-D` flags (e.g. sphincs-shape
+///    `add_compile_definitions("PARAMS=...")` inside `lib/<backend>/`)
+///    surfacing in the cmake invocation.
 fn cmake_flags_from_ir(build_cfg: &BuildConfigIR) -> String {
     let mut flags: Vec<String> = Vec::new();
 
@@ -209,7 +219,61 @@ fn cmake_flags_from_ir(build_cfg: &BuildConfigIR) -> String {
         }
     }
 
+    for ss in &build_cfg.subdir_selections {
+        let Some(default_value) = build_cfg
+            .variables
+            .iter()
+            .find(|v| v.name == ss.driving_var)
+            .and_then(|v| v.default.as_deref())
+        else {
+            continue;
+        };
+        let Some(variant) = ss.variants.iter().find(|v| v.value == default_value) else {
+            continue;
+        };
+        for define in &variant.defines {
+            push_variant_define_flag(define, &build_cfg.variables, &mut flags);
+        }
+    }
+
     flags.join(" ")
+}
+
+/// Emit a single `-D` flag for one variant-scoped define, resolving the
+/// referenced variable's default from the top-level variables list. Skips
+/// defines whose source variable is unknown, has no default, or whose kind
+/// is `Composed` (multi-variable substitution is not yet implemented).
+fn push_variant_define_flag(
+    define: &DefineMapping,
+    vars: &[ConfigVariable],
+    flags: &mut Vec<String>,
+) {
+    let Some(var_name) = define.source_vars.first() else {
+        return;
+    };
+    let Some(var) = vars.iter().find(|v| &v.name == var_name) else {
+        return;
+    };
+    let Some(default_value) = var.default.as_deref() else {
+        return;
+    };
+    match &define.kind {
+        DefineKind::QuotedString { .. } => {
+            flags.push(format!("-D{}=\"{}\"", define.c_name, default_value));
+        }
+        DefineKind::Bare { .. } => {
+            flags.push(format!("-D{}={}", define.c_name, default_value));
+        }
+        DefineKind::GatedFlag { .. } => {
+            flags.push(format!("-D{}={}", define.c_name, default_value));
+        }
+        DefineKind::Composed { .. } => {
+            // TODO: substitute all `{X}` placeholders against the variables
+            // list and emit. For now, skip -- the variant.defines case we
+            // care about (sphincs-shape per-backend PARAMS) is QuotedString,
+            // not Composed.
+        }
+    }
 }
 
 /// Narrow `CMakePresets.json` reader -- the original sphincs-plus hack.
@@ -375,6 +439,202 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let flags = extract_cmake_flags(dir.path(), &ir);
         assert!(flags.contains("-DAPP_MODE_STR=\"fast\""), "flags={flags}");
+    }
+
+    /// Sphincs-shape: a top-level `HASH_BACKEND` variable selects a subdir
+    /// variant whose own `add_compile_definitions("PARAMS=${PARAMS_KEY}")`
+    /// gets captured as a QuotedString define inside that variant. The
+    /// variant matching `HASH_BACKEND`'s default contributes a `-DPARAMS="..."`
+    /// flag derived from the inner-referenced variable's default.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn subdir_variant_quoted_define_yields_per_backend_flag() {
+        use build_config::{SubdirSelection, SubdirVariant};
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "HASH_BACKEND".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["blake".into(), "sha2".into()],
+                        numeric: false,
+                    },
+                    default: Some("blake".into()),
+                },
+                // The variant-scoped define references `PARAMS_KEY`, which is
+                // a top-level variable whose default supplies the value.
+                ConfigVariable {
+                    name: "PARAMS_KEY".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["sphincs-blake-128s".into()],
+                        numeric: false,
+                    },
+                    default: Some("sphincs-blake-128s".into()),
+                },
+            ],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: PathBuf::from("lib/blake"),
+                    defines: vec![DefineMapping {
+                        c_name: "PARAMS".into(),
+                        kind: DefineKind::QuotedString {
+                            var: "PARAMS_KEY".into(),
+                        },
+                        source_vars: vec!["PARAMS_KEY".into()],
+                    }],
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let flags = extract_cmake_flags(dir.path(), &ir);
+        assert!(
+            flags.contains("-DPARAMS=\"sphincs-blake-128s\""),
+            "expected -DPARAMS=\"sphincs-blake-128s\" in flags={flags}",
+        );
+    }
+
+    /// A `SubdirSelection` whose `driving_var` has no top-level default is
+    /// silently skipped -- we cannot pick a variant without a default.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn subdir_selection_with_no_driving_default_is_skipped() {
+        use build_config::{SubdirSelection, SubdirVariant};
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![ConfigVariable {
+                name: "HASH_BACKEND".into(),
+                kind: ConfigVarKind::Enum {
+                    values: vec!["blake".into()],
+                    numeric: false,
+                },
+                default: None,
+            }],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: PathBuf::from("lib/blake"),
+                    defines: vec![DefineMapping {
+                        c_name: "PARAMS".into(),
+                        kind: DefineKind::Bare {
+                            var: "MISSING".into(),
+                        },
+                        source_vars: vec!["MISSING".into()],
+                    }],
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let flags = extract_cmake_flags(dir.path(), &ir);
+        assert!(!flags.contains("PARAMS"), "flags={flags}");
+    }
+
+    /// Only the variant whose `value` matches the driving variable's default
+    /// contributes flags. Non-matching variants are silently skipped, even
+    /// when they would otherwise produce a valid flag.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn only_matching_subdir_variant_contributes_flags() {
+        use build_config::{SubdirSelection, SubdirVariant};
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "HASH_BACKEND".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["blake".into(), "sha2".into()],
+                        numeric: false,
+                    },
+                    default: Some("blake".into()),
+                },
+                ConfigVariable {
+                    name: "PARAMS_KEY".into(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["sphincs-blake-128s".into(), "sphincs-sha2-128s".into()],
+                        numeric: false,
+                    },
+                    default: Some("sphincs-blake-128s".into()),
+                },
+            ],
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![
+                    SubdirVariant {
+                        value: "blake".into(),
+                        path: PathBuf::from("lib/blake"),
+                        defines: vec![DefineMapping {
+                            c_name: "PARAMS".into(),
+                            kind: DefineKind::QuotedString {
+                                var: "PARAMS_KEY".into(),
+                            },
+                            source_vars: vec!["PARAMS_KEY".into()],
+                        }],
+                        source_selections: Vec::new(),
+                        conditional_targets: Vec::new(),
+                        subdir_selections: Vec::new(),
+                        targets: Vec::new(),
+                    },
+                    SubdirVariant {
+                        value: "sha2".into(),
+                        path: PathBuf::from("lib/sha2"),
+                        defines: vec![DefineMapping {
+                            c_name: "SHOULD_NOT_APPEAR".into(),
+                            kind: DefineKind::Bare {
+                                var: "PARAMS_KEY".into(),
+                            },
+                            source_vars: vec!["PARAMS_KEY".into()],
+                        }],
+                        source_selections: Vec::new(),
+                        conditional_targets: Vec::new(),
+                        subdir_selections: Vec::new(),
+                        targets: Vec::new(),
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let flags = extract_cmake_flags(dir.path(), &ir);
+        assert!(flags.contains("-DPARAMS="), "flags={flags}");
+        assert!(
+            !flags.contains("SHOULD_NOT_APPEAR"),
+            "non-default variant must not contribute; flags={flags}",
+        );
+    }
+
+    /// Anti-regression: a flat IR (no `subdir_selections`) produces the
+    /// same flags as before the subdir-variant descent was added. We assert
+    /// this by reusing the smallest top-level shape.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn flat_ir_unchanged_by_subdir_descent() {
+        let ir = BuildConfigIR {
+            is_empty: false,
+            variables: vec![ConfigVariable {
+                name: "BACKEND".into(),
+                kind: ConfigVarKind::Enum {
+                    values: vec!["alpha".into(), "beta".into()],
+                    numeric: false,
+                },
+                default: Some("alpha".into()),
+            }],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let flags = extract_cmake_flags(dir.path(), &ir);
+        assert_eq!(flags, "-DBACKEND=alpha", "flags={flags}");
     }
 
     /// The presets fallback is exercised when the IR is empty and a

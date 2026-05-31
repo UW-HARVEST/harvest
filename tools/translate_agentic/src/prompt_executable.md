@@ -7,6 +7,7 @@ This is an EXECUTABLE. Requirements:
 - Preserve the exact order of error checks and validation
 - Match C's stdin reading behavior exactly (scanf reads across newlines, fgets does not)
 - Match C's exact printf format output including spacing and newlines
+- Do NOT use the `openssl` crate or any OpenSSL bindings; use pure-Rust crates instead (e.g., `aes` for AES, `sha2` for SHA-256)
 - Use safe Rust internally where possible
 
 Run 'cargo build --release' and fix any errors until it compiles.

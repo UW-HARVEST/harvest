@@ -50,7 +50,12 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             t
         }
     } else if config.modular {
-        let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
+        // ParseToAst takes BuildConfigIR as a second input so it can stamp
+        // each TopLevelEntity with its variant_tags. When the IR is empty the
+        // tags collapse to `Vec::new()` and serialized output is byte-equal
+        // to the form produced without a BuildConfigIR input
+        // (see TopLevelEntity::variant_tags docs).
+        let parse_ast = scheduler.queue_after(ParseToAst, &[load_src, build_cfg]);
         scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
     } else {
         scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])

@@ -293,6 +293,17 @@ impl CargoToml {
         }
     }
 
+    /// Returns `true` if the manifest already declares a non-empty `[features]`
+    /// table. Used to make feature emission idempotent: a manifest that already
+    /// carries features (e.g. one produced by a pre-translation scaffold) should
+    /// not have them re-applied.
+    pub fn has_features(&self) -> bool {
+        self.doc
+            .get("features")
+            .and_then(|f| f.as_table())
+            .is_some_and(|t| !t.is_empty())
+    }
+
     /// Sets `[package].build = "<script>"`. Idempotent: replaces any existing value.
     pub fn set_build_script(&mut self, script: &str) {
         let pkg = self

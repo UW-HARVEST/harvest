@@ -9,7 +9,7 @@ use build_config::BuildConfigIR;
 use build_config::prompt_ext::build_system_prompt;
 use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
-use harvest_core::cargo_utils::{CargoToml, strip_for_lib};
+use harvest_core::cargo_utils::{CargoToml, sanitize_package_name, strip_for_lib};
 use harvest_core::config::{AgentKind, unknown_field_warning};
 use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
@@ -115,6 +115,15 @@ impl Tool for TranslateAgentic {
         info!("Working directory: {}", case_dir.display());
 
         let translated = case_dir.join("translated_rust");
+
+        // Pre-generate a deterministic project scaffold (Cargo.toml with the
+        // canonical crate name, build.rs, rust-toolchain.toml) so the agent
+        // writes its sources against the final crate name from the start. This
+        // avoids the post-hoc `normalize_name` rename in `try_cargo_build`
+        // breaking the agent's `use <crate>::` imports.
+        let canonical_name = canonical_crate_name(&context.config.output);
+        write_project_scaffold(&translated, &canonical_name, &project_spec.kind, build_cfg)?;
+
         invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
 
         if !translated.join("Cargo.toml").exists() {
@@ -188,6 +197,54 @@ fn invoke_agent(
     if !status.success() {
         warn!("Translation agent exited with {status}");
     }
+    Ok(())
+}
+
+/// Pinned Rust toolchain for the generated project, so it builds reproducibly
+/// rather than against whatever toolchain happens to be the default.
+const RUST_TOOLCHAIN_TOML: &str = "[toolchain]\nchannel = \"1.93.0\"\n";
+
+/// The canonical crate name for the translated project: the sanitized basename
+/// of the output directory. This matches what `try_cargo_build`'s
+/// `normalize_name` would later impose, so handing it to the agent up front
+/// keeps the agent's `use <crate>::` imports consistent with the final name.
+fn canonical_crate_name(output: &Path) -> String {
+    let raw = output.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = sanitize_package_name(raw);
+    if name.is_empty() {
+        "translated_crate".to_string()
+    } else {
+        name
+    }
+}
+
+/// Writes a deterministic project scaffold into `dir`: a `Cargo.toml` carrying
+/// the canonical package/lib name, the `[lib]`/`[[bin]]` section for the
+/// [`ProjectKind`], and the configurable-variables `[features]`; a `build.rs`
+/// when the config needs one; and a pinned `rust-toolchain.toml`. The agent is
+/// told to preserve these and write only `src/`.
+fn write_project_scaffold(
+    dir: &Path,
+    canonical_name: &str,
+    kind: &ProjectKind,
+    build_cfg: &BuildConfigIR,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = format!(
+        "[package]\nname = \"{canonical_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+    );
+    let mut cargo = CargoToml::from_bytes(base.as_bytes())?;
+    match kind {
+        ProjectKind::Library => cargo.set_lib(canonical_name),
+        ProjectKind::Executable => cargo.set_bin_driver(),
+    }
+    cargo.add_workspace();
+    let build_rs = emit_build_features::apply_features_to_cargo(&mut cargo, build_cfg);
+
+    fs::write(dir.join("Cargo.toml"), cargo.into_bytes())?;
+    if let Some(rendered) = build_rs {
+        fs::write(dir.join("build.rs"), rendered)?;
+    }
+    fs::write(dir.join("rust-toolchain.toml"), RUST_TOOLCHAIN_TOML)?;
     Ok(())
 }
 
@@ -582,8 +639,9 @@ mod tests {
         assert_eq!(prompt, PROMPT_EXECUTABLE);
     }
 
-    /// The Claude prompt asserts the corrected case-preserving rule -- not
-    /// the milestone3 "lowercase" wording that contradicts EmitBuildFeatures.
+    /// The Claude prompt asserts the corrected case-preserving rule -- not the
+    /// milestone3 "lowercase" wording -- and defers the `[features]` block to the
+    /// pre-generated scaffold rather than asking the agent to author it.
     #[test]
     fn claude_prompt_documents_case_preserving_features() {
         assert!(
@@ -591,8 +649,8 @@ mod tests {
             "the milestone3 lowercase rule was wrong and must not survive in the ported prompt",
         );
         assert!(
-            PROMPT_CLAUDE_TRANSLATE.contains("EmitBuildFeatures"),
-            "the ported Claude prompt should defer the [features] block to EmitBuildFeatures",
+            PROMPT_CLAUDE_TRANSLATE.contains("already contains the `[features]` block"),
+            "the Claude prompt should state the [features] block is provided by the scaffold",
         );
     }
 }

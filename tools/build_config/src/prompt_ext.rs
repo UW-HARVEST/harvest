@@ -73,6 +73,18 @@ pub fn build_configurable_vars_section(cfg: &BuildConfigIR) -> String {
         }
     }
 
+    out.push_str(
+        "\nWhen a macro or declaration *defines* one of these variables directly (for example \
+        a `#define REPEAT 5` value macro, or a `#define OP add` identifier macro), do NOT \
+        translate it into a single `const`/`static`, and do NOT read it via `env!`. Instead \
+        either omit it and cfg-gate the items that use it, or emit one cfg-gated definition per \
+        value. For a numeric variable `REPEAT` with values 0..6 that means:\n\n\
+        #[cfg(REPEAT_0)] const REPEAT: i32 = 0;\n\
+        // ... one gated arm per value ...\n\
+        #[cfg(REPEAT_6)] const REPEAT: i32 = 6;\n\n\
+        This applies even when each declaration is translated in isolation.\n",
+    );
+
     if !cfg.defines.is_empty() {
         out.push('\n');
         out.push_str(
@@ -214,5 +226,7 @@ mod tests {
         assert!(result.contains("do NOT hardcode a single"));
         // Enum guidance explicitly rules out env! as the selection mechanism.
         assert!(result.contains("NOT `env!`"));
+        // Value-defining macros must become cfg-gated definitions, not env! consts.
+        assert!(result.contains("*defines* one of these variables directly"));
     }
 }

@@ -8,6 +8,7 @@
 //! - No ordering constraints of function translations
 //! - Cargo.toml generated after function/global translation using aggregated dependencies
 
+use build_config::BuildConfigIR;
 use build_project_spec::ProjectKind;
 use c_ast::TopLevelEntity;
 use full_source::RawSource;
@@ -237,6 +238,7 @@ fn collect_dependencies(translations: &[RustDeclaration]) -> Vec<String> {
 /// Finally, generates a Cargo.toml manifest based on collected dependencies from all translations.
 ///
 /// Returns the combined translated declarations and a generated Cargo.toml manifest.
+#[allow(clippy::too_many_arguments)]
 pub fn translate_decls(
     defines: &[TopLevelEntity],
     app_types: &[TopLevelEntity],
@@ -244,6 +246,7 @@ pub fn translate_decls(
     app_functions: &[TopLevelEntity],
     raw_source: &RawSource,
     project_kind: &ProjectKind,
+    build_cfg: &BuildConfigIR,
     config: &Config,
 ) -> Result<TranslationResult, Box<dyn std::error::Error>> {
     let total_decls = defines.len() + app_types.len() + app_globals.len() + app_functions.len();
@@ -261,7 +264,7 @@ pub fn translate_decls(
         return Err("No declarations to translate".into());
     }
 
-    let modular_llm = ModularTranslationLLM::build(config)?;
+    let modular_llm = ModularTranslationLLM::build(config, build_cfg)?;
 
     // Translate macros first
     let macro_result = translate_macros(defines, raw_source, project_kind, &modular_llm)?;

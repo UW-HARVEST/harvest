@@ -56,9 +56,12 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         // to the form produced without a BuildConfigIR input
         // (see TopLevelEntity::variant_tags docs).
         let parse_ast = scheduler.queue_after(ParseToAst, &[load_src, build_cfg]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
+        scheduler.queue_after(
+            ModularTranslationLlm,
+            &[load_src, parse_ast, project_spec, build_cfg],
+        )
     } else {
-        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
+        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec, build_cfg])
     };
     // EmitBuildFeatures consumes the translated CargoPackage plus the
     // BuildConfigIR and produces a (possibly mutated) CargoPackage. On
@@ -73,7 +76,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
         scheduler.run_all(&mut runner, &mut ir, config.clone())?;
 
-        // Repair loop — skipped for agentic, which has its own repair mechanism.
+        // Repair loop -- skipped for agentic, which has its own repair mechanism.
         if !config.agentic {
             for _ in 0..config.max_repair_passes {
                 let success = ir

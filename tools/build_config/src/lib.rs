@@ -24,6 +24,7 @@ use tracing::debug;
 
 pub mod build_rs;
 pub mod ir;
+pub mod prompt_ext;
 pub mod scanner;
 
 pub use build_rs::render_build_rs;
@@ -31,6 +32,7 @@ pub use ir::{
     BuildConfigIR, ConditionalTarget, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping,
     SourceSelection, SourceVariant,
 };
+pub use prompt_ext::build_system_prompt;
 pub use scanner::scan;
 
 /// This tool has no knobs of its own; the struct exists to absorb

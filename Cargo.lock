@@ -1979,6 +1979,7 @@ dependencies = [
 name = "modular_translation_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "c_ast",
  "full_source",
@@ -2283,6 +2284,7 @@ dependencies = [
 name = "raw_source_to_cargo_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "full_source",
  "harvest_core",

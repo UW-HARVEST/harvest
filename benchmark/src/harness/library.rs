@@ -134,7 +134,13 @@ pub fn run_library_validation(
     log::info!("Runner binary located at: {}", runner_bin.display());
 
     // Run tests
-    run_test_suite(output_dir, &runner_bin, &ld_library_path, test_cases, timeout)
+    run_test_suite(
+        output_dir,
+        &runner_bin,
+        &ld_library_path,
+        test_cases,
+        timeout,
+    )
 }
 
 /// Locates the compiled shared library artifact in the target directory.

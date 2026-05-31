@@ -173,7 +173,6 @@ fn invoke_agent(
             .arg("-c")
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                 --bare \
                  --permission-mode bypassPermissions \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
                  --output-format stream-json --verbose \

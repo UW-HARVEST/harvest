@@ -65,9 +65,9 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     };
     // EmitBuildFeatures consumes the translated CargoPackage plus the
     // BuildConfigIR and produces a (possibly mutated) CargoPackage. On
-    // is_empty IRs (the entire current TRACTOR corpus) it is a no-op pass-
-    // through, so byte-for-byte behavior is preserved for projects without
-    // a `configuration.json`.
+    // is_empty IRs (projects without a `configuration.json`, which is
+    // the vast majority of the current TRACTOR corpus) it is a no-op
+    // pass-through, so byte-for-byte behavior is preserved.
     let translate = scheduler.queue_after(EmitBuildFeatures, &[translate, build_cfg]);
     let mut current_pkg_id = translate;
     let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
@@ -116,8 +116,8 @@ mod emit_build_features_tests {
     //! Lives here (not in `tools/emit_build_features/tests/`) because the
     //! `Scheduler`/`ToolRunner` types are private to this crate. The test
     //! confirms the no-op short-circuit when `BuildConfigIR.is_empty == true`:
-    //! the `CargoPackage` is forwarded byte-for-byte. That is the contract the
-    //! entire current TRACTOR corpus depends on.
+    //! the `CargoPackage` is forwarded byte-for-byte. That is the contract
+    //! the vast majority of the current TRACTOR corpus depends on.
     use crate::runner::ToolRunner;
     use crate::scheduler::Scheduler;
     use build_config::BuildConfigIR;

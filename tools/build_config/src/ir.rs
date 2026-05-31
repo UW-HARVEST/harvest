@@ -85,8 +85,18 @@ pub enum DefineKind {
     /// `-DNAME=${X}_${Y}` -- template with placeholders for each contributing
     /// variable (`{X}_{Y}`).
     Composed { template: String },
-    /// A `#define` that is emitted iff `gate_var` is truthy in CMake.
-    GatedFlag { gate_var: String },
+    /// A `#define` that is emitted under an `if(...)` gate in CMake.
+    ///
+    /// `gate_var` is always set. `gate_value` is `None` for a truthiness
+    /// gate (`if(VAR)`) and `Some("blake")` for a value gate
+    /// (`if(VAR STREQUAL "blake")` or `if(${VAR} STREQUAL "blake")`).
+    /// Consumers that only care about truthiness can ignore `gate_value`;
+    /// consumers that need per-value emission read it.
+    GatedFlag {
+        gate_var: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gate_value: Option<String>,
+    },
 }
 
 /// Per-target source selection driven by a configurable variable.
@@ -129,11 +139,17 @@ pub enum TargetKind {
     Library,
 }
 
-/// A target whose entire definition lives inside `if(VAR) ... endif()`.
+/// A target whose entire definition lives inside an `if(...)` block.
+///
+/// `gate_var` is always set. `gate_value` is `None` for a truthiness gate
+/// (`if(VAR)`) and `Some("blake")` for a value gate
+/// (`if(VAR STREQUAL "blake")` or `if(${VAR} STREQUAL "blake")`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConditionalTarget {
     pub target: String,
     pub gate_var: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_value: Option<String>,
     pub files: Vec<PathBuf>,
 }
 

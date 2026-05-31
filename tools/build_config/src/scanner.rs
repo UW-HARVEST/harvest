@@ -254,7 +254,7 @@ fn scan_cmake_file(
     // recognized the guard variable; `None` means we entered an `if(...)` we
     // don't recognize and should not treat anything inside as gated by a known
     // variable.
-    let mut if_stack: Vec<Option<String>> = Vec::new();
+    let mut if_stack: Vec<Option<(String, Option<String>)>> = Vec::new();
 
     for stmt in &statements {
         // Track if/endif depth first, regardless of recognition.
@@ -277,8 +277,12 @@ fn scan_cmake_file(
             _ => {}
         }
 
-        // Innermost recognized gate wins.
-        let inside_gate: Option<&str> = if_stack.iter().rev().find_map(|opt| opt.as_deref());
+        // Innermost recognized gate wins. The optional value is the
+        // STREQUAL-matched literal when the gate was a value gate.
+        let inside_gate: Option<(&str, Option<&str>)> = if_stack
+            .iter()
+            .rev()
+            .find_map(|opt| opt.as_ref().map(|(v, val)| (v.as_str(), val.as_deref())));
 
         match stmt.command.as_str() {
             "set" => {
@@ -726,15 +730,37 @@ fn find_var_refs(s: &str) -> Vec<(usize, usize, String)> {
     out
 }
 
-/// Extract the gate variable from an `if(...)`-like argument list. Returns
-/// `Some(var)` only when the argument names a known configurable variable.
-fn extract_if_gate(args: &[String], known_vars: &HashSet<&str>) -> Option<String> {
+/// Extract the gate variable (and optional gate value) from an `if(...)`-like
+/// argument list. Recognized shapes:
+///
+/// - `if(VAR)` and `if(${VAR})` -- truthiness gate; returns
+///   `Some((var, None))`.
+/// - `if(VAR STREQUAL "value")` and `if(${VAR} STREQUAL "value")` -- value
+///   gate; returns `Some((var, Some(value)))`.
+///
+/// Returns `None` when the first argument does not name a known configurable
+/// variable (including unrecognized operators, multi-variable expressions,
+/// `NOT`, etc. -- we deliberately err on the conservative side).
+fn extract_if_gate(
+    args: &[String],
+    known_vars: &HashSet<&str>,
+) -> Option<(String, Option<String>)> {
     let first = args.first()?;
-    let name = arg_text(first);
-    if known_vars.contains(name.as_str()) {
-        return Some(name);
+    let first_text = arg_text(first);
+    let var_name = if let Some(name) = as_single_var_ref(&first_text) {
+        name.to_string()
+    } else {
+        first_text
+    };
+    if !known_vars.contains(var_name.as_str()) {
+        return None;
     }
-    None
+    // Look for the `STREQUAL "value"` form.
+    if args.len() >= 3 && arg_text(&args[1]) == "STREQUAL" {
+        let value = arg_text(&args[2]);
+        return Some((var_name, Some(value)));
+    }
+    Some((var_name, None))
 }
 
 fn handle_set(
@@ -872,18 +898,19 @@ fn handle_add_definitions(
     args: &[String],
     known_vars: &HashSet<&str>,
     out: &mut ScannedCmake,
-    inside_gate: Option<&str>,
+    inside_gate: Option<(&str, Option<&str>)>,
 ) {
     for arg in args {
         let text = arg_text(arg);
         let body = text.strip_prefix("-D").unwrap_or(&text);
         // `add_definitions(-DTAG)` under an `if(VAR STREQUAL "x")` -> GatedFlag.
         if !body.contains('=') {
-            if let Some(gate) = inside_gate {
+            if let Some((gate, gate_value)) = inside_gate {
                 out.defines.push(DefineMapping {
                     c_name: body.to_string(),
                     kind: DefineKind::GatedFlag {
                         gate_var: gate.to_string(),
+                        gate_value: gate_value.map(str::to_string),
                     },
                     source_vars: vec![gate.to_string()],
                 });
@@ -1022,7 +1049,7 @@ fn handle_target_definition(
     source_lists: &HashMap<String, Vec<String>>,
     rel_dir: &Path,
     files: &HashSet<PathBuf>,
-    inside_gate: Option<&str>,
+    inside_gate: Option<(&str, Option<&str>)>,
     out: &mut ScannedCmake,
 ) {
     if args.is_empty() {
@@ -1098,7 +1125,7 @@ fn handle_target_definition(
     // Otherwise, if the target is inside an `if(known_var)`, record as a
     // conditional target. Files are taken verbatim (and filtered by
     // existence).
-    if let Some(gate) = inside_gate {
+    if let Some((gate, gate_value)) = inside_gate {
         let files_resolved: Vec<PathBuf> = file_args
             .into_iter()
             .map(PathBuf::from)
@@ -1108,6 +1135,7 @@ fn handle_target_definition(
             out.conditional_targets.push(ConditionalTarget {
                 target,
                 gate_var: gate.to_string(),
+                gate_value: gate_value.map(str::to_string),
                 files: files_resolved,
             });
         }
@@ -1157,10 +1185,12 @@ fn enumerate_variants(
 
 fn handle_target_compile_definitions(
     args: &[String],
-    inside_gate: Option<&str>,
+    inside_gate: Option<(&str, Option<&str>)>,
     out: &mut ScannedCmake,
 ) {
-    let Some(gate) = inside_gate else { return };
+    let Some((gate, gate_value)) = inside_gate else {
+        return;
+    };
     // target_compile_definitions(TARGET <KEYWORD> NAME [NAME ...])
     for arg in args.iter().skip(1) {
         let text = arg_text(arg);
@@ -1172,10 +1202,17 @@ fn handle_target_compile_definitions(
         if text.contains('=') {
             continue;
         }
-        // Avoid duplicating the same `c_name` for the same gate.
+        // Avoid duplicating the same `c_name` for the same gate (var + value).
+        let expected_value = gate_value.map(str::to_string);
         if out.defines.iter().any(|d| {
             d.c_name == text
-                && matches!(&d.kind, DefineKind::GatedFlag { gate_var } if gate_var == gate)
+                && matches!(
+                    &d.kind,
+                    DefineKind::GatedFlag {
+                        gate_var,
+                        gate_value: v,
+                    } if gate_var == gate && v == &expected_value
+                )
         }) {
             continue;
         }
@@ -1183,6 +1220,7 @@ fn handle_target_compile_definitions(
             c_name: text,
             kind: DefineKind::GatedFlag {
                 gate_var: gate.to_string(),
+                gate_value: expected_value,
             },
             source_vars: vec![gate.to_string()],
         });
@@ -1468,7 +1506,7 @@ mod tests {
         let args = vec!["BACKEND".to_string()];
         assert_eq!(
             extract_if_gate(&args, &known(&["BACKEND"])),
-            Some("BACKEND".to_string()),
+            Some(("BACKEND".to_string(), None)),
         );
     }
 
@@ -1489,7 +1527,44 @@ mod tests {
         let args = vec![r#""BACKEND""#.to_string()];
         assert_eq!(
             extract_if_gate(&args, &known(&["BACKEND"])),
-            Some("BACKEND".to_string()),
+            Some(("BACKEND".to_string(), None)),
+        );
+    }
+
+    #[test]
+    fn extract_if_gate_recognizes_var_ref_form() {
+        // `if(${BACKEND})` -- the variable reference resolves to BACKEND.
+        let args = vec!["${BACKEND}".to_string()];
+        assert_eq!(
+            extract_if_gate(&args, &known(&["BACKEND"])),
+            Some(("BACKEND".to_string(), None)),
+        );
+    }
+
+    #[test]
+    fn extract_if_gate_recognizes_strequal_value() {
+        let args = vec![
+            "BACKEND".to_string(),
+            "STREQUAL".to_string(),
+            r#""blake""#.to_string(),
+        ];
+        assert_eq!(
+            extract_if_gate(&args, &known(&["BACKEND"])),
+            Some(("BACKEND".to_string(), Some("blake".to_string()))),
+        );
+    }
+
+    #[test]
+    fn extract_if_gate_recognizes_strequal_with_var_ref() {
+        // The sphincs shape: `if(${HASH_BACKEND} STREQUAL "blake")`.
+        let args = vec![
+            "${HASH_BACKEND}".to_string(),
+            "STREQUAL".to_string(),
+            r#""blake""#.to_string(),
+        ];
+        assert_eq!(
+            extract_if_gate(&args, &known(&["HASH_BACKEND"])),
+            Some(("HASH_BACKEND".to_string(), Some("blake".to_string()))),
         );
     }
 
@@ -1863,14 +1938,15 @@ mod tests {
             &args,
             &known(&["ENABLE_EXTRA"]),
             &mut out,
-            Some("ENABLE_EXTRA"),
+            Some(("ENABLE_EXTRA", None)),
         );
         assert_eq!(out.defines.len(), 1);
         assert_eq!(out.defines[0].c_name, "ENABLE_EXTRA");
         assert_eq!(
             out.defines[0].kind,
             DefineKind::GatedFlag {
-                gate_var: "ENABLE_EXTRA".to_string()
+                gate_var: "ENABLE_EXTRA".to_string(),
+                gate_value: None,
             }
         );
     }
@@ -2024,13 +2100,14 @@ mod tests {
             "PRIVATE".to_string(),
             "ENABLE_EXTRA".to_string(),
         ];
-        handle_target_compile_definitions(&args, Some("ENABLE_EXTRA"), &mut out);
+        handle_target_compile_definitions(&args, Some(("ENABLE_EXTRA", None)), &mut out);
         assert_eq!(out.defines.len(), 1);
         assert_eq!(out.defines[0].c_name, "ENABLE_EXTRA");
         assert_eq!(
             out.defines[0].kind,
             DefineKind::GatedFlag {
-                gate_var: "ENABLE_EXTRA".to_string()
+                gate_var: "ENABLE_EXTRA".to_string(),
+                gate_value: None,
             }
         );
     }
@@ -2047,9 +2124,9 @@ mod tests {
     fn handle_target_compile_definitions_dedupes_same_gate() {
         let mut out = ScannedCmake::default();
         let args = vec!["app".to_string(), "PRIVATE".to_string(), "FLAG".to_string()];
-        handle_target_compile_definitions(&args, Some("ENABLE_EXTRA"), &mut out);
+        handle_target_compile_definitions(&args, Some(("ENABLE_EXTRA", None)), &mut out);
         // Second call with the same gate should not add a duplicate.
-        handle_target_compile_definitions(&args, Some("ENABLE_EXTRA"), &mut out);
+        handle_target_compile_definitions(&args, Some(("ENABLE_EXTRA", None)), &mut out);
         assert_eq!(out.defines.len(), 1);
     }
 
@@ -2676,5 +2753,176 @@ mod tests {
             ir.has_executable_target(),
             "should be answerable from `targets`; ir = {ir}"
         );
+    }
+
+    // ---------- STREQUAL value-gated if-blocks ----------
+
+    #[test]
+    fn if_var_strequal_value_emits_gated_flag_with_value() {
+        // Bare-form: `if(VAR STREQUAL "value")`.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"HASH_BACKEND": ["blake", "sha2"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(HASH_BACKEND STREQUAL \"blake\")\n\
+                 add_definitions(-DBLAKE_TR)\n\
+                 endif()\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.defines.len(), 1, "ir = {ir}");
+        assert_eq!(ir.defines[0].c_name, "BLAKE_TR");
+        assert_eq!(
+            ir.defines[0].kind,
+            DefineKind::GatedFlag {
+                gate_var: "HASH_BACKEND".to_string(),
+                gate_value: Some("blake".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn if_var_ref_strequal_value_emits_gated_flag_with_value() {
+        // Sphincs-form: `if(${HASH_BACKEND} STREQUAL "blake")`.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"HASH_BACKEND": ["blake", "sha2"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(${HASH_BACKEND} STREQUAL \"blake\")\n\
+                 add_definitions(-DBLAKE_TR)\n\
+                 endif()\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.defines.len(), 1, "ir = {ir}");
+        assert_eq!(
+            ir.defines[0].kind,
+            DefineKind::GatedFlag {
+                gate_var: "HASH_BACKEND".to_string(),
+                gate_value: Some("blake".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn if_elseif_strequal_chain_emits_distinct_gate_values() {
+        // `if/elseif/endif` with STREQUAL on the same var, different values:
+        // two GatedFlags carrying the respective values.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"HASH_BACKEND": ["blake", "haraka"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(${HASH_BACKEND} STREQUAL \"blake\")\n\
+                 add_definitions(-DBLAKE_TR)\n\
+                 elseif(${HASH_BACKEND} STREQUAL \"haraka\")\n\
+                 add_definitions(-DHARAKA_TR)\n\
+                 endif()\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.defines.len(), 2, "ir = {ir}");
+        let blake = ir
+            .defines
+            .iter()
+            .find(|d| d.c_name == "BLAKE_TR")
+            .expect("BLAKE_TR define");
+        let haraka = ir
+            .defines
+            .iter()
+            .find(|d| d.c_name == "HARAKA_TR")
+            .expect("HARAKA_TR define");
+        assert_eq!(
+            blake.kind,
+            DefineKind::GatedFlag {
+                gate_var: "HASH_BACKEND".to_string(),
+                gate_value: Some("blake".to_string()),
+            }
+        );
+        assert_eq!(
+            haraka.kind,
+            DefineKind::GatedFlag {
+                gate_var: "HASH_BACKEND".to_string(),
+                gate_value: Some("haraka".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn if_var_truthiness_emits_gated_flag_with_no_value() {
+        // Anti-regression: the existing `if(VAR)` (truthiness) path still
+        // produces a GatedFlag whose gate_value is None.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"ENABLE_EXTRA": [true, false]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(ENABLE_EXTRA)\n\
+                 add_definitions(-DEXTRA)\n\
+                 endif()\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.defines.len(), 1, "ir = {ir}");
+        assert_eq!(
+            ir.defines[0].kind,
+            DefineKind::GatedFlag {
+                gate_var: "ENABLE_EXTRA".to_string(),
+                gate_value: None,
+            }
+        );
+    }
+
+    #[test]
+    fn if_strequal_around_add_executable_records_gate_value_on_conditional_target() {
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"MODE": ["fast", "safe"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(${MODE} STREQUAL \"fast\")\n\
+                 add_executable(driver src/main.c)\n\
+                 endif()\n",
+            ),
+            ("src/main.c", "// stub\n"),
+        ]);
+        let ir = scan(&dir);
+        assert_eq!(ir.conditional_targets.len(), 1, "ir = {ir}");
+        let ct = &ir.conditional_targets[0];
+        assert_eq!(ct.target, "driver");
+        assert_eq!(ct.gate_var, "MODE");
+        assert_eq!(ct.gate_value, Some("fast".to_string()));
+    }
+
+    #[test]
+    fn if_unknown_var_strequal_value_is_silently_skipped() {
+        // `if(UNKNOWN STREQUAL "x")` should not record anything -- UNKNOWN is
+        // not in `configuration.json`'s configurable_variables.
+        let dir = build_dir(&[
+            (
+                "configuration.json",
+                r#"{"configurable_variables": {"OTHER": ["a"]}}"#,
+            ),
+            (
+                "CMakeLists.txt",
+                "if(UNKNOWN STREQUAL \"x\")\n\
+                 add_definitions(-DNOPE)\n\
+                 endif()\n",
+            ),
+        ]);
+        let ir = scan(&dir);
+        assert!(ir.defines.is_empty(), "ir = {ir}");
     }
 }

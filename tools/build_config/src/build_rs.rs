@@ -330,6 +330,7 @@ mod tests {
                     c_name: "ENABLE_EXTRA".into(),
                     kind: DefineKind::GatedFlag {
                         gate_var: "ENABLE_EXTRA".into(),
+                        gate_value: None,
                     },
                     source_vars: vec!["ENABLE_EXTRA".into()],
                 },

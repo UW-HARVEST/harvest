@@ -3,7 +3,7 @@ mod ast;
 mod rsm;
 mod utils;
 
-use build_config::BuildConfigIR;
+use build_config::{BuildConfigIR, SubdirVariant};
 use clang::{Clang as LibClang, Index};
 use full_source::RawSource;
 use harvest_core::{
@@ -20,15 +20,24 @@ pub use rsm::{EntityKind, RichSourceMap, SourcePoint, SourceSpan, TopLevelEntity
 
 /// Lookup table from canonicalized absolute file path to the list of
 /// `(driving_var, value)` tags that file participates in. Built once from
-/// [`BuildConfigIR::source_selections`] before parsing so per-entity lookup is
-/// a single hash hit.
+/// [`BuildConfigIR`] before parsing so per-entity lookup is a single hash hit.
 type VariantTagMap = HashMap<PathBuf, Vec<(String, String)>>;
 
 pub struct ParseToAst;
 
 /// Build a [`VariantTagMap`] keyed by canonicalized absolute paths under
-/// `src_root`. Entries are accumulated, so a file referenced by two
-/// `SourceSelection`s ends up with both tags.
+/// `src_root`. Entries are accumulated, so a file referenced by two distinct
+/// IR fragments ends up with both tags.
+///
+/// Walks the IR recursively: at every [`SubdirSelection`](build_config::SubdirSelection)
+/// the `(driving_var, variant.value)` pair is pushed onto an outer-tag
+/// accumulator and the variant's interior is walked with that accumulator
+/// active. Files in `SourceSelection`s receive the inner variant tag stacked
+/// on top of all accumulated outer tags; files declared by plain
+/// `add_executable` / `add_library` (i.e. those carried by `targets` or
+/// `conditional_targets`) inside a subdirectory variant receive the outer
+/// tags only. The flat-IR case (no `subdir_selections`) is byte-equivalent
+/// to the pre-recursive implementation.
 ///
 /// Files missing from disk are skipped (canonicalization failure) -- they
 /// would not appear in any entity span either, so the asymmetry is harmless.
@@ -38,18 +47,97 @@ fn build_variant_tag_map(cfg: Option<&BuildConfigIR>, src_root: &Path) -> Varian
     if cfg.is_empty {
         return map;
     }
+    walk_top(cfg, src_root, &mut map);
+    map
+}
+
+/// Walk the top-level `BuildConfigIR`, then recurse into each
+/// `SubdirSelection`. Tags from `source_selections` and `subdir_selections`
+/// at this level have no outer accumulator yet.
+fn walk_top(cfg: &BuildConfigIR, src_root: &Path, map: &mut VariantTagMap) {
     for selection in &cfg.source_selections {
         for variant in &selection.variants {
             for rel_path in &variant.files {
-                let abs = src_root.join(rel_path);
-                let key = abs.canonicalize().unwrap_or(abs);
-                map.entry(key)
-                    .or_default()
-                    .push((selection.driving_var.clone(), variant.value.clone()));
+                add_tag(
+                    map,
+                    src_root,
+                    rel_path,
+                    &[],
+                    Some((&selection.driving_var, &variant.value)),
+                );
             }
         }
     }
-    map
+    for ss in &cfg.subdir_selections {
+        for sv in &ss.variants {
+            let outer = [(ss.driving_var.clone(), sv.value.clone())];
+            walk_subdir_variant(sv, src_root, &outer, map);
+        }
+    }
+}
+
+/// Walk one [`SubdirVariant`] with `outer_tags` accumulated from every
+/// enclosing `SubdirSelection`. Every file declared in this variant's
+/// `source_selections`, `conditional_targets`, or `targets` receives the
+/// accumulated outer tags; files inside inner `source_selections` also pick
+/// up their own `(driving_var, value)` tag.
+fn walk_subdir_variant(
+    sv: &SubdirVariant,
+    src_root: &Path,
+    outer_tags: &[(String, String)],
+    map: &mut VariantTagMap,
+) {
+    for selection in &sv.source_selections {
+        for variant in &selection.variants {
+            for rel_path in &variant.files {
+                add_tag(
+                    map,
+                    src_root,
+                    rel_path,
+                    outer_tags,
+                    Some((&selection.driving_var, &variant.value)),
+                );
+            }
+        }
+    }
+    for ct in &sv.conditional_targets {
+        for rel_path in &ct.files {
+            add_tag(map, src_root, rel_path, outer_tags, None);
+        }
+    }
+    for target in &sv.targets {
+        for rel_path in &target.files {
+            add_tag(map, src_root, rel_path, outer_tags, None);
+        }
+    }
+    for ss in &sv.subdir_selections {
+        for nested in &ss.variants {
+            let mut next: Vec<(String, String)> = outer_tags.to_vec();
+            next.push((ss.driving_var.clone(), nested.value.clone()));
+            walk_subdir_variant(nested, src_root, &next, map);
+        }
+    }
+}
+
+/// Append all `outer_tags` (then optionally one inner tag) to the entry for
+/// `rel_path` in `map`. Canonicalizes the path against `src_root` so spans
+/// looked up later hit the same key.
+fn add_tag(
+    map: &mut VariantTagMap,
+    src_root: &Path,
+    rel_path: &Path,
+    outer_tags: &[(String, String)],
+    inner: Option<(&str, &str)>,
+) {
+    let abs = src_root.join(rel_path);
+    let key = abs.canonicalize().unwrap_or(abs);
+    let entry = map.entry(key).or_default();
+    for tag in outer_tags {
+        entry.push(tag.clone());
+    }
+    if let Some((var, value)) = inner {
+        entry.push((var.to_owned(), value.to_owned()));
+    }
 }
 
 /// Lookup the variant tags for an entity span. Returns an empty `Vec` when
@@ -399,6 +487,152 @@ mod tests {
         assert!(tags.contains(&("BACKEND".into(), "alpha".into())));
         assert!(tags.contains(&("FLAVOR".into(), "plain".into())));
         assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn subdir_selection_inner_source_selection_stacks_outer_and_inner_tags() {
+        // Sphincs-shape: top-level `add_subdirectory(${HASH_BACKEND})` with a
+        // `blake` variant whose own CMakeLists has its own `${BACKEND}`-driven
+        // source selection. A file picked by the inner selection gets BOTH
+        // the outer `HASH_BACKEND=blake` and the inner `BACKEND=alpha` tag.
+        use build_config::{SubdirSelection, SubdirVariant};
+        let tmp = tempfile::tempdir().unwrap();
+        let inner_file = touch(tmp.path(), "lib/blake/src/backend_alpha.c");
+
+        let cfg = BuildConfigIR {
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: PathBuf::from("lib/blake"),
+                    source_selections: vec![SourceSelection {
+                        target: "blake_core".into(),
+                        driving_var: "BACKEND".into(),
+                        variants: vec![SourceVariant {
+                            value: "alpha".into(),
+                            files: vec![PathBuf::from("lib/blake/src/backend_alpha.c")],
+                        }],
+                    }],
+                    defines: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let map = build_variant_tag_map(Some(&cfg), tmp.path());
+        let tags = map.get(&inner_file).cloned().unwrap_or_default();
+        assert_eq!(tags.len(), 2, "tags = {tags:?}");
+        assert_eq!(tags[0], ("HASH_BACKEND".into(), "blake".into()));
+        assert_eq!(tags[1], ("BACKEND".into(), "alpha".into()));
+    }
+
+    #[test]
+    fn subdir_variant_plain_target_files_get_outer_tag_only() {
+        // Files declared by a plain `add_executable` / `add_library` inside a
+        // subdir variant (carried by `SubdirVariant.targets`) are exclusive
+        // to that variant and so must receive the outer driving-var tag.
+        use build_config::{SubdirSelection, SubdirVariant, TargetDecl, TargetKind};
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = touch(tmp.path(), "lib/blake/src/utils.c");
+
+        let cfg = BuildConfigIR {
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "HASH_BACKEND".into(),
+                variants: vec![SubdirVariant {
+                    value: "blake".into(),
+                    path: PathBuf::from("lib/blake"),
+                    targets: vec![TargetDecl {
+                        name: "blake_core".into(),
+                        kind: TargetKind::Library,
+                        files: vec![PathBuf::from("lib/blake/src/utils.c")],
+                    }],
+                    defines: Vec::new(),
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    subdir_selections: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let map = build_variant_tag_map(Some(&cfg), tmp.path());
+        let tags = map.get(&plain).cloned().unwrap_or_default();
+        assert_eq!(
+            tags,
+            vec![("HASH_BACKEND".into(), "blake".into())],
+            "plain-target file should get only the outer subdir tag",
+        );
+    }
+
+    #[test]
+    fn nested_subdir_selections_accumulate_outer_tags() {
+        // `add_subdirectory(${OUTER})` -> outer variant has its own
+        // `add_subdirectory(${INNER})`. A file in the deepest variant carries
+        // BOTH outer tags.
+        use build_config::{SubdirSelection, SubdirVariant, TargetDecl, TargetKind};
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = touch(tmp.path(), "lib/a/b/src/leaf.c");
+
+        let inner = SubdirSelection {
+            driving_var: "INNER".into(),
+            variants: vec![SubdirVariant {
+                value: "b".into(),
+                path: PathBuf::from("lib/a/b"),
+                targets: vec![TargetDecl {
+                    name: "leaf".into(),
+                    kind: TargetKind::Library,
+                    files: vec![PathBuf::from("lib/a/b/src/leaf.c")],
+                }],
+                defines: Vec::new(),
+                source_selections: Vec::new(),
+                conditional_targets: Vec::new(),
+                subdir_selections: Vec::new(),
+            }],
+        };
+        let cfg = BuildConfigIR {
+            subdir_selections: vec![SubdirSelection {
+                driving_var: "OUTER".into(),
+                variants: vec![SubdirVariant {
+                    value: "a".into(),
+                    path: PathBuf::from("lib/a"),
+                    subdir_selections: vec![inner],
+                    defines: Vec::new(),
+                    source_selections: Vec::new(),
+                    conditional_targets: Vec::new(),
+                    targets: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let map = build_variant_tag_map(Some(&cfg), tmp.path());
+        let tags = map.get(&deep).cloned().unwrap_or_default();
+        assert_eq!(tags.len(), 2, "tags = {tags:?}");
+        assert_eq!(tags[0], ("OUTER".into(), "a".into()));
+        assert_eq!(tags[1], ("INNER".into(), "b".into()));
+    }
+
+    #[test]
+    fn flat_ir_unchanged_by_subdir_walker() {
+        // Anti-regression: a flat IR (no subdir_selections) must produce the
+        // same map as the pre-recursive implementation. We assert this by
+        // checking that a file referenced only by a top-level source selection
+        // gets exactly one tag (its own selection's variant), nothing extra.
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha = touch(tmp.path(), "src/backend_alpha.c");
+        let cfg = BuildConfigIR {
+            source_selections: vec![synthetic_backend_selection()],
+            ..Default::default()
+        };
+        let map = build_variant_tag_map(Some(&cfg), tmp.path());
+        assert_eq!(
+            map.get(&alpha),
+            Some(&vec![("BACKEND".into(), "alpha".into())]),
+            "flat IR must produce a single tag per file",
+        );
     }
 
     #[test]

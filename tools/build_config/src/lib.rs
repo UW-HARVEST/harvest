@@ -30,7 +30,7 @@ pub mod scanner;
 pub use build_rs::render_build_rs;
 pub use ir::{
     BuildConfigIR, ConditionalTarget, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping,
-    SourceSelection, SourceVariant,
+    SourceSelection, SourceVariant, SubdirSelection, SubdirVariant, TargetDecl, TargetKind,
 };
 pub use prompt_ext::build_system_prompt;
 pub use scanner::scan;

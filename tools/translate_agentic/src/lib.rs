@@ -33,7 +33,30 @@ const AGENTIC_CONSTRAINTS: &str = "\n\
 - Do NOT write a `build.rs` -- `EmitBuildFeatures` generates it after you finish.\n\
 - Source files that are selected per-variant (e.g. `backend_${BACKEND}.c`) \
   should each be translated into a separate Rust module annotated with the \
-  matching `#[cfg(...)]` rule above.\n";
+  matching `#[cfg(...)]` rule above.\n\
+\n\
+**Sub-task decomposition** -- this is a large, configurable project. \
+Do NOT try to translate everything in one go. Instead:\n\
+1. Analyze the C project structure and create a plan breaking the translation \
+   into subtasks (e.g., core/shared code, each backend, entry points).\n\
+2. For each subtask, invoke a subagent by running:\n\
+   ```\n\
+   kiro-cli chat --no-interactive --trust-all-tools '<detailed prompt>' < /dev/null\n\
+   ```\n\
+3. After each subagent completes, verify the work compiles before moving on.\n\
+4. Once all subtasks are done, wire up the feature gates and verify the full build.\n\
+\n\
+Each subagent must work in the same directory. Give each a clear, focused prompt \
+with the specific C files to translate and where to write the Rust output. \
+Each subagent prompt MUST include:\n\
+- Which specific C source files to translate.\n\
+- Which Rust file(s) to write.\n\
+- Instructions to build and verify its own work compiles with the relevant features.\n\
+- Instructions to NOT modify any files outside its scope.\n\
+\n\
+After all subagents complete, wire up the feature gates and do a final build check. \
+If a combination fails, only fix the glue code (lib.rs, mod declarations) -- \
+do NOT modify the backend implementation files.\n";
 
 pub struct TranslateAgentic;
 
@@ -308,6 +331,32 @@ mod tests {
         let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &ir).unwrap();
         assert!(prompt.contains("#[cfg(feature = \"ENABLE_EXTRA\")]"));
         assert!(!prompt.contains("#[cfg(feature = \"enable_extra\")]"));
+    }
+
+    /// Non-empty IR includes sub-task decomposition guidance (kiro-cli invocation).
+    #[test]
+    fn load_prompt_non_empty_ir_includes_subtask_decomposition() {
+        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &non_empty_ir()).unwrap();
+        assert!(
+            prompt.contains("kiro-cli chat --no-interactive --trust-all-tools"),
+            "agentic constraints must include kiro-cli subagent invocation"
+        );
+        assert!(
+            prompt.contains("Sub-task decomposition"),
+            "agentic constraints must include sub-task decomposition section"
+        );
+        // Must instruct each subagent not to modify files outside its scope.
+        assert!(prompt.contains("NOT modify any files outside its scope"));
+    }
+
+    /// Empty IR must NOT include the sub-task decomposition guidance.
+    #[test]
+    fn load_prompt_empty_ir_omits_subtask_decomposition() {
+        let prompt = load_prompt(&None, &None, &ProjectKind::Executable, &empty_ir()).unwrap();
+        assert!(
+            !prompt.contains("kiro-cli chat --no-interactive --trust-all-tools"),
+            "empty IR must not include kiro-cli guidance"
+        );
     }
 
     /// A config-path override is used verbatim regardless of IR state.

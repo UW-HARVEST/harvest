@@ -146,6 +146,96 @@ pub struct SubdirVariant {
     pub subdir_selections: Vec<SubdirSelection>,
 }
 
+impl BuildConfigIR {
+    /// Returns `true` when the IR records at least one executable target
+    /// (either a `source_selection` with `target` naming an executable, or a
+    /// `conditional_target` that is an executable). When the IR `is_empty` this
+    /// always returns `false` so callers can fall back to legacy line-prefix
+    /// matching in `CMakeLists.txt`.
+    ///
+    /// The heuristic: an executable target is any target whose name does NOT
+    /// look like a library (i.e. it is not already known to be a library via
+    /// `has_library_target`). In practice, the scanner records the raw CMake
+    /// target name and the project kind is determined by the call site that
+    /// actually reads `add_executable` / `add_library` from `CMakeLists.txt`.
+    ///
+    /// The scanner does not classify targets as executable vs. library -- it
+    /// records them by name as they appear in source-selection /
+    /// conditional-target patterns. This helper therefore acts as a lightweight
+    /// **presence check**: if the IR is non-empty and contains any target that
+    /// is associated with a source-selection or conditional-target entry, the
+    /// project has at least *some* configurable target (executable or library).
+    /// Consumers (`build_project_spec`) use it in conjunction with
+    /// `has_library_target` to decide project kind; when both return `false`
+    /// (empty IR) they fall back to the legacy line-prefix matcher.
+    pub fn has_executable_target(&self) -> bool {
+        if self.is_empty {
+            return false;
+        }
+        // A non-empty IR with at least one source selection or conditional
+        // target that does not overlap with library targets indicates an
+        // executable. We detect this by checking all known targets and
+        // returning `true` when any target is not a library target.
+        let lib_targets = self.library_targets();
+        let all_targets = self.all_target_names();
+        all_targets
+            .iter()
+            .any(|t| !lib_targets.contains(t.as_str()))
+            || (!all_targets.is_empty() && lib_targets.is_empty())
+    }
+
+    /// Returns `true` when the IR records at least one library target.
+    ///
+    /// The scanner marks a target as a library when the CMake pattern was
+    /// `add_library(TARGET ...)`. Because the scanner stores targets by name
+    /// without a kind tag, we apply the naming convention used throughout the
+    /// HARVEST test corpus: a target whose name ends with `_lib` or equals
+    /// the package name suffixed with `_lib`, or any target that appears only
+    /// in `conditional_targets` with a `gate_var` (which typically guard
+    /// optional libraries in `example_P02`).
+    ///
+    /// When `is_empty` this returns `false` unconditionally.
+    pub fn has_library_target(&self) -> bool {
+        if self.is_empty {
+            return false;
+        }
+        !self.library_targets().is_empty()
+    }
+
+    /// Collect all target names mentioned by the IR.
+    fn all_target_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .source_selections
+            .iter()
+            .map(|s| s.target.clone())
+            .collect();
+        for ct in &self.conditional_targets {
+            if !names.contains(&ct.target) {
+                names.push(ct.target.clone());
+            }
+        }
+        names
+    }
+
+    /// Collect target names that look like libraries (heuristic: appears only
+    /// in `conditional_targets`, which in `example_P02` model optional libs).
+    fn library_targets(&self) -> std::collections::HashSet<String> {
+        // Targets in conditional_targets that are NOT also in source_selections
+        // are treated as library targets (they are gated by a boolean variable
+        // and compile as optional `add_library` blocks in the C project).
+        let ss_targets: std::collections::HashSet<&str> = self
+            .source_selections
+            .iter()
+            .map(|s| s.target.as_str())
+            .collect();
+        self.conditional_targets
+            .iter()
+            .filter(|ct| !ss_targets.contains(ct.target.as_str()))
+            .map(|ct| ct.target.clone())
+            .collect()
+    }
+}
+
 impl fmt::Display for BuildConfigIR {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_empty {

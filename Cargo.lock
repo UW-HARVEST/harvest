@@ -715,6 +715,7 @@ dependencies = [
 name = "build_project_spec"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "full_source",
  "harvest_core",
  "load_raw_source",
@@ -3172,6 +3173,7 @@ dependencies = [
 name = "translate_agentic"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "full_source",
  "harvest_core",
@@ -3291,6 +3293,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "verify_fix_agentic"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "full_source",
  "harvest_core",
  "serde",

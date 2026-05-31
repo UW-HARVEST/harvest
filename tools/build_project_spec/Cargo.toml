@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+build_config.workspace = true
 full_source.workspace = true
 harvest_core.workspace = true
 load_raw_source.workspace = true

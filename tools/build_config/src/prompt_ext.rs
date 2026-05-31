@@ -100,23 +100,6 @@ pub fn build_configurable_vars_section(cfg: &BuildConfigIR) -> String {
         }
     }
 
-    out.push('\n');
-    out.push_str(
-        "## Crate hygiene\n\n\
-        Do NOT use the `openssl` crate or any OpenSSL bindings. \
-        Use pure-Rust crates instead (e.g., `aes` for AES-256-ECB, `sha2` for SHA-256).\n\n",
-    );
-
-    out.push_str(
-        "## Linker symbol fidelity\n\n\
-        C preprocessor macros can RENAME functions at the source level. \
-        For example, `#define foo NAMESPACE(foo)` makes the final linker symbol \
-        `PREFIX_foo`, not `foo`. \
-        The Rust `#[no_mangle]` name must match the FINAL linker symbol, not the \
-        source-level name. Check header files for namespace macros before \
-        writing `extern \"C\"` exports.\n",
-    );
-
     out
 }
 
@@ -214,32 +197,5 @@ mod tests {
     fn no_features_block_instruction() {
         let result = build_system_prompt(BASE_PROMPT, &nonempty_ir());
         assert!(result.contains("do NOT write a `[features]` block"));
-    }
-
-    /// Crate hygiene section must be present and forbid openssl.
-    #[test]
-    fn crate_hygiene_section_present() {
-        let result = build_system_prompt(BASE_PROMPT, &nonempty_ir());
-        assert!(result.contains("## Crate hygiene"));
-        assert!(result.contains("Do NOT use the `openssl` crate"));
-        assert!(result.contains("`aes`"));
-        assert!(result.contains("`sha2`"));
-    }
-
-    /// Linker symbol fidelity section must be present with namespace-macro guidance.
-    #[test]
-    fn linker_symbol_fidelity_section_present() {
-        let result = build_system_prompt(BASE_PROMPT, &nonempty_ir());
-        assert!(result.contains("## Linker symbol fidelity"));
-        assert!(result.contains("FINAL linker symbol"));
-        assert!(result.contains("namespace macros"));
-    }
-
-    /// Empty IR must not include the new sections.
-    #[test]
-    fn empty_ir_omits_strategy_sections() {
-        let result = build_system_prompt(BASE_PROMPT, &empty_ir());
-        assert!(!result.contains("## Crate hygiene"));
-        assert!(!result.contains("## Linker symbol fidelity"));
     }
 }

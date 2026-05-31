@@ -173,8 +173,9 @@ fn invoke_agent(
             .arg("-c")
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                 --bare \
+                 --permission-mode bypassPermissions \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --max-turns 50 \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))
@@ -610,7 +611,9 @@ pub struct Config {
     /// when `core::config::Config::agentic_agent == AgentKind::Claude`.
     pub prompt_claude_translate: Option<PathBuf>,
 
-    /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
+    /// Agent timeout in seconds. Defaults to 7200 (2 hours). A full agentic
+    /// translation of a large project can legitimately take an hour or more, so
+    /// this is generous; override it in `[tools.translate_agentic]` if needed.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
@@ -619,7 +622,7 @@ pub struct Config {
 }
 
 fn default_timeout_secs() -> u64 {
-    1800
+    7200
 }
 
 impl Config {

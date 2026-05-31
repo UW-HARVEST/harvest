@@ -125,7 +125,6 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
 
     // Check for required subdirectories
     let test_case_dir = input_dir.join("test_case");
-    let test_case_src_dir = test_case_dir.join("src");
     let test_vectors_dir = input_dir.join("test_vectors");
 
     if !test_case_dir.exists() || !test_case_dir.is_dir() {
@@ -136,10 +135,17 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    if !test_case_src_dir.exists() || !test_case_src_dir.is_dir() {
+    // A well-formed test case either lays its sources directly under `test_case/src`
+    // (the flat layout used by most of the corpus) or is a CMake project rooted at
+    // `test_case/CMakeLists.txt` with sources nested in subdirectories (e.g. SPHINCS+'s
+    // app/ + lib/ tree). The source loader recurses from the test_case root, so either
+    // layout is fine downstream; we only guard against an empty/malformed test_case.
+    let has_src = test_case_dir.join("src").is_dir();
+    let has_cmake = test_case_dir.join("CMakeLists.txt").is_file();
+    if !has_src && !has_cmake {
         return Err(format!(
-            "Required test_case/src directory not found: {}",
-            test_case_src_dir.display()
+            "test_case must contain either a src/ directory or a CMakeLists.txt: {}",
+            test_case_dir.display()
         )
         .into());
     }
@@ -300,5 +306,45 @@ pub fn validate_binary_output(
             actual_stdout,
             actual_stderr
         ).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_benchmark_dir;
+    use std::fs;
+    use std::path::Path;
+
+    /// Build a benchmark dir with `test_vectors/` plus a `test_case/` initialized by `init`.
+    fn benchmark_dir(init: impl FnOnce(&Path)) -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join("test_case")).unwrap();
+        fs::create_dir(root.join("test_vectors")).unwrap();
+        init(&root.join("test_case"));
+        tmp
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn accepts_flat_src_layout() {
+        let tmp = benchmark_dir(|tc| fs::create_dir(tc.join("src")).unwrap());
+        assert!(parse_benchmark_dir(tmp.path()).is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn accepts_cmake_project_layout() {
+        // No src/ -- sources are nested under a CMake project (e.g. SPHINCS+).
+        let tmp =
+            benchmark_dir(|tc| fs::write(tc.join("CMakeLists.txt"), b"project(x)\n").unwrap());
+        assert!(parse_benchmark_dir(tmp.path()).is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn rejects_test_case_without_src_or_cmake() {
+        let tmp = benchmark_dir(|_| {});
+        assert!(parse_benchmark_dir(tmp.path()).is_err());
     }
 }

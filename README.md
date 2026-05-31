@@ -20,6 +20,27 @@ cargo build --release
 If you do not use rustup, you will need a sufficiently-new stable Rust compiler
 (see rust-toolchain.toml for a toolchain version that is known to work).
 
+## Running the test suite
+
+CI runs `make test`, which compiles with `-D warnings`, runs unit and
+integration tests, lints with clippy, checks formatting, and runs miri
+(from the `nightly/` sub-project).
+
+```bash
+make test
+```
+
+If your changes touch shared IR struct shapes (e.g. types in
+`tools/build_config/src/ir.rs`), prefer `make test-clean` before pushing.
+It runs `cargo clean` first to match CI's fresh-checkout behavior;
+without it, cargo's incremental cache can skip re-typechecking
+downstream tests when an upstream struct gains a field, hiding compile
+errors that only surface on CI.
+
+```bash
+make test-clean
+```
+
 ## LLM server
 
 You will also need an LLM server. This can be local, or remote. A couple options

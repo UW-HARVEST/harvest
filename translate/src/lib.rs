@@ -41,11 +41,11 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // Setup a schedule for the transpilation.
     let load_src = scheduler.queue(LoadRawSource::new(&config.input));
     let build_cfg = scheduler.queue_after(BuildConfig, &[load_src]);
-    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src, build_cfg]);
     let translate = if config.agentic {
-        let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
+        let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec, build_cfg]);
         if config.agentic_verify {
-            scheduler.queue_after(VerifyFixAgentic, &[t, load_src])
+            scheduler.queue_after(VerifyFixAgentic, &[t, load_src, build_cfg])
         } else {
             t
         }

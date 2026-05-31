@@ -89,7 +89,7 @@ pub fn build_configurable_vars_section(cfg: &BuildConfigIR) -> String {
                         template = template
                     ));
                 }
-                DefineKind::GatedFlag { gate_var } => {
+                DefineKind::GatedFlag { gate_var, .. } => {
                     out.push_str(&format!(
                         "- `{cname}` (gated by `{gate_var}`): use `#[cfg({cname})]`\n",
                         cname = def.c_name,

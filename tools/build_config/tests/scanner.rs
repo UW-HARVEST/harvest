@@ -120,7 +120,8 @@ fn config_notests_defines_match_cmake_patterns() {
     assert_eq!(
         enable_extra.kind,
         DefineKind::GatedFlag {
-            gate_var: "ENABLE_EXTRA".into()
+            gate_var: "ENABLE_EXTRA".into(),
+            gate_value: None,
         }
     );
 }

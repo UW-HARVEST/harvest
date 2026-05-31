@@ -216,6 +216,42 @@ impl CargoToml {
         }
     }
 
+    /// Returns all feature names defined in `[features]`, excluding `"default"`.
+    ///
+    /// Returns an empty `Vec` when the `[features]` table is absent.
+    pub fn feature_names(&self) -> Vec<String> {
+        let Some(feat_item) = self.doc.get("features") else {
+            return Vec::new();
+        };
+        let Some(t) = feat_item.as_table() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = t
+            .iter()
+            .filter(|(k, _)| *k != "default")
+            .map(|(k, _)| k.to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Returns the feature names listed in `[features].default`.
+    ///
+    /// Returns an empty `Vec` when the `default` key is absent or empty.
+    pub fn default_feature_names(&self) -> Vec<String> {
+        let Some(arr) = self
+            .doc
+            .get("features")
+            .and_then(|f| f.get("default"))
+            .and_then(|d| d.as_array())
+        else {
+            return Vec::new();
+        };
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    }
+
     /// Sets `[features].default` to the given list.
     pub fn set_default_features(&mut self, features: &[String]) {
         let feat = self

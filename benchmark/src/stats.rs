@@ -8,6 +8,19 @@ pub struct TestResult {
     pub skipped: bool,
 }
 
+/// Result for a single feature combination run on a program.
+///
+/// When `--feature-combos default` is in effect there is exactly one entry
+/// per program with `feature_combo = "default"`.  When `all` or `N` is used,
+/// there is one entry per exercised combination.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComboResult {
+    /// Human-readable combo label (e.g. `"BACKEND_alpha,WORD_SIZE_64"` or `"default"`).
+    pub feature_combo: String,
+    /// `true` iff all test vectors passed for this combo.
+    pub combo_passed: bool,
+}
+
 /// Statistics for running many tests on a single program
 #[derive(Debug, Serialize)]
 pub struct ProgramEvalStats {
@@ -20,6 +33,11 @@ pub struct ProgramEvalStats {
     pub error_message: Option<String>,
     // Store individual test results with filenames and pass/fail status
     pub test_results: Vec<TestResult>,
+    /// Per-combination results (one entry per tested feature combination).
+    /// Always has at least one entry after testing completes; the entry's
+    /// `feature_combo` field is `"default"` when `--feature-combos default`
+    /// is in effect.
+    pub combo_results: Vec<ComboResult>,
 }
 
 impl ProgramEvalStats {
@@ -33,6 +51,7 @@ impl ProgramEvalStats {
             skipped_tests: 0,
             error_message: None,
             test_results: Vec::new(),
+            combo_results: Vec::new(),
         }
     }
 

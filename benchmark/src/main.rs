@@ -8,6 +8,7 @@ mod runner;
 mod stats;
 use crate::cli::Args;
 use crate::error::HarvestResult;
+use crate::harness::feature_combo::{enumerate_combos, FeatureCombo, FeatureCombos};
 use crate::harness::{
     cleanup_benchmarks, parse_benchmark_dir, parse_test_vectors, validate_binary_output,
 };
@@ -19,7 +20,7 @@ use crate::ir_utils::{
     all_cargo_packages, cargo_build_result, raw_cargo_package, raw_source, write_output_result,
 };
 use crate::logger::TeeLogger;
-use crate::stats::{ProgramEvalStats, SummaryStats, TestResult};
+use crate::stats::{ComboResult, ProgramEvalStats, SummaryStats, TestResult};
 use clap::Parser;
 use harvest_core::utils::get_version;
 use harvest_core::HarvestIR;
@@ -27,6 +28,7 @@ use harvest_translate::{transpile, util::set_user_only_umask};
 use regex::Regex;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 /// Encapsulate important results from transpilation
@@ -149,6 +151,7 @@ pub fn run_all_benchmarks(
     agentic: bool,
     agentic_verify: bool,
     repair_passes: usize,
+    feature_combos: &FeatureCombos,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -168,12 +171,89 @@ pub fn run_all_benchmarks(
             agentic,
             agentic_verify,
             repair_passes,
+            feature_combos,
         );
 
         results.push(result);
     }
 
     Ok(results)
+}
+
+/// Build the translated crate with a specific feature combination and return the
+/// path to the compiled binary (for executable crates).
+///
+/// When `combo.no_default_features` is `false` (the `default` combo), a plain
+/// `cargo build --release` is run -- identical to the pre-feature-combo behavior.
+/// When `no_default_features` is `true`, `--no-default-features --features=...`
+/// is appended so only the explicitly listed features are active.
+///
+/// Returns `None` (and logs a warning) for library crates -- callers must handle
+/// the library path differently.
+fn build_with_features(project_dir: &Path, combo: &FeatureCombo) -> HarvestResult<Option<PathBuf>> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .current_dir(project_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if combo.no_default_features {
+        cmd.arg("--no-default-features");
+        if !combo.features.is_empty() {
+            cmd.arg("--features").arg(combo.features.join(","));
+        }
+    }
+
+    log::info!(
+        "Building combo '{}' in {}",
+        combo.label,
+        project_dir.display()
+    );
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn cargo build: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("cargo build failed for combo '{}': {}", combo.label, stderr).into());
+    }
+
+    // Find the binary produced by this build.  We look for a single executable
+    // in target/release/ (excluding .d / .rlib / subdirectories).
+    let release_dir = project_dir.join("target").join("release");
+    let bin = find_release_binary(&release_dir);
+    Ok(bin)
+}
+
+/// Find the executable binary in a `target/release/` directory.
+/// Returns the first file that looks like a plain executable (not a dep file,
+/// not a subdirectory, not a `.d`/`.rlib` file).
+fn find_release_binary(release_dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(release_dir).ok()?;
+    let mut candidates: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if !path.is_file() {
+                return None;
+            }
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            // Skip known non-binary extensions.
+            if matches!(ext, "d" | "rlib" | "rmeta" | "pdb" | "exp" | "lib") {
+                return None;
+            }
+            // Skip files whose stem starts with a dot.
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem.starts_with('.') {
+                return None;
+            }
+            Some(path)
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 /// Run list of tests and output result/errors
@@ -245,7 +325,7 @@ fn run_test_validation(
     (test_results, error_messages)
 }
 
-/// Run all benchmarks for a single program
+/// Run all benchmarks for a single program, including feature-combo iteration.
 #[allow(clippy::too_many_arguments)]
 fn benchmark_single_program(
     program_dir: &Path,
@@ -256,6 +336,7 @@ fn benchmark_single_program(
     agentic: bool,
     agentic_verify: bool,
     repair_passes: usize,
+    feature_combos: &FeatureCombos,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -341,48 +422,179 @@ fn benchmark_single_program(
         return result;
     }
 
-    // Library and executable validation differ.
-    let (test_results, error_messages) = match (is_lib, translation_result.rust_binary_path) {
-        (true, _) => {
-            match harness::library::run_library_validation(
-                &program_name,
-                program_dir,
-                &output_dir,
-                &test_cases,
-                timeout,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    let error_msg = format!("Library validation failed: {}", e);
-                    log::error!("{}", error_msg);
-                    result.error_message = Some(error_msg);
-                    return result;
-                }
+    // For library projects, feature-combo testing is not supported:
+    // the library validation flow rebuilds via `cargo build` without feature
+    // flags, and per-combo cdylib rebuilds are not wired into the cando2 harness.
+    // Library crates are validated once using the default combo.
+    if is_lib {
+        let (test_results, error_messages) = match harness::library::run_library_validation(
+            &program_name,
+            program_dir,
+            &output_dir,
+            &test_cases,
+            timeout,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("Library validation failed: {}", e);
+                log::error!("{}", error_msg);
+                result.error_message = Some(error_msg);
+                return result;
+            }
+        };
+
+        let passed = test_results
+            .iter()
+            .filter(|t| t.passed && !t.skipped)
+            .count();
+        let skipped = test_results.iter().filter(|t| t.skipped).count();
+
+        result.passed_tests = passed;
+        result.skipped_tests = skipped;
+        result.test_results = test_results;
+        result.combo_results.push(ComboResult {
+            feature_combo: "default".to_string(),
+            combo_passed: result.failed_tests() == 0,
+        });
+
+        log_program_summary(&result);
+
+        if !error_messages.is_empty() {
+            let error_file_path = output_dir.join("results.err");
+            if let Err(e) = write_error_file(&error_file_path, &error_messages) {
+                log::info!("Warning: Failed to write error file: {}", e);
             }
         }
-        (false, Some(binary_path)) if binary_path.exists() => {
-            run_test_validation(&binary_path, &test_cases, timeout, &output_dir)
-        }
-        (_, binary_path) => {
-            let error = format!(
-                "Rust build reported success, but expected output artifact was not found at {:?}",
-                binary_path
-            );
-            log::error!("{}", error);
-            result.error_message = Some(error);
+
+        return result;
+    }
+
+    // --- Executable path: iterate feature combos ---
+
+    // Enumerate the combos to test.
+    let cargo_toml_path = output_dir.join("Cargo.toml");
+    let combos = match enumerate_combos(&cargo_toml_path, feature_combos) {
+        Ok(c) => c,
+        Err(e) => {
+            let error_msg = format!("Feature-combo enumeration failed: {}", e);
+            log::error!("{}", error_msg);
+            result.error_message = Some(error_msg);
             return result;
         }
     };
 
-    result.passed_tests = test_results
-        .iter()
-        .filter(|t| t.passed && !t.skipped)
-        .count();
-    result.skipped_tests = test_results.iter().filter(|t| t.skipped).count();
-    result.test_results = test_results;
+    log::info!("Feature combos to test: {}", combos.len());
+
+    // For the `default` combo (no_default_features == false), use the binary
+    // that was already built by transpile.  For non-default combos, rebuild.
+    let initial_binary = translation_result.rust_binary_path;
+
+    let mut all_error_messages: Vec<String> = Vec::new();
+    let mut first_combo_test_results: Option<(Vec<TestResult>, usize, usize)> = None;
+
+    for (combo_idx, combo) in combos.iter().enumerate() {
+        log::info!(
+            "Testing combo {} of {}: '{}'",
+            combo_idx + 1,
+            combos.len(),
+            combo.label
+        );
+
+        // Get or build the binary for this combo.
+        let binary_path: PathBuf = if !combo.no_default_features {
+            // Default combo: reuse the binary produced by transpile.
+            match &initial_binary {
+                Some(p) if p.exists() => p.clone(),
+                other => {
+                    let error = format!(
+                        "Rust build reported success, but expected output artifact \
+                         was not found at {:?}",
+                        other
+                    );
+                    log::error!("{}", error);
+                    result.error_message = Some(error);
+                    return result;
+                }
+            }
+        } else {
+            // Non-default combo: rebuild with the requested features.
+            match build_with_features(&output_dir, combo) {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    let error = format!(
+                        "cargo build succeeded for combo '{}' but no binary was found",
+                        combo.label
+                    );
+                    log::warn!("{}", error);
+                    result.combo_results.push(ComboResult {
+                        feature_combo: combo.label.clone(),
+                        combo_passed: false,
+                    });
+                    all_error_messages.push(error);
+                    continue;
+                }
+                Err(e) => {
+                    let error = format!("Build failed for combo '{}': {}", combo.label, e);
+                    log::warn!("{}", error);
+                    result.combo_results.push(ComboResult {
+                        feature_combo: combo.label.clone(),
+                        combo_passed: false,
+                    });
+                    all_error_messages.push(error);
+                    continue;
+                }
+            }
+        };
+
+        let (test_results, error_messages) =
+            run_test_validation(&binary_path, &test_cases, timeout, &output_dir);
+
+        let combo_passed =
+            error_messages.is_empty() && test_results.iter().all(|t| t.passed || t.skipped);
+
+        result.combo_results.push(ComboResult {
+            feature_combo: combo.label.clone(),
+            combo_passed,
+        });
+
+        // For the primary (default / first) combo, also populate the
+        // top-level aggregate stats that `SummaryStats` and logging use.
+        if first_combo_test_results.is_none() {
+            let passed = test_results
+                .iter()
+                .filter(|t| t.passed && !t.skipped)
+                .count();
+            let skipped = test_results.iter().filter(|t| t.skipped).count();
+            first_combo_test_results = Some((test_results, passed, skipped));
+        }
+
+        all_error_messages.extend(error_messages);
+    }
+
+    // Populate top-level aggregate stats from the first combo.
+    if let Some((test_results, passed, skipped)) = first_combo_test_results {
+        result.passed_tests = passed;
+        result.skipped_tests = skipped;
+        result.test_results = test_results;
+    }
 
     // Print summary for this example
-    log::info!("\nResults for {}:", program_name);
+    log_program_summary(&result);
+
+    // Write error messages to results.err file in the output directory if it was created
+    if !all_error_messages.is_empty() {
+        let error_file_path = output_dir.join("results.err");
+        if let Err(e) = write_error_file(&error_file_path, &all_error_messages) {
+            log::info!("Warning: Failed to write error file: {}", e);
+        }
+    }
+
+    result
+}
+
+/// Log the per-program summary line.
+fn log_program_summary(result: &ProgramEvalStats) {
+    log::info!("\nResults for {}:", result.program_name);
     log::info!(
         "  Translation: {}",
         status_emoji(result.translation_success)
@@ -395,16 +607,14 @@ fn benchmark_single_program(
         result.skipped_tests,
         result.success_rate()
     );
-
-    // Write error messages to results.err file in the output directory if it was created
-    if !error_messages.is_empty() {
-        let error_file_path = output_dir.join("results.err");
-        if let Err(e) = write_error_file(&error_file_path, &error_messages) {
-            log::info!("Warning: Failed to write error file: {}", e);
-        }
+    if result.combo_results.len() > 1 {
+        let all_pass = result.combo_results.iter().all(|c| c.combo_passed);
+        log::info!(
+            "  Feature combos: {} tested, {} strict aggregate pass",
+            result.combo_results.len(),
+            if all_pass { "[OK]" } else { "[FAIL]" }
+        );
     }
-
-    result
 }
 
 fn main() -> HarvestResult<()> {
@@ -505,6 +715,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agentic,
         args.agentic_verify,
         args.repair_passes,
+        &args.feature_combos,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

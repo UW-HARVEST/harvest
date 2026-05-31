@@ -1,3 +1,4 @@
+use crate::harness::feature_combo::FeatureCombos;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -52,4 +53,18 @@ pub struct Args {
     /// Cannot be used together with --filter.
     #[arg(long, conflicts_with = "filter")]
     pub exclude: Option<String>,
+
+    /// Feature combination mode for testing translated crates.
+    ///
+    /// - `default` (default): exercise only the C build's default feature selection.
+    ///   Produces the same results as previous `benchmark` runs; no behavior change for
+    ///   the existing TRACTOR corpus.
+    /// - `all`: iterate the full Cartesian product of feature combinations declared in
+    ///   the translated crate's `[features]` block. Errors if the product exceeds 1024
+    ///   combinations; use `--feature-combos N` to cap instead.
+    /// - `N` (positive integer): sample exactly N combinations drawn evenly from the
+    ///   full Cartesian product (deterministic, evenly-spaced indices). If the full
+    ///   product is smaller than N, all combinations are tested.
+    #[arg(long, default_value = "default", value_name = "MODE")]
+    pub feature_combos: FeatureCombos,
 }

@@ -54,4 +54,12 @@ Run `cargo build --release` and fix any errors until it compiles.
 If the project has Cargo features, verify ALL feature combinations compile:
 run `cargo build --release --features <feature>` for each one.
 
+## Waiting on long-running commands
+
+Builds and reference-output generation can be slow. When you need to wait for a
+long command, run it with `run_in_background` and poll for completion, or wrap a
+short sleep in a condition loop (e.g. `until [ -f build.done ]; do sleep 2; done`).
+Do NOT block on a single long foreground `sleep` such as `sleep 30 && cat log` --
+it will be rejected, and chaining `sleep` calls only wastes turns.
+
 Do NOT modify anything in c_src/.

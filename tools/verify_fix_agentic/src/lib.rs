@@ -144,6 +144,7 @@ fn invoke_agent(
             .arg("-c")
             .arg(format!(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                 --permission-mode bypassPermissions \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
@@ -719,7 +720,8 @@ pub struct Config {
     /// `core::config::Config::agentic_agent == AgentKind::Claude`.
     pub prompt_claude_verify: Option<PathBuf>,
 
-    /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
+    /// Agent timeout in seconds. Defaults to 5400 (90 minutes). Override it in
+    /// `[tools.verify_fix_agentic]` if needed.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
@@ -728,7 +730,7 @@ pub struct Config {
 }
 
 fn default_timeout_secs() -> u64 {
-    2700
+    5400
 }
 
 impl Config {

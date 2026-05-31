@@ -245,5 +245,21 @@ mod tests {
             )
             .force
         );
+
+        // The embedded default_config.toml sets the agentic agent timeouts; with no
+        // user override they must resolve to the long-run defaults (these override the
+        // crates' serde `default_timeout_secs`, so the TOML is the source of truth).
+        let cfg = load_config(
+            &Args::parse_from(["", "--output=/tmp/out"]),
+            config_dir.path(),
+        );
+        assert_eq!(
+            cfg.tools["translate_agentic"]["timeout_secs"].as_u64(),
+            Some(7200)
+        );
+        assert_eq!(
+            cfg.tools["verify_fix_agentic"]["timeout_secs"].as_u64(),
+            Some(5400)
+        );
     }
 }

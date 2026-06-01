@@ -24,6 +24,7 @@ use tracing::{info, warn};
 const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
 const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
 const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
+const PROMPT_CLAUDE_TRANSLATE_NO_PLAN: &str = include_str!("prompt_claude_translate_no_plan.md");
 
 /// Agent-only structural notes appended after the variable-listing section
 /// when `BuildConfigIR.is_empty == false`. Says only the things that are
@@ -95,14 +96,28 @@ impl Tool for TranslateAgentic {
             .ok_or("No BuildConfigIR representation found in IR")?;
 
         let agent = context.config.agentic_agent;
-        let translate_prompt = load_prompt(
-            &config.prompt_executable,
-            &config.prompt_library,
-            &config.prompt_claude_translate,
-            &project_spec.kind,
-            build_cfg,
-            agent,
-        )?;
+        // `no_plan` selects the leaner prompt that omits the PLAN.md /
+        // sub-agent machinery (only meaningful for Claude, and only when no
+        // explicit prompt override is configured).
+        let translate_prompt = if config.no_plan
+            && matches!(agent, AgentKind::Claude)
+            && config.prompt_claude_translate.is_none()
+        {
+            if build_cfg.is_empty {
+                PROMPT_CLAUDE_TRANSLATE_NO_PLAN.to_owned()
+            } else {
+                build_system_prompt(PROMPT_CLAUDE_TRANSLATE_NO_PLAN, build_cfg)
+            }
+        } else {
+            load_prompt(
+                &config.prompt_executable,
+                &config.prompt_library,
+                &config.prompt_claude_translate,
+                &project_spec.kind,
+                build_cfg,
+                agent,
+            )?
+        };
 
         // Set up a working directory that mirrors the layout the agent expects:
         //   case_dir/translated_rust/c_src/  <- materialized C source
@@ -124,7 +139,14 @@ impl Tool for TranslateAgentic {
         let canonical_name = canonical_crate_name(&context.config.output);
         write_project_scaffold(&translated, &canonical_name, &project_spec.kind, build_cfg)?;
 
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent)?;
+        invoke_agent(
+            &translated,
+            &translate_prompt,
+            config.timeout_secs,
+            agent,
+            config.model.as_deref(),
+            config.no_plan,
+        )?;
 
         if !translated.join("Cargo.toml").exists() {
             return Err("Agent did not produce a Cargo.toml".into());
@@ -158,13 +180,31 @@ fn invoke_agent(
     prompt: &str,
     timeout_secs: u64,
     agent: AgentKind,
+    model: Option<&str>,
+    no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking translation agent ({agent}, timeout={timeout_secs}s)");
+    info!(
+        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)")
+    );
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("translation.log");
     let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
+
+    // Optional `--model` override (default: the CLI's own default model). The
+    // `--append-system-prompt` PLAN.md reminder is only useful in plan mode.
+    let model_flag = if model.is_some() {
+        "--model \"$MODEL\" "
+    } else {
+        ""
+    };
+    let append_sys_flag = if no_plan {
+        ""
+    } else {
+        "--append-system-prompt \"$APPEND_SYS\" "
+    };
 
     let status = match agent {
         AgentKind::Kiro => Command::new("bash")
@@ -178,28 +218,35 @@ fn invoke_agent(
             .env("OPENSSL_DIR", &openssl_dir)
             .current_dir(work_dir)
             .status()?,
-        AgentKind::Claude => Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                 --permission-mode bypassPermissions \
-                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --append-system-prompt \"$APPEND_SYS\" \
-                 --output-format stream-json --verbose \
-                 < /dev/null 2>&1 | tee \"$LOG\"",
-            ))
-            .env("PROMPT", prompt)
-            .env("LOG", &log_path)
-            // Survives context compaction: the lossy summary retains this line,
-            // so the agent re-reads PLAN.md (its durable plan) before resuming.
-            .env(
-                "APPEND_SYS",
-                "After any context compaction, you MUST re-read PLAN.md (if it exists) \
-                 before doing anything else, and resume from the first unchecked subtask.",
-            )
-            .env("OPENSSL_DIR", &openssl_dir)
-            .current_dir(work_dir)
-            .status()?,
+        AgentKind::Claude => {
+            let mut cmd = Command::new("bash");
+            cmd.arg("-c")
+                .arg(format!(
+                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                     --permission-mode bypassPermissions \
+                     --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                     {model_flag}{append_sys_flag}\
+                     --output-format stream-json --verbose \
+                     < /dev/null 2>&1 | tee \"$LOG\"",
+                ))
+                .env("PROMPT", prompt)
+                .env("LOG", &log_path)
+                .env("OPENSSL_DIR", &openssl_dir)
+                .current_dir(work_dir);
+            if let Some(m) = model {
+                cmd.env("MODEL", m);
+            }
+            if !no_plan {
+                // Survives context compaction: the lossy summary retains this
+                // line, so the agent re-reads PLAN.md before resuming.
+                cmd.env(
+                    "APPEND_SYS",
+                    "After any context compaction, you MUST re-read PLAN.md (if it exists) \
+                     before doing anything else, and resume from the first unchecked subtask.",
+                );
+            }
+            cmd.status()?
+        }
     };
 
     if !status.success() {
@@ -666,6 +713,28 @@ mod tests {
             "the Claude prompt should describe the PLAN.md anti-compaction mechanism",
         );
     }
+
+    /// The no-plan prompt is the lean variant: scaffold-aware, no PLAN.md
+    /// machinery, no leftover bare-value feature rule or agent-tools placeholder.
+    #[test]
+    fn no_plan_prompt_is_scaffold_aware_and_planless() {
+        assert!(
+            !PROMPT_CLAUDE_TRANSLATE_NO_PLAN.contains("PLAN.md"),
+            "the no-plan prompt must not carry the PLAN.md machinery",
+        );
+        assert!(
+            !PROMPT_CLAUDE_TRANSLATE_NO_PLAN.contains("exact same name in lowercase"),
+            "the bare-value lowercase feature rule must not survive",
+        );
+        assert!(
+            !PROMPT_CLAUDE_TRANSLATE_NO_PLAN.contains("{AGENT_TOOLS_SECTION}"),
+            "the dropped agent-tools placeholder must not survive",
+        );
+        assert!(
+            PROMPT_CLAUDE_TRANSLATE_NO_PLAN.contains("already provided"),
+            "the no-plan prompt should state the scaffold is provided",
+        );
+    }
 }
 
 /// Tool-specific configuration, read from `[tools.translate_agentic]` in the HARVEST config.
@@ -686,6 +755,18 @@ pub struct Config {
     /// this is generous; override it in `[tools.translate_agentic]` if needed.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Optional model override passed to `claude --model`. When absent, the
+    /// Claude CLI's own default model is used (currently Opus). Accepts short
+    /// aliases ("opus", "sonnet", "haiku") or full model IDs.
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// When true, use the leaner no-plan prompt (no PLAN.md / sub-agent
+    /// machinery) and skip the post-compaction "re-read PLAN.md" reminder.
+    /// Defaults to false (the large-codebase plan-mode methodology).
+    #[serde(default)]
+    pub no_plan: bool,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

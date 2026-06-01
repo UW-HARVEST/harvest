@@ -1,6 +1,14 @@
 <!-- markdownlint-disable MD041 -->
 Translate the C code in c_src/ to Rust that produces **byte-identical output** for the same inputs.
-Write Cargo.toml and src/ files in the current directory (NOT in c_src/).
+
+A project scaffold is **already provided** in the current directory: a `Cargo.toml`
+(with the crate name, the `[lib]`/`[[bin]]` target, and any `[features]` block),
+a `build.rs` (if the project is configurable), and a `rust-toolchain.toml`. Do
+**NOT** modify, recreate, or delete these files. Write only the Rust source files
+under `src/`. Read the provided `Cargo.toml` first to learn the exact crate name
+and targets — reference items within the crate via `crate::`/`mod`, and if you
+must name the crate (e.g. from a `[[bin]]` target) use the exact name from that
+`Cargo.toml`. Do not invent a different crate name.
 
 ## Step 1: Analyze BEFORE writing any code
 
@@ -9,20 +17,19 @@ Before writing a single line of Rust, you MUST:
    and any build-time configurability (cache variables, options, conditional compilation)
 2. Read all header files to understand the public API, preprocessor macros, and
    namespace/symbol renaming patterns
-3. Determine the project type:
-   - Has `main()` -> needs `[[bin]]` with `name = "driver"`
-   - Exports library functions -> needs `[lib]` with `crate-type = ["cdylib"]`
-   - Both -> include both `[lib]` and `[[bin]]` sections
+3. Read the provided `Cargo.toml` to learn the crate name and whether the target
+   is a `[[bin]]` (`name = "driver"`), a `[lib]`, or both — this is already set
+   for you; match your `src/` layout to it (`src/main.rs` for a bin, `src/lib.rs`
+   for a lib).
 4. Identify ALL backends/variants if the project has build-time configurability
 
 ## Step 2: Plan the translation
 
 If the project has build-time configurability (CMake cache variables selecting different
 source files or parameters):
-- You MUST preserve this using **Cargo features**. If the project ships a
-  `configuration.json`, the `EmitBuildFeatures` tool will write the
-  `[features]` block and `build.rs` for you; do NOT write them yourself. Use
-  the feature names exactly as the tool emits them. For enum-kind variables
+- You MUST preserve this using **Cargo features**. The provided `Cargo.toml`
+  already contains the `[features]` block and a `build.rs` — do NOT modify them.
+  Use the feature names exactly as written there. For enum-kind variables
   (`VAR` with values `a`, `b`), gate code with bare cfg attributes such as
   `#[cfg(VAR_a)]` (NOT `feature = "VAR_a"`). For boolean variables `VAR`,
   gate with `#[cfg(feature = "VAR")]` using the variable's exact case.

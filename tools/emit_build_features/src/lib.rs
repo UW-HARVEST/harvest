@@ -111,34 +111,17 @@ pub fn apply(
         .to_vec();
     let mut cargo = CargoToml::from_bytes(&cargo_bytes)?;
 
-    // 1. Surface every variable as one or more Cargo features.
-    let mut feature_names: Vec<String> = Vec::new();
-    for var in &cfg.variables {
-        match &var.kind {
-            ConfigVarKind::Boolean => feature_names.push(var.name.clone()),
-            ConfigVarKind::Enum { values, .. } => {
-                for v in values {
-                    feature_names.push(format!("{}_{}", var.name, v));
-                }
-            }
-        }
-    }
-    cargo.add_features(feature_names);
-
-    // 2. Compute the default feature set: pick each variable's default value
-    //    (or, for enums lacking one, fall back to the first listed value so
-    //    builds still produce something).
-    let defaults = default_features(&cfg.variables);
-    cargo.set_default_features(&defaults);
-
-    // 3. If anything in the IR needs a build script (any enum variable, or any
-    //    non-trivial define), wire one up.
-    let needs_build_rs = needs_build_script(cfg);
-    if needs_build_rs {
-        cargo.set_build_script("build.rs");
+    // Idempotency: a manifest that already declares features was produced by a
+    // pre-translation scaffold; re-applying would duplicate keys. Leave it as-is.
+    if cargo.has_features() {
+        debug!("emit_build_features: Cargo.toml already declares features; passing through");
+        return Ok(Box::new(cargo_package));
     }
 
-    // 4. Write the updated Cargo.toml back into the in-memory package.
+    // Apply the feature/build-script wiring, capturing the build.rs to render.
+    let build_rs = apply_features_to_cargo(&mut cargo, cfg);
+
+    // Write the updated Cargo.toml back into the in-memory package.
     let new_cargo = cargo.into_bytes();
     let cargo_slot = cargo_package
         .dir
@@ -146,10 +129,9 @@ pub fn apply(
         .map_err(|e| format!("emit_build_features: failed to mutate Cargo.toml: {e}"))?;
     *cargo_slot = new_cargo;
 
-    // 5. Render and write build.rs (if needed). We tolerate a pre-existing
-    //    build.rs by overwriting it in place.
-    if needs_build_rs {
-        let rendered = render_build_rs(cfg);
+    // Render and write build.rs (if needed). We tolerate a pre-existing
+    // build.rs by overwriting it in place.
+    if let Some(rendered) = build_rs {
         let bytes = rendered.into_bytes();
         if cargo_package.dir.get_file("build.rs").is_ok() {
             let slot = cargo_package
@@ -163,6 +145,40 @@ pub fn apply(
     }
 
     Ok(Box::new(cargo_package))
+}
+
+/// Applies the configurable-variables features and build-script wiring to
+/// `cargo` in place, returning the `build.rs` content to write if one is
+/// needed (`None` when no build script is required, e.g. boolean-only configs).
+///
+/// Shared by [`apply`] and the pre-translation project scaffold in
+/// `translate_agentic` so the two paths cannot drift. Safe to call with an
+/// empty IR (it simply makes no changes and returns `None`).
+pub fn apply_features_to_cargo(cargo: &mut CargoToml, cfg: &BuildConfigIR) -> Option<String> {
+    // Surface every variable as one or more Cargo features.
+    let mut feature_names: Vec<String> = Vec::new();
+    for var in &cfg.variables {
+        match &var.kind {
+            ConfigVarKind::Boolean => feature_names.push(var.name.clone()),
+            ConfigVarKind::Enum { values, .. } => {
+                for v in values {
+                    feature_names.push(format!("{}_{}", var.name, v));
+                }
+            }
+        }
+    }
+    cargo.add_features(feature_names);
+
+    // Default feature set from each variable's recorded default.
+    cargo.set_default_features(&default_features(&cfg.variables));
+
+    // Wire a build script when any enum (or non-trivial define) needs cfg emission.
+    if needs_build_script(cfg) {
+        cargo.set_build_script("build.rs");
+        Some(render_build_rs(cfg))
+    } else {
+        None
+    }
 }
 
 /// True iff the IR requires a generated `build.rs`. Booleans alone do not -- the

@@ -23,6 +23,41 @@ const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
 const PROMPT_CLAUDE_VERIFY: &str = include_str!("prompt_claude_verify.md");
 const PROMPT_CLAUDE_VERIFY_NO_PLAN: &str = include_str!("prompt_claude_verify_no_plan.md");
 
+/// Appended to the verify prompt only when a clar test harness has been
+/// materialized (see [`Config::clar_tests_dir`]). The `{CMAKE_BUILD_FLAGS}`
+/// placeholder is substituted alongside the rest of the prompt.
+const CLAR_VERIFY_SECTION: &str = r#"
+
+## Provided test suite (clar) -- behavioral oracle
+
+The directory `clar/` holds the project's original parent layout: the C project
+at `clar/test_case/`, the project's own authoritative unit tests at
+`clar/tests/` (a clar harness), and the top-level `clar/CMakeLists.txt`. The
+tests link against the C library and exercise its public API and behavior.
+
+Use them as a BEHAVIORAL SPECIFICATION and reference oracle, NOT as a Rust gate:
+
+1. Read `clar/tests/project/*.c` to learn the exact expected behavior of the C
+   library (return values, field/struct semantics, configuration-specific
+   results). Let this sharpen your hypotheses about where the Rust could differ.
+2. Build and run them against the ORIGINAL C to confirm the expected results for
+   this configuration. The C library is built through the top-level CMakeLists
+   (test_case is not a standalone project):
+   ```
+   cmake -S clar -B clar/build -DCMAKE_POSITION_INDEPENDENT_CODE=ON {CMAKE_BUILD_FLAGS}
+   cmake --build clar/build
+   cmake -S clar/tests -B clar/build_tests {CMAKE_BUILD_FLAGS}
+   cmake --build clar/build_tests
+   # then run the resulting test executable under clar/build_tests
+   ```
+3. Do NOT compile the clar tests against the Rust translation, and do NOT
+   reshape the Rust (e.g. forcing a C-ABI cdylib or repr(C) struct layout) just
+   to satisfy them. The correctness criterion remains execution equivalence with
+   the C (byte-identical stdout, plus the public function-output comparison you
+   already perform). The clar tests are an additional signal that informs that
+   verification, not a replacement for it.
+"#;
+
 pub struct VerifyFixAgentic;
 
 impl Tool for VerifyFixAgentic {
@@ -99,10 +134,37 @@ impl Tool for VerifyFixAgentic {
         fs::create_dir_all(&c_src_dir)?;
         raw_source.dir.materialize(&c_src_dir)?;
 
+        // Optional: materialize the project's provided clar tests as a
+        // behavioral oracle. The clar harness links against the C library built
+        // via the parent's top-level CMakeLists (test_case/CMakeLists.txt is not
+        // standalone), so materialize the whole parent into `clar/` -- it
+        // already carries the original sibling layout (`clar/test_case/`,
+        // `clar/tests/`, top-level CMakeLists) the harness's paths expect.
+        let clar_present = match config.clar_parent_dir.as_ref() {
+            Some(parent) if parent.join("tests").is_dir() => {
+                let (clar, _, _) = RawDir::populate_from(read_dir(parent)?)?;
+                clar.materialize(translated.join("clar"))?;
+                info!("Materialized clar parent layout from {}", parent.display());
+                true
+            }
+            Some(parent) => {
+                warn!(
+                    "clar_parent_dir {} has no tests/ subdirectory; skipping clar oracle",
+                    parent.display()
+                );
+                false
+            }
+            None => false,
+        };
+
         info!("Working directory: {}", case_dir.display());
 
         let cmake_flags = extract_cmake_flags(case_dir, build_cfg);
-        let prompt = verify_prompt
+        let mut prompt = verify_prompt.to_owned();
+        if clar_present {
+            prompt.push_str(CLAR_VERIFY_SECTION);
+        }
+        let prompt = prompt
             .replace("{CASE_DIR}", &case_dir.to_string_lossy())
             .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
@@ -120,6 +182,10 @@ impl Tool for VerifyFixAgentic {
         let c_src_out = translated.join("c_src");
         if c_src_out.exists() {
             fs::remove_dir_all(&c_src_out)?;
+        }
+        let clar_out = translated.join("clar");
+        if clar_out.exists() {
+            fs::remove_dir_all(&clar_out)?;
         }
         let target_out = translated.join("target");
         if target_out.exists() {
@@ -834,6 +900,24 @@ pub struct Config {
     /// before starting (to stagger long unattended runs). Defaults to none.
     #[serde(default)]
     pub wait_until: Option<u64>,
+
+    /// Optional path to the T&E parent directory (the one containing the
+    /// `test_case/` C project, a `tests/` clar harness, and the top-level
+    /// CMakeLists.txt). When set and a `tests/` subdirectory is present, the
+    /// whole parent is materialized into the verify working directory and the
+    /// agent is told to use the clar tests as a behavioral oracle against the
+    /// original C. Defaults to none.
+    ///
+    /// The whole parent is needed (not just `tests/`): `test_case/CMakeLists.txt`
+    /// is not a standalone project -- the library is built via the top-level
+    /// CMakeLists' `add_subdirectory(test_case)`, which the clar harness links
+    /// against.
+    ///
+    /// NOTE: this is the expedient form for the June T&E experiment; the clean
+    /// design would build and run the provided tests in a dedicated tool rather
+    /// than folding it into the verify agent.
+    #[serde(default)]
+    pub clar_parent_dir: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

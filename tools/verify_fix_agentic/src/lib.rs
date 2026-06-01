@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
 const PROMPT_CLAUDE_VERIFY: &str = include_str!("prompt_claude_verify.md");
+const PROMPT_CLAUDE_VERIFY_NO_PLAN: &str = include_str!("prompt_claude_verify_no_plan.md");
 
 pub struct VerifyFixAgentic;
 
@@ -57,6 +58,20 @@ impl Tool for VerifyFixAgentic {
             .get::<BuildConfigIR>(inputs[2])
             .ok_or("No BuildConfigIR representation found in IR")?;
 
+        // Optional scheduled start: sleep until the given Unix timestamp (e.g.
+        // to stagger long unattended runs).
+        if let Some(target_ts) = config.wait_until {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if target_ts > now {
+                let wait_secs = target_ts - now;
+                info!("Waiting {wait_secs}s until Unix timestamp {target_ts} before verifying");
+                std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+            }
+        }
+
         let agent = context.config.agentic_agent;
         let verify_prompt = match agent {
             AgentKind::Kiro => config
@@ -65,12 +80,11 @@ impl Tool for VerifyFixAgentic {
                 .map(fs::read_to_string)
                 .transpose()?
                 .unwrap_or_else(|| PROMPT_VERIFY.to_owned()),
-            AgentKind::Claude => config
-                .prompt_claude_verify
-                .as_ref()
-                .map(fs::read_to_string)
-                .transpose()?
-                .unwrap_or_else(|| PROMPT_CLAUDE_VERIFY.to_owned()),
+            AgentKind::Claude => match &config.prompt_claude_verify {
+                Some(p) => fs::read_to_string(p)?,
+                None if config.no_plan => PROMPT_CLAUDE_VERIFY_NO_PLAN.to_owned(),
+                None => PROMPT_CLAUDE_VERIFY.to_owned(),
+            },
         };
 
         // case_dir/
@@ -92,7 +106,14 @@ impl Tool for VerifyFixAgentic {
             .replace("{CASE_DIR}", &case_dir.to_string_lossy())
             .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
-        invoke_agent(case_dir, &prompt, config.timeout_secs, agent)?;
+        invoke_agent(
+            case_dir,
+            &prompt,
+            config.timeout_secs,
+            agent,
+            config.model.as_deref(),
+            config.no_plan,
+        )?;
         info!("Verification complete");
 
         // Remove artifacts that should not be carried into the IR.
@@ -120,13 +141,31 @@ fn invoke_agent(
     prompt: &str,
     timeout_secs: u64,
     agent: AgentKind,
+    model: Option<&str>,
+    no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Invoking verification agent ({agent}, timeout={timeout_secs}s)");
+    info!(
+        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)")
+    );
 
     let logs_dir = work_dir.join("logs");
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join("verify.log");
     let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
+
+    // Optional `--model` override (default: the CLI's own default model). The
+    // `--append-system-prompt` reminder is only useful in plan mode.
+    let model_flag = if model.is_some() {
+        "--model \"$MODEL\" "
+    } else {
+        ""
+    };
+    let append_sys_flag = if no_plan {
+        ""
+    } else {
+        "--append-system-prompt \"$APPEND_SYS\" "
+    };
 
     let status = match agent {
         AgentKind::Kiro => Command::new("bash")
@@ -140,20 +179,33 @@ fn invoke_agent(
             .env("OPENSSL_DIR", &openssl_dir)
             .current_dir(work_dir)
             .status()?,
-        AgentKind::Claude => Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                 --permission-mode bypassPermissions \
-                 --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                 --output-format stream-json --verbose \
-                 < /dev/null 2>&1 | tee \"$LOG\"",
-            ))
-            .env("PROMPT", prompt)
-            .env("LOG", &log_path)
-            .env("OPENSSL_DIR", &openssl_dir)
-            .current_dir(work_dir)
-            .status()?,
+        AgentKind::Claude => {
+            let mut cmd = Command::new("bash");
+            cmd.arg("-c")
+                .arg(format!(
+                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                     --permission-mode bypassPermissions \
+                     --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                     {model_flag}{append_sys_flag}\
+                     --output-format stream-json --verbose \
+                     < /dev/null 2>&1 | tee \"$LOG\"",
+                ))
+                .env("PROMPT", prompt)
+                .env("LOG", &log_path)
+                .env("OPENSSL_DIR", &openssl_dir)
+                .current_dir(work_dir);
+            if let Some(m) = model {
+                cmd.env("MODEL", m);
+            }
+            if !no_plan {
+                cmd.env(
+                    "APPEND_SYS",
+                    "After any context compaction, you MUST first re-read PLAN.md and \
+                     HYPOTHESES.md (if they exist) before doing anything else.",
+                );
+            }
+            cmd.status()?
+        }
     };
 
     if !status.success() {
@@ -708,6 +760,26 @@ mod tests {
         assert!(PROMPT_CLAUDE_VERIFY.contains("libloading"));
         assert!(PROMPT_CLAUDE_VERIFY.contains("nm -D"));
     }
+
+    /// The plan-mode verify prompt carries the HYPOTHESES.md anti-compaction
+    /// mechanism; the no-plan variant is lean (no PLAN/HYPOTHESES machinery) and
+    /// neither carries the dropped agent-tools placeholder.
+    #[test]
+    fn verify_prompts_methodology_and_scaffold() {
+        assert!(
+            PROMPT_CLAUDE_VERIFY.contains("HYPOTHESES.md"),
+            "plan-mode verify prompt should describe the HYPOTHESES.md mechanism",
+        );
+        assert!(
+            !PROMPT_CLAUDE_VERIFY_NO_PLAN.contains("HYPOTHESES.md"),
+            "no-plan verify prompt must not carry the HYPOTHESES.md machinery",
+        );
+        assert!(
+            !PROMPT_CLAUDE_VERIFY.contains("{AGENT_TOOLS_SECTION}")
+                && !PROMPT_CLAUDE_VERIFY_NO_PLAN.contains("{AGENT_TOOLS_SECTION}"),
+            "the dropped agent-tools placeholder must not survive in either prompt",
+        );
+    }
 }
 
 /// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.
@@ -724,6 +796,21 @@ pub struct Config {
     /// `[tools.verify_fix_agentic]` if needed.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Optional model override passed to `claude --model`. When absent, the
+    /// Claude CLI's own default model (currently Opus) is used.
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// When true, use the leaner no-plan verify prompt (no PLAN.md/HYPOTHESES.md
+    /// machinery) and skip the post-compaction reminder. Defaults to false.
+    #[serde(default)]
+    pub no_plan: bool,
+
+    /// Optional Unix timestamp; when set, the verifier sleeps until that time
+    /// before starting (to stagger long unattended runs). Defaults to none.
+    #[serde(default)]
+    pub wait_until: Option<u64>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

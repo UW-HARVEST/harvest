@@ -184,11 +184,19 @@ fn invoke_agent(
                 "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
                  --permission-mode bypassPermissions \
                  --allowedTools 'Bash(*)' 'Write' 'Edit' \
+                 --append-system-prompt \"$APPEND_SYS\" \
                  --output-format stream-json --verbose \
                  < /dev/null 2>&1 | tee \"$LOG\"",
             ))
             .env("PROMPT", prompt)
             .env("LOG", &log_path)
+            // Survives context compaction: the lossy summary retains this line,
+            // so the agent re-reads PLAN.md (its durable plan) before resuming.
+            .env(
+                "APPEND_SYS",
+                "After any context compaction, you MUST re-read PLAN.md (if it exists) \
+                 before doing anything else, and resume from the first unchecked subtask.",
+            )
             .env("OPENSSL_DIR", &openssl_dir)
             .current_dir(work_dir)
             .status()?,
@@ -649,8 +657,13 @@ mod tests {
             "the milestone3 lowercase rule was wrong and must not survive in the ported prompt",
         );
         assert!(
-            PROMPT_CLAUDE_TRANSLATE.contains("already contains the `[features]` block"),
+            PROMPT_CLAUDE_TRANSLATE.contains("are already written for you"),
             "the Claude prompt should state the [features] block is provided by the scaffold",
+        );
+        // Anti-compaction methodology must be present.
+        assert!(
+            PROMPT_CLAUDE_TRANSLATE.contains("PLAN.md"),
+            "the Claude prompt should describe the PLAN.md anti-compaction mechanism",
         );
     }
 }

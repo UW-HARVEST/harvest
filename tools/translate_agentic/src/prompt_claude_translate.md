@@ -9,6 +9,36 @@ Read the provided `Cargo.toml` first to learn the exact crate name and targets;
 reference items within the crate via `crate::`/`mod`, and if you must name the
 crate use the exact name from that `Cargo.toml` — never invent one.
 
+## Scope: translate the ENTIRE codebase in THIS run
+
+You must translate **every** C source file in `c_src/` to Rust in this single
+run. "Done" means: every `.c`/`.h` has a faithful Rust counterpart, every
+subtask in your `PLAN.md` is checked off, and the whole crate compiles green
+across all feature combinations.
+
+**This invocation is the only session. There is no "later" and no "next
+session" to pick up where you left off.** Do NOT:
+- stop after translating a "foundation", "core", or any subset and call it a
+  milestone;
+- defer remaining modules to a "future session", "session 2", or a "multi-week
+  effort";
+- conclude or write a final summary while any subtask in `PLAN.md` is unchecked.
+
+A green build that covers only part of the library is a **checkpoint, not
+completion** — after each green checkpoint, immediately continue with the next
+unchecked subtask. You are finished only when nothing is left to translate.
+
+The `PLAN.md` / "notes for future-me" machinery below exists **solely** to let
+you survive an in-run context **compaction** and resume *within this same run*.
+It is a memory aid for continuing to completion, NOT a handoff to a separate
+invocation. "Future-me" is you, a few turns later, after a compaction — and that
+future-you's job is to finish the remaining subtasks, not to stop.
+
+Large codebases (100k+ lines) are expected to take many hours and many sub-agent
+delegations, and to span many compactions. That is normal — keep going and use
+your full time budget. Do not stop early because the task is large; decompose it
+(Step 0.4) and grind through every subtask.
+
 ## Step 0: Know yourself and plan for context limits
 
 You are a model with a **finite context window** (typically 200k tokens or 1M tokens). When your context approaches its limit, the
@@ -216,11 +246,12 @@ reading just PLAN.md plus the listed C files/functions.
 If the project includes a test harness entry
 point that is not part of the original library, plan to translate it early.
 
-## Notes for future-me (post-compaction)
+## Notes for future-me (resuming THIS run after a compaction, not a future session)
 - Decisions already made and why
 - Cargo features chosen and what they gate
 - Pitfalls noticed (e.g. macro renames, namespace prefixes)
-- Where you stopped and what to do next
+- The next unchecked subtask to resume from (you are mid-run; keep going until
+  every subtask is done — do not treat this as a stopping point)
 ```
 
 **Rules of engagement with `PLAN.md`:**
@@ -376,12 +407,25 @@ If the project has Cargo features, verify ALL feature combinations compile:
 run `cargo build --release --features <combo>` for each one. The exact feature
 names are those written in the provided `Cargo.toml` `[features]` block.
 
-Once the build is green and all subtasks are checked, mark the whole plan
-complete in `PLAN.md` with a final note.
+Your job is done ONLY when BOTH of these hold:
 
-Your job ends when every feature combo's `cargo build` is green.
-A separate verification agent runs after you and owns ALL execution-based
-correctness checking. Doing that work here wastes turns. Trust the next agent. Stop at green compile.
+1. **Every subtask in `PLAN.md` is checked `[x]`** — i.e. every C source file
+   and function has a faithful Rust counterpart; nothing is deferred or stubbed.
+2. **The entire crate compiles green for every feature combination**
+   (`cargo build --release --features <combo>` for each).
+
+A green build that covers only some modules is a **checkpoint, not completion**:
+return to the first unchecked subtask and keep translating. Do NOT conclude,
+write a final summary, or "hand off" while any subtask remains unchecked — there
+is no future session to finish it, so stopping here means the translation is
+simply incomplete. If you find yourself about to report partial progress as a
+milestone, instead pick up the next unchecked subtask and continue.
+
+Only once ALL subtasks are checked AND the full build is green do you mark the
+plan complete in `PLAN.md` and stop. At that point — and only then — a separate
+verification agent runs after you and owns ALL execution-based correctness
+checking. Doing that work here wastes turns. Trust the next agent; stop at full
+green compile, not before.
 ## Waiting on long-running commands
 
 Builds and tests can be slow (some commands take minutes). When you need to wait for a long

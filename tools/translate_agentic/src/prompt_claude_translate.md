@@ -382,3 +382,10 @@ complete in `PLAN.md` with a final note.
 Your job ends when every feature combo's `cargo build` is green.
 A separate verification agent runs after you and owns ALL execution-based
 correctness checking. Doing that work here wastes turns. Trust the next agent. Stop at green compile.
+## Waiting on long-running commands
+
+Builds and tests can be slow (some commands take minutes). When you need to wait for a long
+command, run it with `run_in_background` and poll for completion, or wrap a
+short sleep in a condition loop (e.g. `until [ -f done.marker ]; do sleep 2; done`).
+Do NOT block on a single long foreground `sleep` such as `sleep 30 && cat log` --
+it will be rejected, and chaining `sleep` calls only wastes turns.

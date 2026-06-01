@@ -124,12 +124,12 @@ impl Tool for VerifyFixAgentic {
         let agent_work_dir = match agent {
             AgentKind::Kiro => {
                 let p = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
-                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env)?;
+                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env, config.output_log_path.as_deref())?;
                 case_dir.to_path_buf()
             }
             AgentKind::Claude => {
                 write_claude_sandbox(case_dir)?;
-                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env)?;
+                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env, config.output_log_path.as_deref())?;
                 translated.clone()
             }
         };
@@ -224,6 +224,7 @@ fn invoke_agent(
     model: Option<&str>,
     no_plan: bool,
     extra_env: &HashMap<String, String>,
+    output_log_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let use_ccr = model.map_or(false, |m| m.contains(','));
     info!(
@@ -290,6 +291,32 @@ fn invoke_agent(
     if !status.success() {
         warn!("Verification agent exited with {status}");
     }
+
+    // Append the agent's full trace (verify.log) to the benchmark output.log
+    // so users don't have to manually redirect stdout/stderr.
+    if let Some(out_path) = output_log_path {
+        if log_path.exists() {
+            match fs::read_to_string(&log_path) {
+                Ok(trace) => {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(out_path)
+                    {
+                        let _ = writeln!(f, "\n{}", trace);
+                        info!("Appended agent trace to {}", out_path.display());
+                    }
+                }
+                Err(e) => warn!(
+                    "Failed to read agent trace from {}: {}",
+                    log_path.display(),
+                    e
+                ),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -378,6 +405,11 @@ pub struct Config {
     /// immediately.
     #[serde(default)]
     pub wait_until: Option<u64>,
+
+    /// Destination path for the benchmark's output.log file.
+    /// Injected by the benchmark at runtime so the agent's full trace
+    /// (JSON stream) is appended to the same log file as benchmark messages.
+    pub output_log_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

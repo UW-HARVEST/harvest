@@ -1300,6 +1300,7 @@ class _Segment:
     size: int
     tooltip: str
 
+PREVIEW_SIZE = 400  # chars of tool input/result to show in tooltip
 
 def _segment_turn(turn: Turn) -> list[_Segment]:
     """Break a turn into ordered segments; think first, then tool ops."""
@@ -1340,8 +1341,8 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
             tip = f"{tu.name}: {target}"
         elif tu.name == "Agent":
             desc = tu.input.get("description", "")
-            prompt_preview = tu.input.get("prompt", "")[:300].replace("\n", " ")
-            result_preview = (tu.result.content[:300] if tu.result else "").replace("\n", " ")
+            prompt_preview = tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ")
+            result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
             tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
         else:
             tip = f"{tu.name}: {desc_fallback}" if desc_fallback else tu.name
@@ -1631,11 +1632,11 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             size = _tool_size(tu)
             desc = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
             prompt_preview = (
-                tu.input.get("prompt", "")[:300].replace("\n", " ")
+                tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ")
                 if isinstance(tu.input, dict) else ""
             )
             result_preview = (
-                tu.result.content[:300] if tu.result else ""
+                tu.result.content[:PREVIEW_SIZE] if tu.result else ""
             ).replace("\n", " ")
             tooltip_lines.append(f"{CAT_SUBAGENT}: {size:,} chars")
             tooltip_lines.append(f"[task] {desc}")

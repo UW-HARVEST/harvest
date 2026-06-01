@@ -350,6 +350,17 @@ fn benchmark_single_program(
             "tools.verify_fix_agentic.hypotheses_output_path={}",
             hypotheses_verify_path.display()
         ));
+        // Inject the output.log path so both tools append the agent's full
+        // JSON trace to the same log file as benchmark messages.
+        let output_log_path = output_root_dir.join("output.log");
+        effective_overrides.push(format!(
+            "tools.translate_agentic.output_log_path={}",
+            output_log_path.display()
+        ));
+        effective_overrides.push(format!(
+            "tools.verify_fix_agentic.output_log_path={}",
+            output_log_path.display()
+        ));
         if let Some(m) = agentic_model {
             effective_overrides.push(format!("tools.translate_agentic.model={m}"));
             effective_overrides.push(format!("tools.verify_fix_agentic.model={m}"));

@@ -103,7 +103,7 @@ impl Tool for TranslateAgentic {
         if agent == AgentKind::Claude {
             write_claude_sandbox(case_dir)?;
         }
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan, &config.env)?;
+        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan, &config.env, config.output_log_path.as_deref())?;
 
         // Copy the wishlist out before the tempdir is dropped.
         if local_wishlist.exists() {
@@ -166,6 +166,7 @@ fn invoke_agent(
     model: Option<&str>,
     no_plan: bool,
     extra_env: &HashMap<String, String>,
+    output_log_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let use_ccr = model.map_or(false, |m| m.contains(','));
     // CCR mode: route through claude-code-router via ANTHROPIC_BASE_URL.
@@ -236,6 +237,24 @@ fn invoke_agent(
     if !status.success() {
         warn!("Translation agent exited with {status}");
     }
+
+    // Append the agent's full trace (translation.log) to the benchmark output.log
+    // so users don't have to manually redirect stdout/stderr.
+    if let Some(out_path) = output_log_path {
+        if log_path.exists() {
+            match fs::read_to_string(&log_path) {
+                Ok(trace) => {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(out_path) {
+                        let _ = writeln!(f, "\n{}", trace);
+                        info!("Appended agent trace to {}", out_path.display());
+                    }
+                }
+                Err(e) => warn!("Failed to read agent trace from {}: {}", log_path.display(), e),
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -368,6 +387,11 @@ pub struct Config {
     /// If absent, any plan the agent writes is preserved only inside the CargoPackage
     /// and may be lost when verify rewrites it.
     pub plan_output_path: Option<PathBuf>,
+
+    /// Destination path for the benchmark's output.log file.
+    /// Injected by the benchmark at runtime so the agent's full trace
+    /// (JSON stream) is appended to the same log file as benchmark messages.
+    pub output_log_path: Option<PathBuf>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

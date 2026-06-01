@@ -262,4 +262,40 @@ mod tests {
             Some(5400)
         );
     }
+
+    /// A user/deployment config (e.g. the T&E container's config TOML) can raise
+    /// the agentic timeouts above the embedded defaults. This is the supported
+    /// way to give very large codebases a much longer budget without changing
+    /// the reasonable in-repo defaults.
+    #[cfg(not(miri))]
+    #[test]
+    fn agentic_timeouts_are_overridable_by_user_config() {
+        use super::*;
+        use harvest_core::test_util::tempdir;
+        use std::{fs, io::Write as _};
+        let config_dir = tempdir().unwrap();
+        fs::File::create(config_file(config_dir.path()))
+            .unwrap()
+            .write_all(
+                br#"
+                    [tools.translate_agentic]
+                    timeout_secs = 36000
+                    [tools.verify_fix_agentic]
+                    timeout_secs = 28800
+                "#,
+            )
+            .unwrap();
+        let cfg = load_config(
+            &Args::parse_from(["", "a", "--output=/tmp/out"]),
+            config_dir.path(),
+        );
+        assert_eq!(
+            cfg.tools["translate_agentic"]["timeout_secs"].as_u64(),
+            Some(36000)
+        );
+        assert_eq!(
+            cfg.tools["verify_fix_agentic"]["timeout_secs"].as_u64(),
+            Some(28800)
+        );
+    }
 }

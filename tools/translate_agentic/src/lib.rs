@@ -222,12 +222,20 @@ fn invoke_agent(
             let mut cmd = Command::new("bash");
             cmd.arg("-c")
                 .arg(format!(
-                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
+                    // Redirect to the log file (no `| tee`): a `run_in_background`
+                    // bash task the agent spawns inherits claude's stdout fd, and
+                    // with a pipe it would hold the write-end open after claude
+                    // exits, so `tee` never sees EOF and this command hangs until
+                    // the timeout. Writing to a file avoids the pipe; we replay
+                    // the log to stdout afterward so the transcript still reaches
+                    // the benchmark's captured output. `--kill-after` hard-kills
+                    // claude if it ignores SIGTERM at the timeout.
+                    "timeout --kill-after=60s {timeout_secs} claude -p \"$PROMPT\" \
                      --permission-mode bypassPermissions \
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
                      {model_flag}{append_sys_flag}\
                      --output-format stream-json --verbose \
-                     < /dev/null 2>&1 | tee \"$LOG\"",
+                     < /dev/null > \"$LOG\" 2>&1; status=$?; cat \"$LOG\"; exit $status",
                 ))
                 .env("PROMPT", prompt)
                 .env("LOG", &log_path)

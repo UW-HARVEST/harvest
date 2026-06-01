@@ -735,6 +735,17 @@ mod tests {
             "the no-plan prompt should state the scaffold is provided",
         );
     }
+
+    /// The translate prompt must keep the run_in_background guidance: a single
+    /// long foreground `sleep` is rejected by the agent's Bash tool and stalls
+    /// the run, so the prompt must steer the agent to background+poll instead.
+    #[test]
+    fn translate_prompt_has_sleep_guidance() {
+        assert!(
+            PROMPT_CLAUDE_TRANSLATE.contains("run_in_background"),
+            "the translate prompt must carry the run_in_background sleep guidance",
+        );
+    }
 }
 
 /// Tool-specific configuration, read from `[tools.translate_agentic]` in the HARVEST config.

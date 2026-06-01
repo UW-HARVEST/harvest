@@ -780,6 +780,21 @@ mod tests {
             "the dropped agent-tools placeholder must not survive in either prompt",
         );
     }
+
+    /// Both verify prompts must carry the run_in_background sleep guidance: the
+    /// verify loop runs slow C/Rust builds and KAT tests, and a single long
+    /// foreground `sleep` is rejected by the agent's Bash tool and stalls it.
+    #[test]
+    fn verify_prompts_have_sleep_guidance() {
+        assert!(
+            PROMPT_CLAUDE_VERIFY.contains("run_in_background"),
+            "plan-mode verify prompt must carry the run_in_background sleep guidance",
+        );
+        assert!(
+            PROMPT_CLAUDE_VERIFY_NO_PLAN.contains("run_in_background"),
+            "no-plan verify prompt must carry the run_in_background sleep guidance",
+        );
+    }
 }
 
 /// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.

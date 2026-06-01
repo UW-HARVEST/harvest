@@ -46,3 +46,11 @@ IMPORTANT: Use timeouts for all commands. No single build or test command should
 run longer than 600 seconds. If a test takes too long, skip it and move on to
 the next function. Use `timeout 600 cargo test ...` or similar. Do not get stuck
 on any single step.
+## Waiting on long-running commands
+
+Building the C reference, building Rust, and running KAT/signing tests can be
+slow (some configurations take minutes). When you need to wait for a long
+command, run it with `run_in_background` and poll for completion, or wrap a
+short sleep in a condition loop (e.g. `until [ -f done.marker ]; do sleep 2; done`).
+Do NOT block on a single long foreground `sleep` such as `sleep 30 && cat log` --
+it will be rejected, and chaining `sleep` calls only wastes turns.

@@ -151,6 +151,19 @@ fn variant_tags_for(span: &SourceSpan, map: &VariantTagMap) -> Vec<(String, Stri
     map.get(&canonical).cloned().unwrap_or_default()
 }
 
+/// Rewrites `span.file` to be relative to `src_root` -- the ephemeral directory
+/// the source was materialized into -- so the serialized [`RichSourceMap`] is
+/// reproducible across runs (the absolute temp path varies per invocation).
+/// Variant-tag matching has already happened against the absolute canonical
+/// path, so this affects only the serialized representation. The path is left
+/// unchanged if it is not under `src_root`.
+fn relativize_span_file(mut span: SourceSpan, src_root: &Path) -> SourceSpan {
+    if let Ok(rel) = Path::new(&span.file).strip_prefix(src_root) {
+        span.file = rel.to_string_lossy().into_owned();
+    }
+    span
+}
+
 /// Utility function to generate libClang parser arguments based on the source root and file being parsed.
 /// This includes standard flags, include paths, and language specification based on file extension.
 fn generate_parse_args(src_root: &Path, rel_file: &Path) -> Vec<String> {
@@ -186,6 +199,7 @@ fn build_parser<'a>(index: &'a Index, src_root: &Path, rel_file: &Path) -> clang
 fn extract_entities(
     parser: clang::Parser<'_>,
     variant_map: &VariantTagMap,
+    src_root: &Path,
     out: &mut RichSourceMap,
 ) {
     let tu = match parser.parse() {
@@ -217,6 +231,10 @@ fn extract_entities(
         // Extract the AST for this entity
         let ast = ast::ast_from_entity(decl_kind, &child);
         let variant_tags = variant_tags_for(&span, variant_map);
+        // Variant-tag matching above uses the absolute canonical path; the
+        // serialized span must be relative to the (ephemeral) source root so
+        // output is reproducible across runs.
+        let span = relativize_span_file(span, src_root);
         out.push_entity(
             TopLevelEntity {
                 kind: decl_kind,
@@ -294,6 +312,14 @@ pub fn parse_to_ast(
 
     let mut out = RichSourceMap::new();
 
+    // `span.file` comes back from libclang as a canonical absolute path under
+    // the temp dir; canonicalize the root the same way so we can strip it to a
+    // stable relative path.
+    let canonical_root = src_dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| src_dir.path().to_path_buf());
+
     for (rel_path, _) in rs.dir.files_recursive() {
         if utils::should_skip_path(&rel_path) {
             continue;
@@ -303,7 +329,7 @@ pub fn parse_to_ast(
         }
         tracing::info!("Parsing file: {}", rel_path.to_string_lossy());
         let parser = build_parser(&index, src_dir.path(), &rel_path);
-        extract_entities(parser, &variant_map, &mut out);
+        extract_entities(parser, &variant_map, &canonical_root, &mut out);
     }
 
     debug!(

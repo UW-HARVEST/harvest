@@ -145,6 +145,7 @@ impl Tool for TranslateAgentic {
             config.timeout_secs,
             agent,
             config.model.as_deref(),
+            config.subagent_model.as_deref(),
             config.no_plan,
         )?;
 
@@ -181,11 +182,13 @@ fn invoke_agent(
     timeout_secs: u64,
     agent: AgentKind,
     model: Option<&str>,
+    subagent_model: Option<&str>,
     no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
-        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
-        model.unwrap_or("(cli default)")
+        "Invoking translation agent ({agent}, model={}, subagent_model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)"),
+        subagent_model.unwrap_or("(inherit main)")
     );
 
     let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
@@ -243,6 +246,12 @@ fn invoke_agent(
                 .current_dir(work_dir);
             if let Some(m) = model {
                 cmd.env("MODEL", m);
+            }
+            // Run the agent's sub-agents (Task-tool delegations) on a different
+            // model than the orchestrator. CLAUDE_CODE_SUBAGENT_MODEL is the
+            // highest-priority subagent-model override and is honored headless.
+            if let Some(sm) = subagent_model {
+                cmd.env("CLAUDE_CODE_SUBAGENT_MODEL", sm);
             }
             if !no_plan {
                 // Survives context compaction: the lossy summary retains this
@@ -786,6 +795,16 @@ pub struct Config {
     /// Defaults to false (the large-codebase plan-mode methodology).
     #[serde(default)]
     pub no_plan: bool,
+
+    /// Optional model for the agent's *sub-agents* (the Task-tool delegations
+    /// that do per-module translation), independent of the orchestrator's
+    /// `model`. Wired to Claude Code's `CLAUDE_CODE_SUBAGENT_MODEL` env var
+    /// (highest-priority subagent-model override, headless-safe). When absent,
+    /// sub-agents inherit the main model. Accepts aliases ("sonnet", "haiku",
+    /// "opus") or full model IDs. Lets you run e.g. an Opus orchestrator with
+    /// cheaper Sonnet sub-agents.
+    #[serde(default)]
+    pub subagent_model: Option<String>,
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,

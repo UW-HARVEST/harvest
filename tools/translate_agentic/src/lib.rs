@@ -15,7 +15,7 @@ use harvest_core::fs::RawDir;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, read_dir};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -139,18 +139,71 @@ impl Tool for TranslateAgentic {
         let canonical_name = canonical_crate_name(&context.config.output);
         write_project_scaffold(&translated, &canonical_name, &project_spec.kind, build_cfg)?;
 
-        invoke_agent(
-            &translated,
-            &translate_prompt,
-            config.timeout_secs,
-            agent,
-            config.model.as_deref(),
-            config.subagent_model.as_deref(),
-            config.no_plan,
-        )?;
+        // Resume-until-complete loop: re-invoke the agent (resuming from the
+        // persisted working dir + PLAN.md) until an OBJECTIVE check -- every C
+        // file has a Rust counterpart -- passes, or progress stalls, or the
+        // session cap is hit. HARVEST owns the "done" decision, so completion is
+        // deterministic rather than a stochastic self-assessment by the agent
+        // (which can otherwise conclude early at a green milestone).
+        let max_sessions = config.max_translate_sessions.max(1);
+        let mut prev: Option<(usize, usize)> = None; // (uncovered count, rs LoC)
+        let mut stalls = 0u32;
+        for session in 1..=max_sessions {
+            let prompt = if session == 1 {
+                translate_prompt.clone()
+            } else {
+                let cov = translation_coverage(&translated);
+                format!(
+                    "{}{translate_prompt}",
+                    continuation_banner(&translated, &cov)
+                )
+            };
+            invoke_agent(
+                &translated,
+                &prompt,
+                config.timeout_secs,
+                agent,
+                config.model.as_deref(),
+                config.subagent_model.as_deref(),
+                config.no_plan,
+            )?;
+            if !translated.join("Cargo.toml").exists() {
+                return Err("Agent did not produce a Cargo.toml".into());
+            }
 
-        if !translated.join("Cargo.toml").exists() {
-            return Err("Agent did not produce a Cargo.toml".into());
+            let cov = translation_coverage(&translated);
+            info!(
+                "Session {session}/{max_sessions}: {} Rust modules, {} LoC, {} C file(s) still untranslated",
+                cov.rs_modules,
+                cov.rs_lines,
+                cov.uncovered.len()
+            );
+            if cov.uncovered.is_empty() {
+                info!("Translation coverage complete after {session} session(s)");
+                break;
+            }
+            // Stall detection: stop if a session neither shrinks the uncovered
+            // set nor adds meaningful new Rust (avoids looping forever on C files
+            // the agent legitimately merged elsewhere or cannot map).
+            let metric = (cov.uncovered.len(), cov.rs_lines);
+            if let Some((prev_uncovered, prev_lines)) = prev {
+                let progressed = metric.0 < prev_uncovered || metric.1 > prev_lines + 50;
+                stalls = if progressed { 0 } else { stalls + 1 };
+            }
+            prev = Some(metric);
+            if stalls >= 2 {
+                warn!(
+                    "No translation progress for 2 sessions; stopping with {} C file(s) still untranslated",
+                    cov.uncovered.len()
+                );
+                break;
+            }
+            if session == max_sessions {
+                warn!(
+                    "Reached max_translate_sessions ({max_sessions}) with {} C file(s) still untranslated",
+                    cov.uncovered.len()
+                );
+            }
         }
 
         post_process(&translated, &project_spec.kind)?;
@@ -171,6 +224,108 @@ impl Tool for TranslateAgentic {
 
         Ok(Box::new(CargoPackage { dir }))
     }
+}
+
+/// Recursively collect files under `dir` with the given extension.
+fn collect_ext(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_ext(&p, ext, out);
+            } else if p.extension().and_then(|s| s.to_str()) == Some(ext) {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// Objective translation-progress snapshot for the resume loop: which `.c`
+/// files under `<translated>/c_src` have no Rust counterpart under
+/// `<translated>/src`. Matching is deliberately STRICT (a `.c` is covered only
+/// by a Rust file whose stem equals it or starts with `<stem>_`, allowing one C
+/// file to be split across `foo_*.rs`) -- we would rather resume an extra
+/// session than declare a premature completion.
+struct Coverage {
+    uncovered: Vec<PathBuf>,
+    rs_modules: usize,
+    rs_lines: usize,
+}
+
+fn translation_coverage(translated: &Path) -> Coverage {
+    let mut c_files = Vec::new();
+    collect_ext(&translated.join("c_src"), "c", &mut c_files);
+    let mut rs_files = Vec::new();
+    collect_ext(&translated.join("src"), "rs", &mut rs_files);
+
+    let rs_stems: HashSet<String> = rs_files
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .collect();
+
+    let uncovered = c_files
+        .into_iter()
+        .filter(|c| {
+            let stem = c.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let prefix = format!("{stem}_");
+            !rs_stems
+                .iter()
+                .any(|rs| rs == stem || rs.starts_with(&prefix))
+        })
+        .collect();
+
+    let rs_lines = rs_files
+        .iter()
+        .map(|p| fs::read_to_string(p).map(|s| s.lines().count()).unwrap_or(0))
+        .sum();
+
+    Coverage {
+        uncovered,
+        rs_modules: rs_files.len(),
+        rs_lines,
+    }
+}
+
+/// Banner prepended to the prompt on a resume session: tells the agent it is
+/// continuing (PLAN.md + partial `src/` already exist) and lists the C files
+/// HARVEST still sees as untranslated, so it cannot "conclude" while work
+/// objectively remains.
+fn continuation_banner(translated: &Path, cov: &Coverage) -> String {
+    let c_src = translated.join("c_src");
+    let mut list: Vec<String> = cov
+        .uncovered
+        .iter()
+        .filter_map(|p| {
+            p.strip_prefix(&c_src)
+                .unwrap_or(p)
+                .to_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    list.sort();
+    let shown = list.len().min(60);
+    let more = list.len().saturating_sub(shown);
+    let files = list[..shown].join("\n  ");
+    let more_note = if more > 0 {
+        format!(" (showing {shown}; {more} more)")
+    } else {
+        String::new()
+    };
+    format!(
+        "## CONTINUATION -- this translation is NOT finished.\n\n\
+         A previous session already produced part of this crate (existing `src/` \
+         modules and `PLAN.md`). This is the SAME run continuing -- do NOT \
+         restart, and do NOT re-translate modules already present.\n\n\
+         FIRST: `cat PLAN.md` to recover state. Then continue. HARVEST has \
+         determined that the following {} C source file(s) still have NO Rust \
+         counterpart and MUST be translated before this run is complete{}:\n\n  {}\n\n\
+         Translate them (and finish any partial modules), following the full rules \
+         below. Keep going until every C file has a faithful Rust translation; do \
+         not stop, summarize, or hand off while any remain.\n\n---\n\n",
+        list.len(),
+        more_note,
+        files,
+    )
 }
 
 /// Invokes the translation agent in `work_dir` with the given prompt and
@@ -405,6 +560,37 @@ fn load_prompt(
 mod tests {
     use super::*;
     use build_config::{BuildConfigIR, ConfigVarKind, ConfigVariable};
+
+    /// translation_coverage flags a `.c` only when no Rust file matches its stem
+    /// exactly or as a `<stem>_` prefix (one C file may be split across
+    /// `foo_*.rs`); strict matching errs toward resuming, never premature "done".
+    #[cfg(not(miri))]
+    #[test]
+    fn coverage_reports_untranslated_c_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let translated = dir.path();
+        let c = translated.join("c_src/src");
+        let s = translated.join("src");
+        fs::create_dir_all(c.join("sub")).unwrap();
+        fs::create_dir_all(&s).unwrap();
+        for f in ["a.c", "b.c", "sub/c.c"] {
+            fs::write(c.join(f), "/* c */\n").unwrap();
+        }
+        fs::write(c.join("a.h"), "/* header, ignored */\n").unwrap(); // .h not counted
+        fs::write(s.join("a.rs"), "// exact match\nfn x() {}\n").unwrap();
+        fs::write(s.join("b_helpers.rs"), "// b_ prefix split\nfn y() {}\n").unwrap();
+        // c.c has no a.rs-style counterpart -> uncovered.
+
+        let cov = translation_coverage(translated);
+        let uncovered: Vec<_> = cov
+            .uncovered
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(uncovered, ["c.c"], "only sub/c.c is untranslated");
+        assert_eq!(cov.rs_modules, 2);
+        assert!(cov.rs_lines >= 2);
+    }
 
     fn empty_ir() -> BuildConfigIR {
         BuildConfigIR {
@@ -796,6 +982,17 @@ pub struct Config {
     #[serde(default)]
     pub no_plan: bool,
 
+    /// Maximum number of agent sessions for one translation. The tool re-invokes
+    /// the agent (resuming from the persisted working dir + PLAN.md) until an
+    /// OBJECTIVE completion check passes -- every C source file has a Rust
+    /// counterpart -- or this cap is hit, or progress stalls. This makes
+    /// "did it actually finish?" a deterministic decision by HARVEST rather than
+    /// a stochastic self-assessment by the agent (which may conclude early at a
+    /// green milestone). Defaults to 8; small projects finish in one session and
+    /// exit the loop immediately.
+    #[serde(default = "default_max_translate_sessions")]
+    pub max_translate_sessions: usize,
+
     /// Optional model for the agent's *sub-agents* (the Task-tool delegations
     /// that do per-module translation), independent of the orchestrator's
     /// `model`. Wired to Claude Code's `CLAUDE_CODE_SUBAGENT_MODEL` env var
@@ -808,6 +1005,10 @@ pub struct Config {
 
     #[serde(flatten)]
     unknown: HashMap<String, serde_json::Value>,
+}
+
+fn default_max_translate_sessions() -> usize {
+    8
 }
 
 fn default_timeout_secs() -> u64 {

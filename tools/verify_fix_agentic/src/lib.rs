@@ -6,6 +6,7 @@
 //! compares their outputs, and iteratively fixes the Rust code until the two agree (or the agent
 //! gives up). This is dynamic, execution-based verification, not a static or formal analysis.
 
+use agent_runner::{AgentInvocation, AgentPhase};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::cmake_presets::{TestConfig, find_test_config};
 use harvest_core::config::{AgentKind, unknown_field_warning};
@@ -16,12 +17,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::{self, read_dir};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tracing::{info, warn};
 
+const PROMPT_KIRO_VERIFY: &str = include_str!("prompt_kiro_verify.md");
 const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
-const PROMPT_CLAUDE_VERIFY: &str = include_str!("prompt_claude_verify.md");
-const PROMPT_CLAUDE_VERIFY_NO_PLAN: &str = include_str!("prompt_claude_verify_no_plan.md");
+const PROMPT_VERIFY_NO_PLAN: &str = include_str!("prompt_verify_no_plan.md");
 
 pub struct VerifyFixAgentic;
 
@@ -57,7 +57,9 @@ impl Tool for VerifyFixAgentic {
                 std::thread::sleep(std::time::Duration::from_secs(wait_secs));
                 info!("Wait complete, starting verification");
             } else {
-                info!("Target timestamp {target_ts} already passed (now={now}), starting immediately");
+                info!(
+                    "Target timestamp {target_ts} already passed (now={now}), starting immediately"
+                );
             }
         }
 
@@ -120,45 +122,69 @@ impl Tool for VerifyFixAgentic {
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
 
         // Kiro runs in case_dir (references translated_rust/ in prompt paths).
-        // Claude runs in translated_rust/ directly (references c_src/ and src/).
-        let agent_work_dir = match agent {
+        // Claude and OpenCode run in translated_rust/ directly (references c_src/ and src/).
+        let kiro_prompt;
+        let (agent_work_dir, agent_prompt) = match agent {
             AgentKind::Kiro => {
-                let p = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
-                invoke_agent(case_dir, &p, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env, config.output_log_path.as_deref())?;
-                case_dir.to_path_buf()
+                kiro_prompt = prompt.replace("{CASE_DIR}", &case_dir.to_string_lossy());
+                (case_dir, kiro_prompt.as_str())
             }
-            AgentKind::Claude => {
-                write_claude_sandbox(case_dir)?;
-                invoke_agent(&translated, &prompt, config.timeout_secs, agent, config.model.as_deref(), config.no_plan, &config.env, config.output_log_path.as_deref())?;
-                translated.clone()
-            }
+            AgentKind::Claude | AgentKind::OpenCode => (translated.as_path(), prompt.as_str()),
         };
-        let _ = agent_work_dir;
+        agent_runner::invoke_agent(AgentInvocation {
+            phase: AgentPhase::Verify,
+            agent,
+            work_dir: agent_work_dir,
+            prompt: agent_prompt,
+            timeout_secs: config.timeout_secs,
+            model: config.model.as_deref(),
+            no_plan: config.no_plan,
+            extra_env: &config.env,
+            output_log_path: config.output_log_path.as_deref(),
+        })?;
         info!("Verification complete");
 
         // Append verify-phase wishlist entries to the translate-phase file (if any),
         // so the final output contains wishes from both phases in chronological order.
         if local_wishlist.exists() {
             if let Some(out_path) = &config.wishlist_output_path {
-                match (fs::read_to_string(&local_wishlist), fs::read_to_string(out_path)) {
+                match (
+                    fs::read_to_string(&local_wishlist),
+                    fs::read_to_string(out_path),
+                ) {
                     (Ok(new_entries), Ok(existing)) => {
                         let merged = format!("{}{}", existing, new_entries);
                         if let Err(e) = fs::write(out_path, merged) {
-                            warn!("Failed to append verify wishlist to {}: {}", out_path.display(), e);
+                            warn!(
+                                "Failed to append verify wishlist to {}: {}",
+                                out_path.display(),
+                                e
+                            );
                         } else {
-                            info!("Tool wishlist (verify phase) appended to {}", out_path.display());
+                            info!(
+                                "Tool wishlist (verify phase) appended to {}",
+                                out_path.display()
+                            );
                         }
                     }
                     (Ok(new_entries), Err(_)) => {
                         // No translate-phase file yet — write fresh.
                         if let Err(e) = fs::write(out_path, new_entries) {
-                            warn!("Failed to write verify wishlist to {}: {}", out_path.display(), e);
+                            warn!(
+                                "Failed to write verify wishlist to {}: {}",
+                                out_path.display(),
+                                e
+                            );
                         } else {
                             info!("Tool wishlist written to {}", out_path.display());
                         }
                     }
                     (Err(e), _) => {
-                        warn!("Failed to read local wishlist {}: {}", local_wishlist.display(), e);
+                        warn!(
+                            "Failed to read local wishlist {}: {}",
+                            local_wishlist.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -171,23 +197,53 @@ impl Tool for VerifyFixAgentic {
         if local_hypotheses.exists() {
             if let Some(out_path) = &config.hypotheses_output_path {
                 if let Err(e) = fs::copy(&local_hypotheses, out_path) {
-                    warn!("Failed to copy HYPOTHESES.md to {}: {}", out_path.display(), e);
+                    warn!(
+                        "Failed to copy HYPOTHESES.md to {}: {}",
+                        out_path.display(),
+                        e
+                    );
                 } else {
-                    info!("Verification HYPOTHESES.md written to {}", out_path.display());
+                    info!(
+                        "Verification HYPOTHESES.md written to {}",
+                        out_path.display()
+                    );
                 }
             }
         } else {
-            info!("Agent did not produce a HYPOTHESES.md (no bugs investigated, or skipped step 1)");
+            info!(
+                "Agent did not produce a HYPOTHESES.md (no bugs investigated, or skipped step 1)"
+            );
         }
 
-        // Remove artifacts that should not be carried into the IR.
+        // Sanitize translated_rust/ before freezing it into the IR.
+        // 1) Remove hidden directories/files that leaked in from the agent runtime.
+        // 2) Remove known intermediate build/source artifacts.
+        // 3) Surface any remaining symlinks for diagnostics.
+        remove_hidden_entries(&translated)?;
+
         let c_src_out = translated.join("c_src");
         if c_src_out.exists() {
-            fs::remove_dir_all(&c_src_out)?;
+            if let Err(e) = fs::remove_dir_all(&c_src_out) {
+                warn!(
+                    "Failed to remove c_src output dir {}: {}",
+                    c_src_out.display(),
+                    e
+                );
+            }
         }
         let target_out = translated.join("target");
         if target_out.exists() {
-            fs::remove_dir_all(&target_out)?;
+            if let Err(e) = fs::remove_dir_all(&target_out) {
+                warn!(
+                    "Failed to remove target output dir {}: {}",
+                    target_out.display(),
+                    e
+                );
+            }
+        }
+
+        for entry in collect_symlinks(&translated) {
+            warn!("translated_rust contains symlink: {}", entry);
         }
 
         let (dir, directories, files) = RawDir::populate_from(read_dir(&translated)?)?;
@@ -203,148 +259,64 @@ fn load_verify_prompt(
     agent: AgentKind,
 ) -> Result<String, Box<dyn std::error::Error>> {
     match agent {
-        AgentKind::Claude => match &config.prompt_claude_verify {
+        AgentKind::Claude | AgentKind::OpenCode => match &config.prompt_verify {
             Some(p) => Ok(fs::read_to_string(p)?),
-            None if config.no_plan => Ok(PROMPT_CLAUDE_VERIFY_NO_PLAN.to_owned()),
-            None => Ok(PROMPT_CLAUDE_VERIFY.to_owned()),
-        },
-        AgentKind::Kiro => match &config.prompt_verify {
-            Some(p) => Ok(fs::read_to_string(p)?),
+            None if config.no_plan => Ok(PROMPT_VERIFY_NO_PLAN.to_owned()),
             None => Ok(PROMPT_VERIFY.to_owned()),
         },
+        AgentKind::Kiro => match &config.prompt_kiro_verify {
+            Some(p) => Ok(fs::read_to_string(p)?),
+            None => Ok(PROMPT_KIRO_VERIFY.to_owned()),
+        },
     }
 }
 
-/// Invokes the verification agent in `work_dir` with the given prompt and timeout.
-fn invoke_agent(
-    work_dir: &Path,
-    prompt: &str,
-    timeout_secs: u64,
-    agent: AgentKind,
-    model: Option<&str>,
-    no_plan: bool,
-    extra_env: &HashMap<String, String>,
-    output_log_path: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let use_ccr = model.map_or(false, |m| m.contains(','));
-    info!(
-        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s, ccr={use_ccr})",
-        model.unwrap_or("(cli default)")
-    );
-
-    let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
-    fs::create_dir_all(&logs_dir)?;
-    let log_path = logs_dir.join("verify.log");
-    let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
-
-    let model_flag = model.map(|_| "--model \"$MODEL\" ").unwrap_or_default();
-    let append_sys_flag = if no_plan { "" } else { "--append-system-prompt \"$APPEND_SYS\" " };
-
-    let status = match agent {
-        AgentKind::Kiro => Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
-                 --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
-            ))
-            .env("PROMPT", prompt)
-            .env("LOG", &log_path)
-            .env("OPENSSL_DIR", &openssl_dir)
-            .current_dir(work_dir)
-            .status()?,
-        AgentKind::Claude => {
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c")
-                .arg(format!(
-                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                     {model_flag}\
-                     --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                     {append_sys_flag}\
-                     --max-turns 1000 \
-                     --output-format stream-json --verbose \
-                     < /dev/null 2>&1 | tee \"$LOG\"",
-                ))
-                .env("PROMPT", prompt)
-                .env("LOG", &log_path)
-                .env("OPENSSL_DIR", &openssl_dir)
-                .current_dir(work_dir);
-            if !no_plan {
-                cmd.env(
-                    "APPEND_SYS",
-                    "After any context compaction, you MUST first read PLAN.md and HYPOTHESES.md.",
-                );
-            }
-            if let Some(m) = model {
-                cmd.env("MODEL", m);
-            }
-            for (k, v) in extra_env {
-                info!("Injecting env var: {k}");
-                cmd.env(k, v);
-            }
-            if use_ccr {
-                cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
-            }
-            cmd.status()?
-        }
-    };
-
-    if !status.success() {
-        warn!("Verification agent exited with {status}");
-    }
-
-    // Append the agent's full trace (verify.log) to the benchmark output.log
-    // so users don't have to manually redirect stdout/stderr.
-    if let Some(out_path) = output_log_path {
-        if log_path.exists() {
-            match fs::read_to_string(&log_path) {
-                Ok(trace) => {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(out_path)
-                    {
-                        let _ = writeln!(f, "\n{}", trace);
-                        info!("Appended agent trace to {}", out_path.display());
+/// Remove hidden entries (names starting with `.`) under `dir`, including nested ones.
+/// This prevents agent-runtime artifacts like `.opencode/` from leaking into the IR.
+fn remove_hidden_entries(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let hidden = name.to_string_lossy().starts_with('.');
+            if hidden {
+                let path = entry.path();
+                if let Err(e) = fs::remove_dir_all(&path) {
+                    if path.is_dir() {
+                        warn!(
+                            "Failed to remove hidden directory {}: {}",
+                            path.display(),
+                            e
+                        );
+                    } else if let Err(e2) = fs::remove_file(&path) {
+                        warn!("Failed to remove hidden entry {}: {}", path.display(), e2);
                     }
                 }
-                Err(e) => warn!(
-                    "Failed to read agent trace from {}: {}",
-                    log_path.display(),
-                    e
-                ),
+            } else if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                remove_hidden_entries(&entry.path())?;
             }
         }
     }
-
     Ok(())
 }
 
-/// Writes `.claude/settings.json` to sandbox Claude within the working directory.
-fn write_claude_sandbox(case_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let claude_dir = case_dir.join(".claude");
-    fs::create_dir_all(&claude_dir)?;
-    fs::write(
-        claude_dir.join("settings.json"),
-        serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "allowUnsandboxedCommands": false,
-                "filesystem": {
-                    "allowRead": [case_dir.to_string_lossy()],
-                    "allowWrite": [case_dir.to_string_lossy()]
+/// Collects symlink paths under `dir` for debugging.
+fn collect_symlinks(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.file_type().is_symlink() {
+                    out.push(path.display().to_string());
+                } else if metadata.is_dir() {
+                    out.extend(collect_symlinks(&path));
                 }
             }
-        })
-        .to_string(),
-    )?;
-    Ok(())
+        }
+    }
+    out
 }
 
-/// Extracts CMake cache variable flags from `CMakePresets.json`, if present.
-///
-/// These flags are injected into the verify prompt so the agent knows which build configuration
-/// was active for this case.
 /// Render `TestConfig` as the markdown block that the verify prompt expects in
 /// place of `{ALL_CONFIGURATIONS}`. Empty when there are no project knobs to
 /// switch — in that case the conditional "If configurations are listed below"
@@ -360,17 +332,19 @@ fn render_configurations(cfg: &TestConfig) -> String {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     /// Override path for the Kiro verification prompt.
-    pub prompt_verify: Option<PathBuf>,
+    pub prompt_kiro_verify: Option<PathBuf>,
 
-    /// Override path for the Claude verification prompt.
-    pub prompt_claude_verify: Option<PathBuf>,
+    /// Override path for the standard verification prompt.
+    #[serde(alias = "prompt_claude_verify")]
+    pub prompt_verify: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
-    /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
-    /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// Agent model to use. If absent, no --model flag is passed and the CLI uses its default.
+    /// Claude accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// OpenCode expects provider/model format.
     pub model: Option<String>,
 
     /// If true, use the pre-anti-compaction prompt (no HYPOTHESES.md / Invariants
@@ -385,7 +359,6 @@ pub struct Config {
     /// Defined as a TOML table under `[tools.verify_fix_agentic.env]`.
     #[serde(default)]
     pub env: HashMap<String, String>,
-
 
     /// Destination path for the agent's tool wishlist file.
     /// Injected by the benchmark at runtime (set to <output_dir>/tool_wishlist.json).
@@ -418,7 +391,6 @@ pub struct Config {
 fn default_timeout_secs() -> u64 {
     36000
 }
-
 
 impl Config {
     fn validate(&self) {

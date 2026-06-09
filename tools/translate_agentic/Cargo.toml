@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 agent_tools_embed.workspace = true
+agent_runner.workspace = true
 build_project_spec.workspace = true
 full_source.workspace = true
 harvest_core.workspace = true

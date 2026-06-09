@@ -29,13 +29,13 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_verify: bool,
 
-    /// Which agent to use for agentic translation: kiro or claude (requires --agentic).
+    /// Which agent to use for agentic translation: kiro, claude, or opencode (requires --agentic).
     #[arg(long, requires = "agentic")]
     pub agentic_agent: Option<String>,
 
-    /// Claude model to use for agentic translation/verification (requires --agentic).
-    /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
-    /// Defaults to "sonnet" when not specified.
+    /// Agent model to use for agentic translation/verification (requires --agentic).
+    /// Claude accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// OpenCode expects provider/model format (for example, "opencode-go/deepseek-v4-pro").
     #[arg(long, requires = "agentic")]
     pub agentic_model: Option<String>,
 

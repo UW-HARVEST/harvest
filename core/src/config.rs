@@ -11,6 +11,7 @@ pub enum AgentKind {
     #[default]
     Kiro,
     Claude,
+    OpenCode,
 }
 
 impl fmt::Display for AgentKind {
@@ -18,6 +19,7 @@ impl fmt::Display for AgentKind {
         match self {
             AgentKind::Kiro => write!(f, "kiro"),
             AgentKind::Claude => write!(f, "claude"),
+            AgentKind::OpenCode => write!(f, "opencode"),
         }
     }
 }

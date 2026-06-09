@@ -115,8 +115,10 @@ pub fn read_test_config(presets_path: &Path) -> TestConfig {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
     walk_inherits(target, &by_name, &mut merged);
 
-    let project_vars: BTreeMap<&String, &String> =
-        merged.iter().filter(|(k, _)| !k.starts_with("CMAKE_")).collect();
+    let project_vars: BTreeMap<&String, &String> = merged
+        .iter()
+        .filter(|(k, _)| !k.starts_with("CMAKE_"))
+        .collect();
 
     let cmake_flags = project_vars
         .iter()

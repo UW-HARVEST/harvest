@@ -5,6 +5,7 @@
 //! post-processed to satisfy downstream tool expectations.
 //! The translated project is stored in the IR as a [`CargoPackage`](full_source::CargoPackage).
 
+use agent_runner::{AgentInvocation, AgentPhase};
 use build_project_spec::{ProjectKind, ProjectSpec};
 use full_source::{CargoPackage, RawSource};
 use harvest_core::cargo_utils::{CargoToml, strip_for_lib};
@@ -16,14 +17,54 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::{self, read_dir};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tracing::{info, warn};
 
-const PROMPT_EXECUTABLE: &str = include_str!("prompt_executable.md");
-const PROMPT_LIBRARY: &str = include_str!("prompt_library.md");
-const PROMPT_CONFIGURABLE: &str = include_str!("prompt_configurable.md");
-const PROMPT_CLAUDE_TRANSLATE: &str = include_str!("prompt_claude_translate.md");
-const PROMPT_CLAUDE_TRANSLATE_NO_PLAN: &str = include_str!("prompt_claude_translate_no_plan.md");
+/// Guard that preserves a temp directory when a run fails, but removes it on success.
+struct TempDirGuard {
+    inner: Option<tempfile::TempDir>,
+}
+
+impl TempDirGuard {
+    fn new(inner: tempfile::TempDir) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    fn path(&self) -> &Path {
+        self.inner
+            .as_ref()
+            .expect("tempdir guard already consumed")
+            .path()
+    }
+
+    fn finish(mut self) {
+        self.inner = None;
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let path = inner.keep();
+            if path.exists() {
+                if let Err(e) = fs::remove_dir_all(&path) {
+                    warn!(
+                        "Failed to remove preserved tempdir {}: {}",
+                        path.display(),
+                        e
+                    );
+                } else {
+                    info!("Removed tempdir {}", path.display());
+                }
+            }
+        }
+    }
+}
+
+const PROMPT_KIRO_EXECUTABLE: &str = include_str!("prompt_kiro_executable.md");
+const PROMPT_KIRO_LIBRARY: &str = include_str!("prompt_kiro_library.md");
+const PROMPT_KIRO_CONFIGURABLE: &str = include_str!("prompt_kiro_configurable.md");
+const PROMPT_TRANSLATE: &str = include_str!("prompt_translate.md");
+const PROMPT_TRANSLATE_NO_PLAN: &str = include_str!("prompt_translate_no_plan.md");
 
 pub struct TranslateAgentic;
 
@@ -63,7 +104,12 @@ impl Tool for TranslateAgentic {
         // Set up a working directory that mirrors the layout the agent expects:
         //   case_dir/translated_rust/c_src/  <- materialized C source
         let work_dir = tempfile::tempdir()?;
-        let case_dir = work_dir.path();
+        let guard = TempDirGuard::new(work_dir);
+        let case_dir = guard.path().to_path_buf();
+        eprintln!(
+            "[translate_agentic] preserved tempdir for debugging: {}",
+            case_dir.display()
+        );
         let c_src_dir = case_dir.join("translated_rust/c_src");
         fs::create_dir_all(&c_src_dir)?;
         raw_source.dir.materialize(&c_src_dir)?;
@@ -100,16 +146,27 @@ impl Tool for TranslateAgentic {
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
 
-        if agent == AgentKind::Claude {
-            write_claude_sandbox(case_dir)?;
-        }
-        invoke_agent(&translated, &translate_prompt, config.timeout_secs, agent, config.model.as_deref(), no_plan, &config.env, config.output_log_path.as_deref())?;
+        agent_runner::invoke_agent(AgentInvocation {
+            phase: AgentPhase::Translate,
+            agent,
+            work_dir: &translated,
+            prompt: &translate_prompt,
+            timeout_secs: config.timeout_secs,
+            model: config.model.as_deref(),
+            no_plan,
+            extra_env: &config.env,
+            output_log_path: config.output_log_path.as_deref(),
+        })?;
 
         // Copy the wishlist out before the tempdir is dropped.
         if local_wishlist.exists() {
             if let Some(out_path) = &config.wishlist_output_path {
                 if let Err(e) = fs::copy(&local_wishlist, out_path) {
-                    warn!("Failed to copy tool wishlist to {}: {}", out_path.display(), e);
+                    warn!(
+                        "Failed to copy tool wishlist to {}: {}",
+                        out_path.display(),
+                        e
+                    );
                 } else {
                     info!("Tool wishlist written to {}", out_path.display());
                 }
@@ -140,143 +197,43 @@ impl Tool for TranslateAgentic {
         post_process(&translated, &project_spec.kind)?;
         info!("Translation complete");
 
-        // Remove artifacts that should not be carried into the IR.
+        // Sanitize translated_rust/ before freezing it into the IR.
+        // 1) Remove hidden directories/files that leaked in from the agent runtime.
+        // 2) Remove known intermediate build/source artifacts.
+        // 3) Surface any remaining symlinks for diagnostics.
+        remove_hidden_entries(&translated)?;
+
         let c_src_out = translated.join("c_src");
         if c_src_out.exists() {
-            fs::remove_dir_all(&c_src_out)?;
+            if let Err(e) = fs::remove_dir_all(&c_src_out) {
+                warn!(
+                    "Failed to remove c_src output dir {}: {}",
+                    c_src_out.display(),
+                    e
+                );
+            }
         }
         let target_out = translated.join("target");
         if target_out.exists() {
-            fs::remove_dir_all(&target_out)?;
+            if let Err(e) = fs::remove_dir_all(&target_out) {
+                warn!(
+                    "Failed to remove target output dir {}: {}",
+                    target_out.display(),
+                    e
+                );
+            }
+        }
+
+        for entry in collect_symlinks(&translated) {
+            warn!("translated_rust contains symlink: {}", entry);
         }
 
         let (dir, directories, files) = RawDir::populate_from(read_dir(&translated)?)?;
         info!("Produced CargoPackage with {directories} directories and {files} files");
 
+        guard.finish();
         Ok(Box::new(CargoPackage { dir }))
     }
-}
-
-/// Invokes the translation agent in `work_dir` with the given prompt and timeout.
-fn invoke_agent(
-    work_dir: &Path,
-    prompt: &str,
-    timeout_secs: u64,
-    agent: AgentKind,
-    model: Option<&str>,
-    no_plan: bool,
-    extra_env: &HashMap<String, String>,
-    output_log_path: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let use_ccr = model.map_or(false, |m| m.contains(','));
-    // CCR mode: route through claude-code-router via ANTHROPIC_BASE_URL.
-    info!(
-        "Invoking translation agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s, ccr={use_ccr}, extra_env={} vars)",
-        model.unwrap_or("(cli default)"),
-        extra_env.len()
-    );
-
-    let logs_dir = work_dir.parent().unwrap_or(work_dir).join("logs");
-    fs::create_dir_all(&logs_dir)?;
-    let log_path = logs_dir.join("translation.log");
-    let openssl_dir = std::env::var("OPENSSL_DIR").unwrap_or_else(|_| "/usr".into());
-
-    let model_flag = model.map(|_| "--model \"$MODEL\" ").unwrap_or_default();
-    let append_sys_flag = if no_plan { "" } else { "--append-system-prompt \"$APPEND_SYS\" " };
-
-    let status = match agent {
-        AgentKind::Kiro => Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
-                 --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
-            ))
-            .env("PROMPT", prompt)
-            .env("LOG", &log_path)
-            .env("OPENSSL_DIR", &openssl_dir)
-            .current_dir(work_dir)
-            .status()?,
-        AgentKind::Claude => {
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c")
-                .arg(format!(
-                    "set -o pipefail; timeout {timeout_secs} claude -p \"$PROMPT\" \
-                     {model_flag}\
-                     --allowedTools 'Bash(*)' 'Write' 'Edit' \
-                     {append_sys_flag}\
-                     --max-turns 1000 \
-                     --output-format stream-json --verbose \
-                     < /dev/null 2>&1 | tee \"$LOG\"",
-                ))
-                .env("PROMPT", prompt)
-                .env("LOG", &log_path)
-                .env("OPENSSL_DIR", &openssl_dir)
-                .current_dir(work_dir);
-            if !no_plan {
-                cmd.env(
-                    "APPEND_SYS",
-                    "After any context compaction, you MUST first read PLAN.md.",
-                );
-            }
-            if let Some(m) = model {
-                cmd.env("MODEL", m);
-            }
-            // Inject extra environment variables (e.g. API keys for CCR providers).
-            for (k, v) in extra_env {
-                info!("Injecting env var: {k}");
-                cmd.env(k, v);
-            }
-            // CCR mode: point claude at the local CCR proxy.
-            if use_ccr {
-                cmd.env("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
-            }
-            cmd.status()?
-        }
-    };
-
-    if !status.success() {
-        warn!("Translation agent exited with {status}");
-    }
-
-    // Append the agent's full trace (translation.log) to the benchmark output.log
-    // so users don't have to manually redirect stdout/stderr.
-    if let Some(out_path) = output_log_path {
-        if log_path.exists() {
-            match fs::read_to_string(&log_path) {
-                Ok(trace) => {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(out_path) {
-                        let _ = writeln!(f, "\n{}", trace);
-                        info!("Appended agent trace to {}", out_path.display());
-                    }
-                }
-                Err(e) => warn!("Failed to read agent trace from {}: {}", log_path.display(), e),
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Writes `.claude/settings.json` to sandbox Claude within the working directory.
-fn write_claude_sandbox(case_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let claude_dir = case_dir.join(".claude");
-    fs::create_dir_all(&claude_dir)?;
-    fs::write(
-        claude_dir.join("settings.json"),
-        serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "allowUnsandboxedCommands": false,
-                "filesystem": {
-                    "allowRead": [case_dir.to_string_lossy()],
-                    "allowWrite": [case_dir.to_string_lossy()]
-                }
-            }
-        })
-        .to_string(),
-    )?;
-    Ok(())
 }
 
 /// Applies standard Cargo.toml fixups after the agent finishes.
@@ -309,6 +266,52 @@ fn post_process(
     Ok(())
 }
 
+/// Remove hidden entries (names starting with `.`) under `dir`, including nested ones.
+/// This prevents agent-runtime artifacts like `.opencode/` from leaking into the IR.
+fn remove_hidden_entries(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let hidden = name.to_string_lossy().starts_with('.');
+            if hidden {
+                let path = entry.path();
+                if let Err(e) = fs::remove_dir_all(&path) {
+                    if path.is_dir() {
+                        warn!(
+                            "Failed to remove hidden directory {}: {}",
+                            path.display(),
+                            e
+                        );
+                    } else if let Err(e2) = fs::remove_file(&path) {
+                        warn!("Failed to remove hidden entry {}: {}", path.display(), e2);
+                    }
+                }
+            } else if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                remove_hidden_entries(&entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Collects symlink paths under `dir` for debugging.
+fn collect_symlinks(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.file_type().is_symlink() {
+                    out.push(path.display().to_string());
+                } else if metadata.is_dir() {
+                    out.extend(collect_symlinks(&path));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Loads the translate prompt, selecting between Kiro (per-kind) and Claude (unified) variants.
 fn load_prompt(
     config: &Config,
@@ -316,16 +319,18 @@ fn load_prompt(
     agent: AgentKind,
 ) -> Result<String, Box<dyn std::error::Error>> {
     match agent {
-        AgentKind::Claude => match &config.prompt_claude_translate {
+        AgentKind::Claude | AgentKind::OpenCode => match &config.prompt_translate {
             Some(p) => Ok(fs::read_to_string(p)?),
-            None if config.no_plan => Ok(PROMPT_CLAUDE_TRANSLATE_NO_PLAN.to_owned()),
-            None => Ok(PROMPT_CLAUDE_TRANSLATE.to_owned()),
+            None if config.no_plan => Ok(PROMPT_TRANSLATE_NO_PLAN.to_owned()),
+            None => Ok(PROMPT_TRANSLATE.to_owned()),
         },
         AgentKind::Kiro => {
             let (config_path, builtin) = match kind {
-                ProjectKind::Executable => (&config.prompt_executable, PROMPT_EXECUTABLE),
-                ProjectKind::Library => (&config.prompt_library, PROMPT_LIBRARY),
-                ProjectKind::Configurable => (&config.prompt_configurable, PROMPT_CONFIGURABLE),
+                ProjectKind::Executable => (&config.prompt_kiro_executable, PROMPT_KIRO_EXECUTABLE),
+                ProjectKind::Library => (&config.prompt_kiro_library, PROMPT_KIRO_LIBRARY),
+                ProjectKind::Configurable => {
+                    (&config.prompt_kiro_configurable, PROMPT_KIRO_CONFIGURABLE)
+                }
             };
             match config_path {
                 Some(p) => Ok(fs::read_to_string(p)?),
@@ -339,25 +344,29 @@ fn load_prompt(
 #[derive(Debug, Deserialize)]
 pub struct Config {
     /// Override path for the Kiro executable translation prompt.
-    pub prompt_executable: Option<PathBuf>,
+    #[serde(alias = "prompt_executable")]
+    pub prompt_kiro_executable: Option<PathBuf>,
 
     /// Override path for the Kiro library translation prompt.
-    pub prompt_library: Option<PathBuf>,
+    #[serde(alias = "prompt_library")]
+    pub prompt_kiro_library: Option<PathBuf>,
 
-    /// Override path for the configurable translation prompt.
-    pub prompt_configurable: Option<PathBuf>,
+    /// Override path for the Kiro configurable translation prompt.
+    #[serde(alias = "prompt_configurable")]
+    pub prompt_kiro_configurable: Option<PathBuf>,
 
-    /// Override path for the Claude unified translation prompt.
-    pub prompt_claude_translate: Option<PathBuf>,
+    /// Override path for the standard unified translation prompt.
+    #[serde(alias = "prompt_claude_translate")]
+    pub prompt_translate: Option<PathBuf>,
 
     /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
-    /// Claude model to use. If absent, no --model flag is passed and the CLI uses its default.
-    /// Accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
-    /// When set to a "provider,model" format (e.g. "openrouter,deepseek/deepseek-v4-pro"),
-    /// the agent is invoked via `ccr code` instead of `claude`, routing through CCR.
+    /// Agent model to use. If absent, no --model flag is passed and the CLI uses its default.
+    /// Claude accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
+    /// When Claude is set to a "provider,model" format (e.g. "openrouter,deepseek/deepseek-v4-pro"),
+    /// Claude Code is routed through claude-code-router. OpenCode expects provider/model format.
     pub model: Option<String>,
 
     /// If true, use the pre-anti-compaction prompt (no PLAN.md / Invariants /
@@ -400,7 +409,6 @@ pub struct Config {
 fn default_timeout_secs() -> u64 {
     36000
 }
-
 
 impl Config {
     fn validate(&self) {

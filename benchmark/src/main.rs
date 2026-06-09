@@ -325,6 +325,9 @@ fn benchmark_single_program(
     // When running in agentic mode, inject the wishlist output path into the tool configs
     // so each agent knows where to record its static-analysis tool wishes. Both tools
     // point to the same file; the verify phase appends to whatever the translate phase wrote.
+    // Ensure per-program output artifacts can be written before injecting paths.
+    std::fs::create_dir_all(&output_dir).ok();
+
     let wishlist_path = output_dir.join("tool_wishlist.json");
     // Translate-phase PLAN.md is dumped under a dedicated name so a later verify
     // rewrite of the CargoPackage cannot overwrite or delete it.
@@ -589,6 +592,7 @@ fn run(args: Args) -> HarvestResult<()> {
         .map(|s| match s.to_lowercase().as_str() {
             "kiro" => harvest_core::config::AgentKind::Kiro,
             "claude" => harvest_core::config::AgentKind::Claude,
+            "opencode" | "oc" => harvest_core::config::AgentKind::OpenCode,
             other => panic!("unknown agent kind: {other}"),
         });
     let results = run_all_benchmarks(
@@ -619,7 +623,9 @@ fn run(args: Args) -> HarvestResult<()> {
     // Print examples with issues
     log_failing_programs(&results);
 
-    log::info!("\nProcessing complete! Check the CSV file and individual project directories for detailed results.");
+    log::info!(
+        "\nProcessing complete! Check the CSV file and individual project directories for detailed results."
+    );
 
     cleanup_benchmarks(&results, &args.output_dir);
 

@@ -43,16 +43,13 @@ fn try_cargo_build(
             .arg("--features")
             .arg(features.join(","));
     }
-    let output = cmd
-        .current_dir(project_path)
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to run cargo build in {}: {}",
-                project_path.display(),
-                e
-            )
-        })?;
+    let output = cmd.current_dir(project_path).output().map_err(|e| {
+        format!(
+            "Failed to run cargo build in {}: {}",
+            project_path.display(),
+            e
+        )
+    })?;
 
     let mut artifacts = vec![];
     let mut diagnostics = vec![];
@@ -145,4 +142,3 @@ impl Representation for CargoBuildResult {
         Ok(())
     }
 }
-

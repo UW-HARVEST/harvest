@@ -37,7 +37,7 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agent_tools: bool,
 
-    /// Which agent to use for agentic translation: kiro or claude (requires --agentic).
+    /// Which agent to use for agentic translation: kiro, claude, or opencode (requires --agentic).
     #[arg(long, requires = "agentic", value_parser = parse_agent_kind)]
     pub agentic_agent: Option<harvest_core::config::AgentKind>,
 
@@ -71,8 +71,9 @@ fn parse_agent_kind(s: &str) -> Result<harvest_core::config::AgentKind, String> 
     match s.to_lowercase().as_str() {
         "kiro" => Ok(harvest_core::config::AgentKind::Kiro),
         "claude" => Ok(harvest_core::config::AgentKind::Claude),
+        "opencode" | "oc" => Ok(harvest_core::config::AgentKind::OpenCode),
         other => Err(format!(
-            "unknown agent kind: {other} (expected: kiro, claude)"
+            "unknown agent kind: {other} (expected: kiro, claude, opencode)"
         )),
     }
 }

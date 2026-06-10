@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """
-parse_trace.py — Parser for Claude Code agentic session trace files.
+parse_trace.py — Multi-format parser for agentic coding session traces.
 
-Trace files are mixed-format: plain text log lines interleaved with
-JSON Lines, one JSON object per line. This parser extracts the JSON
-events and reconstructs the structured agent execution.
+Supports two trace formats:
+  - **Claude Code** (default): mixed plain-text + JSON Lines with
+    assistant/user message records, sub-agent task brackets, and
+    per-model usage summaries.
+  - **OpenCode** (`--format opencode`): flat JSONL event stream with
+    `step_start`, `reasoning`, `text`, `tool_use`, and `step_finish`
+    events.  Token/cost totals arrive per-step rather than per-session.
+
+Auto-detection (`--format auto`, the default) peeks at the first few
+JSON records and chooses the right parser automatically.
 
 Usage:
-    python3 parse_trace.py trace_c.txt
+    python3 parse_trace.py trace.txt              # auto-detect
+    python3 parse_trace.py trace.txt --format claude
+    python3 parse_trace.py trace.txt -r -v        # readable + SVG
 """
 
 from __future__ import annotations
@@ -15,7 +24,9 @@ from __future__ import annotations
 import html
 import json
 import re
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Literal, Optional
@@ -27,10 +38,12 @@ from typing import Literal, Optional
 
 @dataclass
 class TokenUsage:
+    """Agent-agnostic token counts for one API call / step."""
     input_tokens: int
     output_tokens: int
-    cache_creation_input_tokens: int
-    cache_read_input_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -91,6 +104,9 @@ class SubAgent:
     # is_async is set True.
     conversation: list[Turn] = field(default_factory=list)
     is_async: bool = False
+
+    # Context compactions that occurred inside this sub-agent session.
+    compact_events: list[CompactEvent] = field(default_factory=list)
 
     # Framework-level progress snapshots (not API messages)
     progress_snapshots: list[ProgressSnapshot] = field(default_factory=list)
@@ -283,7 +299,7 @@ class ResultEvent:
 @dataclass
 class Session:
     """
-    One complete Claude Code agent process lifecycle.
+    One complete agent session lifecycle.
 
     A Session spans from system/init to the result event. Every JSON record
     sharing the same session_id belongs to one Session.
@@ -297,6 +313,8 @@ class Session:
     """
     session_id: str
     phase: str   # "translation" | "verification" | "unknown"
+    agent_type: str = "claude"  # "claude" | "opencode"
+    data_source: str = "jsonl"  # "export" | "live-export" | "jsonl" | "sqlite"
 
     init: Optional[InitEvent] = None
     conversation: list[Turn] = field(default_factory=list)
@@ -318,22 +336,25 @@ class Session:
 # ---------------------------------------------------------------------------
 
 def _wall_clock_ms(events: list[tuple[int, dict]]) -> int:
-    """Span between the earliest and latest event `timestamp` (ISO 8601 with
-    Z suffix) across `events`. Returns 0 if no timestamps are available.
-
-    Used as the only honest "duration of this session" measurement, because
-    framework-reported duration_ms breaks for async sub-agents and
-    duration_api_ms double-counts parallel sub-agent work."""
+    """Span between the earliest and latest event `timestamp` across `events`.
+    Handles both ISO-8601 strings (Claude Code) and epoch-ms integers (OpenCode).
+    Returns 0 if no timestamps are available."""
     from datetime import datetime
     first_ts = None
     last_ts = None
     for _, obj in events:
-        ts_str = obj.get("timestamp")
-        if not ts_str:
+        ts_raw = obj.get("timestamp")
+        if ts_raw is None:
             continue
-        try:
-            t = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        except (TypeError, ValueError):
+        # OpenCode emits epoch-ms as int; Claude emits ISO strings.
+        if isinstance(ts_raw, (int, float)):
+            t = datetime.fromtimestamp(ts_raw / 1000.0)
+        elif isinstance(ts_raw, str):
+            try:
+                t = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+        else:
             continue
         if first_ts is None or t < first_ts:
             first_ts = t
@@ -359,8 +380,9 @@ def _parse_token_usage(raw: dict) -> TokenUsage:
     return TokenUsage(
         input_tokens=raw.get("input_tokens", 0),
         output_tokens=raw.get("output_tokens", 0),
-        cache_creation_input_tokens=raw.get("cache_creation_input_tokens", 0),
-        cache_read_input_tokens=raw.get("cache_read_input_tokens", 0),
+        cache_creation_tokens=raw.get("cache_creation_input_tokens", 0),
+        cache_read_tokens=raw.get("cache_read_input_tokens", 0),
+        reasoning_tokens=raw.get("reasoning_tokens", 0),
     )
 
 
@@ -634,7 +656,7 @@ class TraceParser:
             for block in turn.content_blocks:
                 if block.type == "tool_use" and block.tool_use is not None:
                     tu = block.tool_use
-                    if tu.name == "Agent" and tu.id in subagent_map:
+                    if tu.name.lower() in ("agent", "task") and tu.id in subagent_map:
                         tu.subagent = subagent_map[tu.id]
 
     def _parse_init(self, obj: dict) -> InitEvent:
@@ -692,7 +714,8 @@ def print_session_stats(sessions: list[Session]) -> None:
     for s in sessions:
         r = s.result
         print(f"{'=' * 60}")
-        print(f"Session [{s.phase}]  id={s.session_id[:8]}...")
+        source_hint = f" source={s.data_source}" if s.agent_type == "opencode" else ""
+        print(f"Session [{s.phase}] ({s.agent_type}{source_hint})  id={s.session_id[:8]}...")
         print(f"{'=' * 60}")
 
         if s.init:
@@ -704,7 +727,7 @@ def print_session_stats(sessions: list[Session]) -> None:
         main_with_thinking = sum(1 for t in s.conversation if t.thinking_texts)
         main_tool_uses = count_tools_in_conversation(s.conversation)
         agent_calls = [
-            tu for t in s.conversation for tu in t.tool_uses if tu.name == "Agent"
+            tu for t in s.conversation for tu in t.tool_uses if tu.name.lower() in ("agent", "task")
         ]
 
         print(f"\n  --- Main conversation ---")
@@ -767,24 +790,27 @@ def _truncate(text: str, max_len: int = 30000) -> str:
 
 def _fmt_tool_input(name: str, inp: dict) -> str:
     """Format tool input as a compact one-or-few-liner."""
-    if name == "Bash":
-        cmd = inp.get("command", "").strip().replace("\n", " ↵ ")
+    name_lower = name.lower()
+    if not isinstance(inp, dict):
+        return str(inp)[:200]
+    if name_lower == "bash":
+        cmd = inp.get("command", inp.get("input", "")).strip().replace("\n", " ↵ ")
         desc = inp.get("description", "")
         if desc:
             return f"[{desc}]\n         $ {_truncate(cmd)}"
         return f"$ {_truncate(cmd)}"
-    if name in ("Read", "Write", "Edit"):
-        path = inp.get("file_path", inp.get("path", ""))
+    if name_lower in ("read", "write", "edit"):
+        path = inp.get("file_path", inp.get("filePath", inp.get("path", "")))
         extra = ""
-        if name == "Write":
+        if name_lower == "write":
             content = inp.get("content", "")
             extra = f"  ({len(content)} chars)"
-        elif name == "Edit":
-            old = inp.get("old_string", "")[:60].replace("\n", "↵")
-            new = inp.get("new_string", "")[:60].replace("\n", "↵")
+        elif name_lower == "edit":
+            old = inp.get("old_string", inp.get("oldString", ""))[:60].replace("\n", "↵")
+            new = inp.get("new_string", inp.get("newString", ""))[:60].replace("\n", "↵")
             extra = f"\n         - {old!r}\n         + {new!r}"
         return f"{path}{extra}"
-    if name == "Agent":
+    if name_lower in ("agent", "task"):
         desc = inp.get("description", "")
         sub_type = inp.get("subagent_type", "")
         prompt_preview = _truncate(inp.get("prompt", ""))
@@ -815,7 +841,7 @@ def _fmt_turns(turns: list[Turn], out: list[str], indent: str = "") -> None:
 
         # Tool calls
         for tu in turn.tool_uses:
-            is_agent = tu.name == "Agent"
+            is_agent = tu.name.lower() in ("agent", "task")
             icon = "🤖" if is_agent else "🔧"
             fmt_input = _fmt_tool_input(tu.name, tu.input)
             input_lines = fmt_input.splitlines()
@@ -895,8 +921,9 @@ def generate_file_io_report(sessions: list[Session]) -> dict:
         if tu.result and hasattr(tu.result, 'timestamp'):
             ts = tu.result.timestamp or ''
 
-        if tu.name == 'Read':
-            fp = inp.get('file_path', '')
+        name_lower = tu.name.lower()
+        if name_lower == 'read':
+            fp = inp.get('file_path', inp.get('filePath', ''))
             if not fp:
                 continue
             np = _normalize_io_path(fp)
@@ -912,8 +939,8 @@ def generate_file_io_report(sessions: list[Session]) -> dict:
                 'offset': offset, 'limit': limit,
             })
 
-        elif tu.name == 'Write':
-            fp = inp.get('file_path', '')
+        elif name_lower == 'write':
+            fp = inp.get('file_path', inp.get('filePath', ''))
             if not fp:
                 continue
             np = _normalize_io_path(fp)
@@ -922,19 +949,19 @@ def generate_file_io_report(sessions: list[Session]) -> dict:
                 'op': 'write', 'session': sid, 'ts': ts, 'bytes': clen,
             })
 
-        elif tu.name == 'Edit':
-            fp = inp.get('file_path', '')
+        elif name_lower == 'edit':
+            fp = inp.get('file_path', inp.get('filePath', ''))
             if not fp:
                 continue
             np = _normalize_io_path(fp)
-            old_l = len(inp.get('old_string', '')) if isinstance(inp.get('old_string', ''), str) else 0
-            new_l = len(inp.get('new_string', '')) if isinstance(inp.get('new_string', ''), str) else 0
+            old_l = len(inp.get('old_string', inp.get('oldString', ''))) if isinstance(inp.get('old_string', inp.get('oldString', '')), str) else 0
+            new_l = len(inp.get('new_string', inp.get('newString', ''))) if isinstance(inp.get('new_string', inp.get('newString', '')), str) else 0
             file_ops[np].append({
                 'op': 'edit', 'session': sid, 'ts': ts,
                 'old_len': old_l, 'new_len': new_l,
             })
 
-        elif tu.name == 'Bash':
+        elif name_lower == 'bash':
             cmd = inp.get('command', '')
             for fp in _extract_bash_files(cmd):
                 np = _normalize_io_path(fp)
@@ -1198,14 +1225,18 @@ def _classify_bash(cmd: str) -> str:
 
 
 def _classify_tool(tu: ToolUse) -> str:
-    if tu.name in ("Read", "Glob", "Grep"):
+    name_lower = tu.name.lower()
+    if name_lower in ("read", "glob", "grep"):
         return CAT_READ
-    if tu.name in ("Write", "Edit", "NotebookEdit"):
+    if name_lower in ("write", "edit", "notebookedit"):
         return CAT_WRITE
-    if tu.name == "Bash":
-        return _classify_bash(tu.input.get("command", ""))
-    if tu.name == "Agent":
+    if name_lower == "bash":
+        cmd = tu.input.get("command", "") if isinstance(tu.input, dict) else ""
+        return _classify_bash(cmd)
+    if name_lower in ("agent", "task"):
         return CAT_SUBAGENT
+    if name_lower in ("todowrite", "lsp"):
+        return CAT_OTHER
     return CAT_OTHER
 
 
@@ -1213,10 +1244,11 @@ def _tool_size(tu: ToolUse) -> int:
     """Visualization weight for a tool use, in characters."""
     if tu.size_override is not None:
         return tu.size_override
-    if tu.name == "Write":
-        return len(tu.input.get("content", ""))
-    if tu.name == "Edit":
-        return len(tu.input.get("new_string", ""))
+    name_lower = tu.name.lower()
+    if name_lower == "write":
+        return len(tu.input.get("content", "")) if isinstance(tu.input, dict) else 0
+    if name_lower == "edit":
+        return len(tu.input.get("new_string", "")) if isinstance(tu.input, dict) else 0
     # All others: characters that came back into context.
     return len(tu.result.content) if tu.result else 0
 
@@ -1326,22 +1358,24 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
         # `description` (lifted from a task_progress snapshot). Use it as a
         # universal fallback when the usual fields aren't present.
         desc_fallback = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
-        if tu.name == "Bash":
-            cmd = tu.input.get("command", "")
+        name_lower = tu.name.lower()
+        if name_lower == "bash":
+            cmd = tu.input.get("command", "") if isinstance(tu.input, dict) else ""
             tip = f"$ {cmd[:400]}" if cmd else f"Bash: {desc_fallback}"
-        elif tu.name in ("Read", "Glob", "Grep"):
+        elif name_lower in ("read", "glob", "grep"):
             target = (
-                tu.input.get("file_path")
-                or tu.input.get("pattern", "")
+                (tu.input.get("file_path") if isinstance(tu.input, dict) else None)
+                or (tu.input.get("filePath") if isinstance(tu.input, dict) else None)
+                or (tu.input.get("pattern", "") if isinstance(tu.input, dict) else "")
                 or desc_fallback
             )
             tip = f"{tu.name}: {target}"
-        elif tu.name in ("Write", "Edit"):
-            target = tu.input.get("file_path", "") or desc_fallback
+        elif name_lower in ("write", "edit"):
+            target = ((tu.input.get("file_path") or tu.input.get("filePath") or "") if isinstance(tu.input, dict) else "") or desc_fallback
             tip = f"{tu.name}: {target}"
-        elif tu.name == "Agent":
-            desc = tu.input.get("description", "")
-            prompt_preview = tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ")
+        elif name_lower in ("agent", "task"):
+            desc = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
+            prompt_preview = (tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ") if isinstance(tu.input, dict) else "")
             result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
             tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
         else:
@@ -1410,15 +1444,17 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
             sub_idx = 0
             sub_count = sum(
                 1 for tu in t.tool_uses
-                if tu.name == "Agent" and tu.subagent is not None
+                if tu.name.lower() in ("agent", "task") and tu.subagent is not None
             )
             for tu in t.tool_uses:
-                if tu.name == "Agent" and tu.subagent:
+                if tu.name.lower() in ("agent", "task") and tu.subagent:
                     sub_idx += 1
                     sub_prefix = f"{prefix}T{t.turn_index}/A{sub_idx}:"
                     grp_start = len(rows)
-                    # Sub-agent compactions are not currently surfaced.
-                    emit(tu.subagent.conversation, sub_prefix, depth + 1, {})
+                    sub_compacts: dict[int, list[CompactEvent]] = defaultdict(list)
+                    for ev in tu.subagent.compact_events:
+                        sub_compacts[ev.after_turn_index].append(ev)
+                    emit(tu.subagent.conversation, sub_prefix, depth + 1, sub_compacts)
                     grp_end = len(rows) - 1
                     if grp_end >= grp_start:
                         groups.append(_Group(
@@ -1493,6 +1529,8 @@ def _format_compact_int(n: int) -> str:
 def _format_session_summary(s: Session, s_idx: int) -> str:
     parts = [f"S{s_idx} {s.phase}:"]
     r = s.result
+    if s.agent_type == "opencode":
+        parts.append(f"[{s.data_source}]")
     # Use len(s.conversation) — the actual main-agent turn count we parsed.
     # `result.num_turns` is a framework-side counter that reports something
     # different (often only the final wrap-up turns), so don't trust it here.
@@ -1690,16 +1728,23 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             band_x = label_w
             band_w = width - band_x - 40
             cy = y + row_h / 2
+            token_line = (
+                f"{ev.pre_tokens:,} → {ev.post_tokens:,} tokens "
+                f"({100 * ev.post_tokens / max(ev.pre_tokens, 1):.0f}%)"
+                if ev.pre_tokens or ev.post_tokens else
+                "token counts unavailable"
+            )
             tooltip = html.escape(
                 f"context compaction ({ev.trigger})\n"
-                f"{ev.pre_tokens:,} → {ev.post_tokens:,} tokens "
-                f"({100 * ev.post_tokens / max(ev.pre_tokens, 1):.0f}%)\n"
+                f"{token_line}\n"
                 f"duration: {ev.duration_ms / 1000:.1f}s"
             )
-            label = (
-                f"⌁ compact: {ev.pre_tokens // 1000}k → {ev.post_tokens // 1000}k tok "
-                f"({ev.duration_ms / 1000:.0f}s, {ev.trigger})"
+            token_label = (
+                f"{ev.pre_tokens // 1000}k → {ev.post_tokens // 1000}k tok"
+                if ev.pre_tokens or ev.post_tokens else
+                "tokens n/a"
             )
+            label = f"⌁ compact: {token_label} ({ev.duration_ms / 1000:.0f}s, {ev.trigger})"
             out.append(
                 f'<g><title>{tooltip}</title>'
                 f'<line x1="{band_x}" y1="{cy:.1f}" x2="{band_x + band_w}" y2="{cy:.1f}" '
@@ -1750,32 +1795,744 @@ def render_timeline_svg(sessions: list[Session]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Format detection & OpenCode parser
+# ---------------------------------------------------------------------------
+
+_OPENCODE_EVENT_TYPES = {"step_start", "step_finish", "reasoning", "text", "tool_use"}
+
+
+def _detect_format(records: list[tuple[int, dict]]) -> str:
+    """Peek at the first few JSON records and return 'opencode' or 'claude'.
+
+    OpenCode traces always contain `step_start` / `step_finish` events.
+    Claude traces use `type=assistant` / `type=user` / `type=system`.
+    """
+    for _, obj in records[:20]:
+        typ = obj.get("type", "")
+        if typ in ("step_start", "step_finish", "reasoning"):
+            return "opencode"
+        if typ in ("assistant", "user", "system", "result"):
+            return "claude"
+    return "claude"
+
+
+class OpenCodeParser:
+    """Parse an OpenCode --format=json event stream into Session objects.
+
+    OpenCode emits a flat JSONL stream:
+      step_start → reasoning? → text? → tool_use* → step_finish
+
+    Each step_start/step_finish pair becomes one Turn.
+    tool_use events carry both input AND output inside `part.state`.
+    Token/cost totals arrive in step_finish.
+    """
+
+    def parse_file(self, path: str) -> list[Session]:
+        records: list[tuple[int, dict]] = []
+        with open(path, "r") as f:
+            for lineno, line in enumerate(f, 1):
+                stripped = line.strip()
+                if stripped.startswith("{"):
+                    try:
+                        records.append((lineno, json.loads(stripped)))
+                    except json.JSONDecodeError:
+                        pass
+
+        by_session: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+        for lineno, obj in records:
+            sid = obj.get("sessionID", "unknown")
+            by_session[sid].append((lineno, obj))
+
+        sessions = []
+        for idx, (sid, events) in enumerate(by_session.items()):
+            phases = ["translation", "verification", "unknown"]
+            phase = phases[min(idx, 2)]
+            sessions.append(self._parse_session(sid, phase, events))
+        return sessions
+
+    def _parse_session(
+        self, session_id: str, phase: str, events: list[tuple[int, dict]]
+    ) -> Session:
+        session = Session(session_id=session_id, phase=phase, agent_type="opencode", data_source="jsonl")
+        session.wall_clock_ms = _wall_clock_ms(events)
+
+        current_turn: Optional[Turn] = None
+        turn_index = 0
+        accumulated_usage = TokenUsage(0, 0, 0, 0, 0)
+        step_cost = 0.0
+
+        for lineno, obj in events:
+            typ = obj.get("type", "")
+            part = obj.get("part", {})
+
+            if typ == "step_start":
+                turn_index += 1
+                current_turn = Turn(turn_index=turn_index)
+                continue
+
+            if typ == "reasoning" and current_turn is not None:
+                text = part.get("text", "")
+                if text:
+                    current_turn.content_blocks.append(
+                        ContentBlock(type="thinking", thinking=text)
+                    )
+                continue
+
+            if typ == "text" and current_turn is not None:
+                text = part.get("text", "")
+                if text:
+                    current_turn.content_blocks.append(
+                        ContentBlock(type="text", text=text)
+                    )
+                continue
+
+            if typ == "tool_use" and current_turn is not None:
+                tool_name = part.get("tool", "unknown")
+                state = part.get("state", {})
+                inp = state.get("input") or {}
+                if not isinstance(inp, dict):
+                    inp = {"input": inp}
+                output = state.get("output")
+                status = state.get("status", "")
+                call_id = part.get("callID", f"oc-{lineno}")
+
+                result = None
+                if output is not None or status:
+                    result = ToolResult(
+                        tool_use_id=call_id,
+                        content=str(output) if output is not None else "",
+                        is_error=status in ("error", "failed"),
+                    )
+
+                tu = ToolUse(id=call_id, name=tool_name, input=inp, result=result)
+                current_turn.content_blocks.append(
+                    ContentBlock(type="tool_use", tool_use=tu)
+                )
+                continue
+
+            if typ == "step_finish" and current_turn is not None:
+                tokens = part.get("tokens", {})
+                cache = tokens.get("cache", {})
+                # OpenCode reports `total` as the grand total, `input` as a
+                # small delta sometimes.  Use total minus output minus reasoning
+                # as the true input-token count.
+                total_tok = tokens.get("total", 0)
+                out_tok = tokens.get("output", 0)
+                reason_tok = tokens.get("reasoning", 0)
+                in_tok = max(total_tok - out_tok - reason_tok, 0)
+                turn_usage = TokenUsage(
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_creation_tokens=cache.get("write", 0),
+                    cache_read_tokens=cache.get("read", 0),
+                    reasoning_tokens=reason_tok,
+                )
+                current_turn.usage = turn_usage
+
+                cost = part.get("cost")
+                if cost is not None:
+                    step_cost += float(cost)
+
+                accumulated_usage = TokenUsage(
+                    input_tokens=accumulated_usage.input_tokens + turn_usage.input_tokens,
+                    output_tokens=accumulated_usage.output_tokens + turn_usage.output_tokens,
+                    cache_creation_tokens=accumulated_usage.cache_creation_tokens + turn_usage.cache_creation_tokens,
+                    cache_read_tokens=accumulated_usage.cache_read_tokens + turn_usage.cache_read_tokens,
+                    reasoning_tokens=accumulated_usage.reasoning_tokens + turn_usage.reasoning_tokens,
+                )
+
+                session.conversation.append(current_turn)
+                current_turn = None
+                continue
+
+        session.result = ResultEvent(
+            is_error=False,
+            stop_reason="end",
+            num_turns=len(session.conversation),
+            duration_ms=session.wall_clock_ms,
+            duration_api_ms=0,
+            total_cost_usd=step_cost if step_cost > 0 else 0.0,
+            result_text="",
+            model_usage={},
+        )
+        return session
+
+
+class OpenCodeExportParser:
+    """Parse an OpenCode export JSON (from `opencode export <sessionID>`) into a Session.
+
+    Export format has `info` (session metadata) and `messages[]` (conversation).
+    Each message has `parts[]` with types: step-start, reasoning, text, tool, step-finish.
+    """
+
+    def parse_export(self, export_json: dict) -> Session:
+        info = export_json.get("info", {})
+        session_id = info.get("id", "unknown")
+        title = info.get("title", "")
+        agent_type = "opencode"
+        phase = "unknown"
+        if "translate" in title.lower() or "translate" in info.get("agent", "").lower():
+            phase = "translation"
+        elif "verify" in title.lower() or "verify" in info.get("agent", "").lower():
+            phase = "verification"
+
+        session = Session(session_id=session_id, phase=phase, agent_type=agent_type, data_source="export")
+
+        # Extract wall-clock from info.time
+        time_info = info.get("time", {})
+        created = time_info.get("created")
+        updated = time_info.get("updated")
+        if isinstance(created, (int, float)) and isinstance(updated, (int, float)):
+            session.wall_clock_ms = max(int(updated - created), 0)
+
+        # Parse messages into turns
+        messages = export_json.get("messages", [])
+        current_turn: Optional[Turn] = None
+        turn_index = 0
+        step_cost = 0.0
+
+        for msg in messages:
+            msg_info = msg.get("info", {})
+            parts = msg.get("parts", [])
+
+            for part in parts:
+                ptype = part.get("type", "")
+
+                if ptype == "step-start":
+                    turn_index += 1
+                    current_turn = Turn(turn_index=turn_index)
+                    continue
+
+                if ptype == "reasoning" and current_turn is not None:
+                    text = part.get("text", "")
+                    if text:
+                        current_turn.content_blocks.append(
+                            ContentBlock(type="thinking", thinking=text)
+                        )
+                    continue
+
+                if ptype == "text" and current_turn is not None:
+                    text = part.get("text", "")
+                    if text:
+                        current_turn.content_blocks.append(
+                            ContentBlock(type="text", text=text)
+                        )
+                    continue
+
+                if ptype == "compaction":
+                    trigger = "auto" if part.get("auto") else "manual"
+                    if part.get("overflow"):
+                        trigger = f"{trigger}/overflow"
+                    session.compact_events.append(CompactEvent(
+                        pre_tokens=0,
+                        post_tokens=0,
+                        duration_ms=0,
+                        trigger=trigger,
+                        line_number=0,
+                        after_turn_index=len(session.conversation),
+                    ))
+                    continue
+
+                if ptype == "tool" and current_turn is not None:
+                    tool_name = part.get("tool", "unknown")
+                    state = part.get("state", {})
+                    inp = state.get("input") or {}
+                    if not isinstance(inp, dict):
+                        inp = {"input": inp}
+                    output = state.get("output")
+                    status = state.get("status", "")
+                    call_id = part.get("callID", f"export-{turn_index}")
+
+                    result = None
+                    if output is not None or status:
+                        result = ToolResult(
+                            tool_use_id=call_id,
+                            content=str(output) if output is not None else "",
+                            is_error=status in ("error", "failed"),
+                        )
+
+                    tu = ToolUse(id=call_id, name=tool_name, input=inp, result=result)
+                    current_turn.content_blocks.append(
+                        ContentBlock(type="tool_use", tool_use=tu)
+                    )
+                    continue
+
+                if ptype == "step-finish" and current_turn is not None:
+                    tokens = part.get("tokens", {})
+                    cache = tokens.get("cache", {})
+                    total_tok = tokens.get("total", 0)
+                    out_tok = tokens.get("output", 0)
+                    reason_tok = tokens.get("reasoning", 0)
+                    in_tok = max(total_tok - out_tok - reason_tok, 0)
+                    current_turn.usage = TokenUsage(
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        cache_creation_tokens=cache.get("write", 0),
+                        cache_read_tokens=cache.get("read", 0),
+                        reasoning_tokens=reason_tok,
+                    )
+                    cost = part.get("cost")
+                    if cost is not None:
+                        step_cost += float(cost)
+                    session.conversation.append(current_turn)
+                    current_turn = None
+                    continue
+
+        # Build result from info-level aggregation
+        info_tokens = info.get("tokens", {})
+        info_cost = info.get("cost", 0.0)
+        session.result = ResultEvent(
+            is_error=False,
+            stop_reason="end",
+            num_turns=len(session.conversation),
+            duration_ms=session.wall_clock_ms,
+            duration_api_ms=0,
+            total_cost_usd=float(info_cost) if info_cost else 0.0,
+            result_text="",
+            model_usage={},
+        )
+        return session
+
+
+def _read_mixed_trace(
+    path: str,
+) -> tuple[dict[str, dict], dict[str, list[tuple[int, dict]]]]:
+    """Read a mixed-format trace file, separating export blocks from JSONL events.
+
+    Returns:
+        exports: session_id -> export JSON dict
+        jsonl_events: session_id -> list of (lineno, event_dict)
+    """
+    exports: dict[str, dict] = {}
+    jsonl_events: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+
+    with open(path, "r") as f:
+        lines = f.readlines()
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip empty / non-JSON lines (ANSI logs, benchmark output, markers)
+        if not stripped:
+            i += 1
+            continue
+
+        # Detect export block: a multi-line JSON object with "info" + "messages".
+        # Single-line JSONL events are parsed immediately; multi-line export
+        # blocks are accumulated until json.loads succeeds.
+        if stripped.startswith("{"):
+            # Try single-line parse first (covers all JSONL events).
+            try:
+                obj = json.loads(stripped, strict=False)
+            except json.JSONDecodeError:
+                obj = None
+
+            if obj is not None:
+                # Single-line JSON: classify immediately.
+                if "info" in obj and "messages" in obj:
+                    sid = obj.get("info", {}).get("id", "unknown")
+                    exports[sid] = obj
+                elif "type" in obj:
+                    sid = obj.get("sessionID", "unknown")
+                    jsonl_events[sid].append((i + 1, obj))
+                i += 1
+                continue
+
+            # Multi-line JSON: accumulate lines until json.loads succeeds.
+            # Optimization: only attempt parsing when the line ends with '}'
+            # (likely end of a JSON object), avoiding O(n²) parse attempts.
+            buf_lines = [line]
+            j = i + 1
+            parsed_obj = None
+            while j < n:
+                buf_lines.append(lines[j])
+                if lines[j].rstrip().endswith("}"):
+                    buf = "".join(buf_lines).strip()
+                    try:
+                        parsed_obj = json.loads(buf, strict=False)
+                        break
+                    except json.JSONDecodeError:
+                        pass
+                j += 1
+
+            if parsed_obj is not None:
+                if "info" in parsed_obj and "messages" in parsed_obj:
+                    sid = parsed_obj.get("info", {}).get("id", "unknown")
+                    exports[sid] = parsed_obj
+                elif "type" in parsed_obj:
+                    sid = parsed_obj.get("sessionID", "unknown")
+                    jsonl_events[sid].append((i + 1, parsed_obj))
+                i = j + 1
+                continue
+
+            # Could not parse as JSON; skip this line.
+            i += 1
+            continue
+
+        # Non-JSON line; skip.
+        i += 1
+
+    return exports, jsonl_events
+
+
+def _export_opencode_session_live(session_id: str, timeout_s: int = 30) -> Optional[dict]:
+    """Try to export an OpenCode session directly from the local session store.
+
+    This is used while a trace is still being written. The trace file may only
+    contain live JSONL events because `agent_runner` appends `opencode export`
+    blocks after `opencode run` exits. For visualization during an active run,
+    pull the export by sessionID here and mark it as data_source="live-export".
+
+    Important: OpenCode 1.16.x can truncate `opencode export` output when stdout
+    is captured through a pipe. Mirror the Rust-side workaround: redirect stdout
+    to a temporary file, then read that file.
+    """
+    with tempfile.NamedTemporaryFile(prefix="opencode-export-", suffix=".json") as tmp:
+        try:
+            result = subprocess.run(
+                ["opencode", "export", session_id],
+                stdout=tmp,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_s,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        tmp.flush()
+        tmp.seek(0)
+        data = tmp.read().decode("utf-8", errors="replace")
+
+    if not data.strip():
+        return None
+    try:
+        obj = json.loads(data, strict=False)
+    except json.JSONDecodeError:
+        return None
+    if "info" not in obj or "messages" not in obj:
+        return None
+    return obj
+
+
+def _opencode_session_parent_id(export_json: dict) -> str:
+    """Return an OpenCode export's parent session ID, if it has one."""
+    info = export_json.get("info", {}) or {}
+    for key in ("parentID", "parentId", "parentSessionID", "parentSessionId", "parent_session_id"):
+        sid = info.get(key)
+        if isinstance(sid, str) and sid:
+            return sid
+    return ""
+
+
+def _opencode_task_child_session_id(part: dict) -> str:
+    """Return the child session ID created by an OpenCode task tool part."""
+    state = part.get("state", {}) or {}
+    metadata = state.get("metadata", {}) or part.get("metadata", {}) or {}
+    for key in ("sessionID", "sessionId", "session_id"):
+        sid = metadata.get(key)
+        if isinstance(sid, str) and sid:
+            return sid
+    return ""
+
+
+def _extract_opencode_sub_session_ids(export_json: dict) -> list[str]:
+    """Return child session IDs referenced by OpenCode task tool calls."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for msg in export_json.get("messages", []):
+        for part in msg.get("parts", []):
+            tool_name = str(part.get("tool", "")).lower()
+            if part.get("type") != "tool" or tool_name != "task":
+                continue
+
+            sid = _opencode_task_child_session_id(part)
+            if sid and sid not in seen:
+                seen.add(sid)
+                found.append(sid)
+
+    return found
+
+
+def _find_tool_use_by_id(turns: list[Turn], tool_use_id: str) -> Optional[ToolUse]:
+    """Find a tool call by ID, descending into already-linked subagents."""
+    for turn in turns:
+        for tu in turn.tool_uses:
+            if tu.id == tool_use_id:
+                return tu
+            if tu.subagent is not None:
+                found = _find_tool_use_by_id(tu.subagent.conversation, tool_use_id)
+                if found is not None:
+                    return found
+    return None
+
+
+def _opencode_info_token_total(info: dict) -> int:
+    tokens = info.get("tokens", {}) or {}
+    cache = tokens.get("cache", {}) or {}
+    return int(tokens.get("input", 0) or 0) + int(tokens.get("output", 0) or 0) + int(tokens.get("reasoning", 0) or 0) + int(cache.get("read", 0) or 0) + int(cache.get("write", 0) or 0)
+
+
+def _attach_opencode_child_sessions(
+    export_jsons: dict[str, dict],
+    parsed_sessions: dict[str, Session],
+) -> set[str]:
+    """Attach exported OpenCode child sessions to their parent task ToolUse.
+
+    OpenCode stdout JSONL only shows a `task` tool result in the parent session;
+    the child conversation lives in a separate `opencode export <childSessionId>`.
+    Once we have both exports, represent the child as `ToolUse.subagent` so the
+    existing SVG flattener draws nested rows and purple sub-agent guide lines,
+    instead of rendering child sessions as unrelated top-level S1/S2/... blocks.
+    """
+    child_sids: set[str] = set()
+
+    # First pass: explicit parentID on child exports. This prevents child
+    # sessions from being rendered top-level even if the parent task part is not
+    # present yet in a live/incomplete export.
+    for sid, export_json in export_jsons.items():
+        parent_sid = _opencode_session_parent_id(export_json)
+        if parent_sid and parent_sid in parsed_sessions:
+            child_sids.add(sid)
+
+    # Second pass: connect task ToolUse -> child SubAgent using task metadata.
+    for parent_sid, export_json in export_jsons.items():
+        parent_session = parsed_sessions.get(parent_sid)
+        if parent_session is None:
+            continue
+
+        for msg in export_json.get("messages", []):
+            for part in msg.get("parts", []):
+                tool_name = str(part.get("tool", "")).lower()
+                if part.get("type") != "tool" or tool_name != "task":
+                    continue
+
+                child_sid = _opencode_task_child_session_id(part)
+                child_session = parsed_sessions.get(child_sid)
+                if not child_sid or child_session is None:
+                    continue
+
+                call_id = part.get("callID", "")
+                if not call_id:
+                    continue
+                task_tool = _find_tool_use_by_id(parent_session.conversation, call_id)
+                if task_tool is None:
+                    continue
+
+                state = part.get("state", {}) or {}
+                inp = state.get("input") or {}
+                if not isinstance(inp, dict):
+                    inp = {}
+                child_info = export_jsons.get(child_sid, {}).get("info", {}) or {}
+                task_tool.subagent = SubAgent(
+                    task_id=child_sid,
+                    tool_use_id=call_id,
+                    description=inp.get("description", "") or child_info.get("title", ""),
+                    prompt=inp.get("prompt", ""),
+                    status=state.get("status", "completed"),
+                    conversation=child_session.conversation,
+                    is_async=False,
+                    compact_events=child_session.compact_events,
+                    total_tokens=_opencode_info_token_total(child_info),
+                    total_tool_uses=sum(len(t.tool_uses) for t in child_session.conversation),
+                    duration_ms=child_session.wall_clock_ms,
+                )
+                child_sids.add(child_sid)
+
+    return child_sids
+
+
+def _fetch_live_opencode_exports(
+    jsonl_events: dict[str, list[tuple[int, dict]]],
+    existing_exports: dict[str, dict],
+) -> dict[str, dict]:
+    """Fetch export JSON for JSONL sessions that lack in-file export blocks.
+
+    Returns only successfully fetched exports. Failures are deliberately silent:
+    the caller will fall back to JSONL for any session that cannot be exported.
+    Child sessions discovered from task tool metadata are fetched breadth-first so
+    live visualization can show sub-agent conversations before the run finishes.
+    """
+    live_exports: dict[str, dict] = {}
+    queue = [sid for sid in jsonl_events if sid not in existing_exports]
+    queued: set[str] = set(queue)
+
+    while queue:
+        sid = queue.pop(0)
+        if sid in existing_exports or sid in live_exports:
+            continue
+
+        exported = _export_opencode_session_live(sid)
+        if exported is None:
+            continue
+
+        live_exports[sid] = exported
+
+        for child_sid in _extract_opencode_sub_session_ids(exported):
+            if (
+                child_sid not in existing_exports
+                and child_sid not in live_exports
+                and child_sid not in queued
+            ):
+                queue.append(child_sid)
+                queued.add(child_sid)
+
+    return live_exports
+
+
+def parse_mixed_trace_file(path: str, fmt: str = "auto") -> list[Session]:
+    """Parse a trace file that may contain both JSONL events and export blocks.
+
+    Priority per session:
+      1. Export block in file -> use OpenCodeExportParser (data_source="export")
+      2. Live `opencode export <sessionID>` -> use OpenCodeExportParser (data_source="live-export")
+      3. JSONL events -> use OpenCodeParser (data_source="jsonl")
+    """
+    # Peek to determine the overall format (claude vs opencode).
+    peek_records: list[tuple[int, dict]] = []
+    with open(path, "r") as f:
+        for lineno, line in enumerate(f, 1):
+            if lineno > 200:
+                break
+            stripped = line.strip()
+            if stripped.startswith("{"):
+                try:
+                    peek_records.append((lineno, json.loads(stripped)))
+                    if len(peek_records) >= 5:
+                        break
+                except json.JSONDecodeError:
+                    pass
+
+    if fmt == "auto":
+        fmt = _detect_format(peek_records)
+
+    if fmt == "claude":
+        return TraceParser().parse_file(path)
+
+    # OpenCode path: read mixed file, prefer export blocks.
+    exports, jsonl_events = _read_mixed_trace(path)
+    live_exports = _fetch_live_opencode_exports(jsonl_events, exports)
+
+    export_parser = OpenCodeExportParser()
+    jsonl_parser = OpenCodeParser()
+    sessions: list[Session] = []
+
+    # Parse every available export first, then attach child exports beneath
+    # parent `task` tool calls. Only root exports should remain top-level.
+    export_sources: dict[str, str] = {}
+    combined_exports: dict[str, dict] = {}
+    for sid, export_json in exports.items():
+        combined_exports[sid] = export_json
+        export_sources[sid] = "export"
+    for sid, export_json in live_exports.items():
+        if sid in combined_exports:
+            continue
+        combined_exports[sid] = export_json
+        export_sources[sid] = "live-export"
+
+    parsed_exports: dict[str, Session] = {}
+    for sid, export_json in combined_exports.items():
+        session = export_parser.parse_export(export_json)
+        session.data_source = export_sources.get(sid, "export")
+        parsed_exports[sid] = session
+
+    child_export_sids = _attach_opencode_child_sessions(combined_exports, parsed_exports)
+    seen_sids: set[str] = set(parsed_exports)
+
+    # Phase assignment: first root session = translation, second = verification.
+    phase_counter = 0
+
+    # First/second: in-file exports and live exports, but only root sessions.
+    for sid in combined_exports:
+        if sid in child_export_sids:
+            continue
+        session = parsed_exports[sid]
+        session.phase = ["translation", "verification", "unknown"][min(phase_counter, 2)]
+        phase_counter += 1
+        sessions.append(session)
+
+    # Third: parse remaining sessions from JSONL (only if no export for that sid).
+    for sid, events in jsonl_events.items():
+        if sid in seen_sids:
+            continue
+        session = jsonl_parser._parse_session(
+            sid,
+            ["translation", "verification", "unknown"][min(phase_counter, 2)],
+            events,
+        )
+        phase_counter += 1
+        sessions.append(session)
+
+    # If we found nothing at all, fall back to the raw parsers.
+    if not sessions:
+        return OpenCodeParser().parse_file(path)
+
+    return sessions
+
+
+def parse_trace_file(path: str, fmt: str = "auto") -> list[Session]:
+    """Top-level entry point: auto-detect format and parse.
+
+    For OpenCode traces, uses mixed-format parsing (export blocks take priority
+    over JSONL events for the same session).
+    """
+    return parse_mixed_trace_file(path, fmt)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if not args:
-        print("Usage: parse_trace.py <file> [-v] [-r] [-f] [--readable] [--visualize] [--file-io]")
-        sys.exit(1)
+    if not args or args[0] in ("-h", "--help"):
+        print("Usage: parse_trace.py <file> [-v] [-r] [-f] [--readable] [--visualize] [--file-io] [--format auto|claude|opencode]")
+        print("")
+        print("  <file>          Path to the trace file to parse")
+        print("  -v, --visualize Generate SVG timeline visualization")
+        print("  -r, --readable  Generate human-readable text history")
+        print("  -f, --file-io   Generate file I/O analysis JSON")
+        print("  --format        Force trace format: auto (default), claude, or opencode")
+        print("")
+        print("If no output flags are given, prints session statistics.")
+        sys.exit(0)
 
     path = args[0]
 
-    # Parse flags: -v, -r, -f, --readable, --visualize, --file-io
+    # Parse flags: -v, -r, -f, --readable, --visualize, --file-io, --format
     flags: set[str] = set()
-    for arg in args[1:]:
+    fmt = "auto"
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg == "--format" and i + 1 < len(args):
+            fmt = args[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--format="):
+            fmt = arg.split("=", 1)[1]
+            i += 1
+            continue
         if arg.startswith("--"):
             flags.add(arg)
         elif arg.startswith("-"):
             for ch in arg[1:]:
                 flags.add(ch)
+        i += 1
 
     readable = "r" in flags or "--readable" in flags
     visualize = "v" in flags or "--visualize" in flags
     file_io = "f" in flags or "--file-io" in flags
 
-    parser = TraceParser()
-    sessions = parser.parse_file(path)
+    sessions = parse_trace_file(path, fmt)
+    detected = sessions[0].agent_type if sessions else "unknown"
+    print(f"Detected format: {detected}")
 
     if readable:
         out_path = path.rsplit(".", 1)[0] + "_readable.txt"

@@ -1152,6 +1152,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec_runner"
+version = "0.1.0"
+dependencies = [
+ "wait-timeout",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1398,6 +1405,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
+ "exec_runner",
  "full_source",
  "harvest_core",
  "harvest_translate",

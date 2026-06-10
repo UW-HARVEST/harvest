@@ -7,7 +7,7 @@ mod scheduler;
 pub mod util;
 
 use build_c_artifact::BuildCArtifact;
-use build_project_spec::BuildProjectSpec;
+use build_project_spec::{BuildProjectSpec, ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
 use fix_declarations_llm::FixDeclarationsLlm;
 use fix_diff_failures::FixDiffFailures;
@@ -42,31 +42,41 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     info!("Harvest version: {}", get_version());
     info!("Transpiling with: {}", config.model_info().unwrap());
 
-    // Setup a schedule for the transpilation.
-    let load_src = scheduler.queue(LoadRawSource::new(&config.input));
-    let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
-
-    // Diff test suite generation and C artifact build run in parallel with translation.
-    let diff_test_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
-    let c_library = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
-    let exec_test_inputs = scheduler.queue_after(GenerateExecDifftests, &[load_src]);
-    let translate = if config.agentic {
-        let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
-        if config.agentic_verify {
-            scheduler.queue_after(VerifyFixAgentic, &[t, load_src])
-        } else {
-            t
-        }
-    } else if config.modular {
-        let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
-        scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
-    } else {
-        scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
-    };
-    let mut current_pkg_id = translate;
-    let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
-
     let result: Result<(), Box<dyn std::error::Error>> = (|| {
+        // Phase 1: determine project kind before queuing kind-specific tools.
+        let load_src = scheduler.queue(LoadRawSource::new(&config.input));
+        let project_spec = scheduler.queue_after(BuildProjectSpec, &[load_src]);
+        scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+        let is_library = matches!(
+            ir.get::<ProjectSpec>(project_spec)
+                .ok_or("transpile: no ProjectSpec in IR")?
+                .kind,
+            ProjectKind::Library
+        );
+
+        // Queue kind-specific diff test generation alongside C build and translation.
+        let diff_test_suite =
+            is_library.then(|| scheduler.queue_after(GenerateDiffTestSuite, &[load_src]));
+        let c_library = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
+        let exec_test_inputs =
+            (!is_library).then(|| scheduler.queue_after(GenerateExecDifftests, &[load_src]));
+        let translate = if config.agentic {
+            let t = scheduler.queue_after(TranslateAgentic, &[load_src, project_spec]);
+            if config.agentic_verify {
+                scheduler.queue_after(VerifyFixAgentic, &[t, load_src])
+            } else {
+                t
+            }
+        } else if config.modular {
+            let parse_ast = scheduler.queue_after(ParseToAst, &[load_src]);
+            scheduler.queue_after(ModularTranslationLlm, &[load_src, parse_ast, project_spec])
+        } else {
+            scheduler.queue_after(RawSourceToCargoLlm, &[load_src, project_spec])
+        };
+        let mut current_pkg_id = translate;
+        let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
+
         // Run until all tasks are complete, respecting the dependencies declared in `queue_after`
         scheduler.run_all(&mut runner, &mut ir, config.clone())?;
 
@@ -94,7 +104,11 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         // failure). The loop tracks the best-so-far CargoPackage by pass count; regressions
         // are implicitly discarded by not advancing the best pointers.
         let mut best_build_id = current_build_id;
-        if !config.agentic && ir.contains_id(diff_test_suite) && ir.contains_id(c_library) {
+        if !config.agentic
+            && diff_test_suite.is_some_and(|id| ir.contains_id(id))
+            && ir.contains_id(c_library)
+        {
+            let diff_test_suite = diff_test_suite.unwrap();
             let mut best_cargo_id = current_pkg_id;
             let mut best_diff_result_id =
                 scheduler.queue_after(RunDiffTest, &[diff_test_suite, c_library, current_pkg_id]);
@@ -142,9 +156,12 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             }
         }
 
-        // Exec diff-repair loop — mirrors the library loop above, but for executable projects.
-        // RunExecDiffTest short-circuits for library projects, so the two loops never conflict.
-        if !config.agentic && ir.contains_id(exec_test_inputs) && ir.contains_id(c_library) {
+        // Exec diff-repair loop — only for executable projects.
+        if !config.agentic
+            && exec_test_inputs.is_some_and(|id| ir.contains_id(id))
+            && ir.contains_id(c_library)
+        {
+            let exec_test_inputs = exec_test_inputs.unwrap();
             let mut best_exec_cargo_id = current_pkg_id;
             let mut best_exec_result_id = scheduler.queue_after(
                 RunExecDiffTest,

@@ -700,6 +700,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "build_c_artifact"
+version = "0.1.0"
+dependencies = [
+ "build_project_spec",
+ "full_source",
+ "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "build_config"
 version = "0.1.0"
 dependencies = [
@@ -1421,6 +1432,7 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
+ "build_c_artifact",
  "build_config",
  "build_project_spec",
  "c_ast",

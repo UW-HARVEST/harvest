@@ -34,6 +34,7 @@ fix_declarations_llm.workspace = true
 raw_source_to_cargo_llm.workspace = true
 translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
+build_c_artifact.workspace = true
 
 [dev-dependencies]
 full_source.workspace = true

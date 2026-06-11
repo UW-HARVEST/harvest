@@ -119,7 +119,17 @@ impl Tool for VerifyFixAgentic {
             .replace("{CMAKE_BUILD_FLAGS}", &test_config.cmake_flags)
             .replace("{ALL_CONFIGURATIONS}", &render_configurations(&test_config))
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
-            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
+            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace(
+                "{MODEL_LIMITS}",
+                &match (agent, &config.model) {
+                    (AgentKind::OpenCode, Some(model)) => {
+                        let limits = agent_runner::load_opencode_model_limits(model)?;
+                        agent_runner::render_model_limits_block(&limits)
+                    }
+                    _ => String::new(),
+                },
+            );
 
         // Kiro runs in case_dir (references translated_rust/ in prompt paths).
         // Claude and OpenCode run in translated_rust/ directly (references c_src/ and src/).

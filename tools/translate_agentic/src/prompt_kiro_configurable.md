@@ -61,6 +61,8 @@ Requirements:
 
 Do NOT modify anything in c_src/.
 
+{MODEL_LIMITS}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

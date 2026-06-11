@@ -74,6 +74,8 @@ run `cargo build --release --features <feature>` for each one.
 
 Do NOT modify anything in c_src/.
 
+{MODEL_LIMITS}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

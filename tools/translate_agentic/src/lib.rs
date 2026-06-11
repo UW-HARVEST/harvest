@@ -144,7 +144,17 @@ impl Tool for TranslateAgentic {
         let local_wishlist = translated.join("tool_wishlist.json");
         let translate_prompt = translate_prompt
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
-            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section);
+            .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace(
+                "{MODEL_LIMITS}",
+                &match (agent, &config.model) {
+                    (AgentKind::OpenCode, Some(model)) => {
+                        let limits = agent_runner::load_opencode_model_limits(model)?;
+                        agent_runner::render_model_limits_block(&limits)
+                    }
+                    _ => String::new(),
+                },
+            );
 
         agent_runner::invoke_agent(AgentInvocation {
             phase: AgentPhase::Translate,

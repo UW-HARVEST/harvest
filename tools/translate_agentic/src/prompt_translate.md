@@ -22,6 +22,8 @@ Before doing anything else, you MUST:
 
 ### 0.1 Self-assessment
 
+{MODEL_LIMITS}
+
 Output the following in your first response:
 
 ```

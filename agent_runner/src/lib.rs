@@ -63,6 +63,158 @@ pub struct AgentInvocation<'a> {
     pub output_log_path: Option<&'a Path>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeModelLimits {
+    pub context: u64,
+    pub output: Option<u64>,
+}
+
+pub fn load_opencode_model_limits(
+    model: &str,
+) -> Result<OpenCodeModelLimits, Box<dyn std::error::Error>> {
+    let (provider, id) = parse_opencode_model(model)?;
+    let provider_output = run_opencode_models(Some(&provider))?;
+    if let Some(limits) = extract_model_limits_from_output(&provider_output, &provider, &id) {
+        info!(
+            "Resolved OpenCode model limits from provider listing (provider={provider}, id={id}): context={}, output={:?}",
+            limits.context, limits.output,
+        );
+        return Ok(limits);
+    }
+
+    let all_output = run_opencode_models(None)?;
+    if let Some(limits) = extract_model_limits_from_output(&all_output, &provider, &id) {
+        info!(
+            "Resolved OpenCode model limits from global listing (provider={provider}, id={id}): context={}, output={:?}",
+            limits.context, limits.output,
+        );
+        return Ok(limits);
+    }
+
+    Err(format!(
+        "OpenCode model metadata not found for {model}; run `opencode models --verbose` and verify the model exists with a limit.context field"
+    ).into())
+}
+
+pub fn render_model_limits_block(limits: &OpenCodeModelLimits) -> String {
+    let mut lines = vec![
+        "### Registry context limits".to_string(),
+        format!("context_limit: {}", limits.context),
+    ];
+    if let Some(output) = limits.output {
+        lines.push(format!("output_limit: {output}"));
+    }
+    lines.join("\n")
+}
+
+fn parse_opencode_model(model: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    match model.split_once('/') {
+        Some((provider, id)) if !provider.is_empty() && !id.is_empty() => {
+            Ok((provider.to_string(), id.to_string()))
+        }
+        _ => Err(format!("OpenCode model must be in provider/model format, got: {model}").into()),
+    }
+}
+
+fn run_opencode_models(provider: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    let mut cmd = Command::new("opencode");
+    cmd.arg("models");
+    if let Some(provider) = provider {
+        cmd.arg(provider);
+    }
+    cmd.arg("--verbose");
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "opencode models --verbose failed (status={}): {}",
+            output.status,
+            stderr.trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn extract_model_limits_from_output(
+    output: &str,
+    expected_provider: &str,
+    expected_id: &str,
+) -> Option<OpenCodeModelLimits> {
+    let mut buf: Vec<String> = Vec::new();
+    let mut collecting = false;
+    let mut brace_depth: i32 = 0;
+
+    for raw_line in output.lines() {
+        let trimmed = raw_line.trim();
+        if !collecting {
+            if trimmed.starts_with('{') {
+                buf.clear();
+                buf.push(trimmed.to_string());
+                collecting = true;
+                brace_depth = trimmed.chars().filter(|&c| c == '{').count() as i32
+                    - trimmed.chars().filter(|&c| c == '}').count() as i32;
+                if brace_depth <= 0 {
+                    // Single-line JSON object
+                    collecting = false;
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                        let provider = value
+                            .get("providerID")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let id = value.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        if provider == expected_provider && id == expected_id {
+                            let Some(limit) = value.get("limit") else {
+                                continue;
+                            };
+                            let Some(context) = limit.get("context").and_then(|v| v.as_u64())
+                            else {
+                                continue;
+                            };
+                            let output = limit.get("output").and_then(|v| v.as_u64());
+                            return Some(OpenCodeModelLimits { context, output });
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        buf.push(trimmed.to_string());
+        brace_depth += trimmed.chars().filter(|&c| c == '{').count() as i32
+            - trimmed.chars().filter(|&c| c == '}').count() as i32;
+        if brace_depth > 0 {
+            continue;
+        }
+
+        let joined = buf.join("\n");
+        collecting = false;
+        buf.clear();
+
+        let value = match serde_json::from_str::<serde_json::Value>(&joined) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let provider = value
+            .get("providerID")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let id = value.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if provider == expected_provider && id == expected_id {
+            let Some(limit) = value.get("limit") else {
+                continue;
+            };
+            let Some(context) = limit.get("context").and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            let output = limit.get("output").and_then(|v| v.as_u64());
+            return Some(OpenCodeModelLimits { context, output });
+        }
+    }
+
+    None
+}
+
 pub fn invoke_agent(invocation: AgentInvocation<'_>) -> Result<(), Box<dyn std::error::Error>> {
     prepare_agent_files(&invocation)?;
 
@@ -300,6 +452,8 @@ fn extract_sub_session_ids_from_export(export_json: &serde_json::Value) -> Vec<S
             }
             if let Some(sid) = part
                 .pointer("/state/metadata/sessionID")
+                .or_else(|| part.pointer("/state/metadata/sessionId"))
+                .or_else(|| part.pointer("/state/metadata/session_id"))
                 .and_then(|v| v.as_str())
             {
                 if !sid.is_empty() {
@@ -523,5 +677,44 @@ mod tests {
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("websearch", "deny")));
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("skill", "deny")));
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("bash", "allow")));
+    }
+
+    #[test]
+    fn extract_model_limits_matches_provider_and_id() {
+        let sample = concat!(
+            "opencode-go/mimo-v2.5-pro\n",
+            "{\n",
+            "  \"id\": \"mimo-v2.5-pro\",\n",
+            "  \"providerID\": \"opencode-go\",\n",
+            "  \"name\": \"MiMo V2.5 Pro\",\n",
+            "  \"limit\": {\n",
+            "    \"context\": 1048576,\n",
+            "    \"output\": 128000\n",
+            "  }\n",
+            "}\n",
+        );
+        let limits = extract_model_limits_from_output(sample, "opencode-go", "mimo-v2.5-pro")
+            .expect("limits must be found");
+        assert_eq!(limits.context, 1_048_576);
+        assert_eq!(limits.output, Some(128_000));
+    }
+
+    #[test]
+    fn extract_model_limits_requires_exact_match() {
+        let sample = concat!(
+            "opencode-go/mimo-v2.5-pro\n",
+            "{\n",
+            "  \"id\": \"mimo-v2.5-pro\",\n",
+            "  \"providerID\": \"opencode-go\",\n",
+            "  \"limit\": {\n",
+            "    \"context\": 1048576,\n",
+            "    \"output\": 128000\n",
+            "  }\n",
+            "}\n",
+        );
+        assert!(extract_model_limits_from_output(sample, "opencode-go", "mimo-v2.5").is_none());
+        assert!(
+            extract_model_limits_from_output(sample, "other-provider", "mimo-v2.5-pro").is_none()
+        );
     }
 }

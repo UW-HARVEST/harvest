@@ -12,6 +12,8 @@ This is an EXECUTABLE. Requirements:
 Run 'cargo build --release' and fix any errors until it compiles.
 Do NOT modify anything in c_src/.
 
+{MODEL_LIMITS}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

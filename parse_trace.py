@@ -1526,14 +1526,54 @@ def _format_compact_int(n: int) -> str:
     return str(n)
 
 
+def _sum_subagent_tokens(turns: list[Turn]) -> dict[str, int]:
+    """Recursively sum token usage from all sub-agents in a turn tree.
+
+    Returns a dict with keys: input, output, cache_read, cache_write, total.
+    For sub-agents that only have a flat total_tokens (no per-turn breakdown),
+    the total is counted but input/output/cache are left as 0.
+    """
+    agg = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+
+    for turn in turns:
+        for blk in turn.content_blocks:
+            if blk.type != "tool_use" or not blk.tool_use or not blk.tool_use.subagent:
+                continue
+            sa = blk.tool_use.subagent
+
+            # Prefer per-turn breakdown from the sub-agent's conversation.
+            has_breakdown = False
+            for t in sa.conversation:
+                if t.usage:
+                    agg["input"] += t.usage.input_tokens
+                    agg["output"] += t.usage.output_tokens
+                    agg["cache_read"] += t.usage.cache_read_tokens
+                    agg["cache_write"] += t.usage.cache_creation_tokens
+                    agg["total"] += (
+                        t.usage.input_tokens
+                        + t.usage.output_tokens
+                        + t.usage.cache_read_tokens
+                        + t.usage.cache_creation_tokens
+                    )
+                    has_breakdown = True
+
+            # If no per-turn breakdown, fall back to the flat total.
+            if not has_breakdown and sa.total_tokens:
+                agg["total"] += sa.total_tokens
+
+            # Recurse into nested sub-agents.
+            child = _sum_subagent_tokens(sa.conversation)
+            for k in agg:
+                agg[k] += child[k]
+
+    return agg
+
+
 def _format_session_summary(s: Session, s_idx: int) -> str:
     parts = [f"S{s_idx} {s.phase}:"]
     r = s.result
     if s.agent_type == "opencode":
         parts.append(f"[{s.data_source}]")
-    # Use len(s.conversation) — the actual main-agent turn count we parsed.
-    # `result.num_turns` is a framework-side counter that reports something
-    # different (often only the final wrap-up turns), so don't trust it here.
     parts.append(f"{len(s.conversation)} turns")
     sync_n, async_n = _count_subagents(s.conversation)
     if sync_n or async_n:
@@ -1543,19 +1583,36 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
             parts.append(f"{sync_n} sub-agents")
     if s.compact_events:
         parts.append(f"{len(s.compact_events)} compactions")
-    # Token totals from result.model_usage (input + output across all models).
+    # Token totals: main session + all sub-agents (recursive).
+    in_tok = 0
+    out_tok = 0
+    cache_r = 0
+    cache_c = 0
     if r is not None and r.model_usage:
-        in_tok = sum(mu.input_tokens for mu in r.model_usage.values())
-        out_tok = sum(mu.output_tokens for mu in r.model_usage.values())
-        cache_r = sum(mu.cache_read_tokens for mu in r.model_usage.values())
-        cache_c = sum(mu.cache_creation_tokens for mu in r.model_usage.values())
-        if in_tok or out_tok or cache_r or cache_c:
-            parts.append(
-                f"{_format_compact_int(in_tok + out_tok)} new tok "
-                f"(in={_format_compact_int(in_tok)} out={_format_compact_int(out_tok)} "
-                f"cache_r={_format_compact_int(cache_r)} "
-                f"cache_c={_format_compact_int(cache_c)})"
-            )
+        for mu in r.model_usage.values():
+            in_tok += mu.input_tokens
+            out_tok += mu.output_tokens
+            cache_r += mu.cache_read_tokens
+            cache_c += mu.cache_creation_tokens
+    sub_tok = _sum_subagent_tokens(s.conversation)
+    in_tok += sub_tok["input"]
+    out_tok += sub_tok["output"]
+    cache_r += sub_tok["cache_read"]
+    cache_c += sub_tok["cache_write"]
+    # For sub-agents without per-turn breakdown, their total is in sub_tok["total"]
+    # but not in the per-field sums. Add the remainder to "in_tok" as a fallback
+    # so the total figure is still accurate.
+    accounted = sub_tok["input"] + sub_tok["output"] + sub_tok["cache_read"] + sub_tok["cache_write"]
+    unaccounted_sub = sub_tok["total"] - accounted
+    if unaccounted_sub > 0:
+        in_tok += unaccounted_sub
+    if in_tok or out_tok or cache_r or cache_c:
+        parts.append(
+            f"{_format_compact_int(in_tok + out_tok)} new tok "
+            f"(in={_format_compact_int(in_tok)} out={_format_compact_int(out_tok)} "
+            f"cache_r={_format_compact_int(cache_r)} "
+            f"cache_c={_format_compact_int(cache_c)})"
+        )
     # Use the timestamp-derived wall clock — the only field that matches
     # actual elapsed time. Frame-side `duration_ms` is broken for async
     # sub-agents (only counts main-agent activity, missing idle wait), and
@@ -2081,6 +2138,18 @@ class OpenCodeExportParser:
         # Build result from info-level aggregation
         info_tokens = info.get("tokens", {})
         info_cost = info.get("cost", 0.0)
+        model_info = info.get("model", {})
+        model_id = model_info.get("id", "unknown")
+        model_usage = {}
+        if info_tokens:
+            model_usage[model_id] = ModelUsage(
+                model=model_id,
+                input_tokens=int(info_tokens.get("input", 0)),
+                output_tokens=int(info_tokens.get("output", 0)),
+                cache_read_tokens=int(info_tokens.get("cache", {}).get("read", 0)),
+                cache_creation_tokens=int(info_tokens.get("cache", {}).get("write", 0)),
+                cost_usd=float(info_cost) if info_cost else 0.0,
+            )
         session.result = ResultEvent(
             is_error=False,
             stop_reason="end",
@@ -2089,7 +2158,7 @@ class OpenCodeExportParser:
             duration_api_ms=0,
             total_cost_usd=float(info_cost) if info_cost else 0.0,
             result_text="",
-            model_usage={},
+            model_usage=model_usage,
         )
         return session
 

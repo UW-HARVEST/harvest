@@ -115,11 +115,17 @@ impl Tool for VerifyFixAgentic {
         // Look near the original input dir; the case_dir tempdir does not contain
         // CMakePresets.json because raw_source only mirrors `test_case/` content.
         let test_config = find_test_config(&context.config.input);
+        let workflow_hint = if config.workflow && agent == AgentKind::Claude {
+            "You must use a workflow.\n\n".to_owned()
+        } else {
+            String::new()
+        };
         let prompt = load_verify_prompt(&config, agent)?
             .replace("{CMAKE_BUILD_FLAGS}", &test_config.cmake_flags)
             .replace("{ALL_CONFIGURATIONS}", &render_configurations(&test_config))
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace("{WORKFLOW_HINT}", &workflow_hint)
             .replace(
                 "{MODEL_LIMITS}",
                 &match (agent, &config.model) {
@@ -348,7 +354,7 @@ pub struct Config {
     #[serde(alias = "prompt_claude_verify")]
     pub prompt_verify: Option<PathBuf>,
 
-    /// Agent timeout in seconds. Defaults to 2700 (45 minutes).
+    /// Agent timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
@@ -363,6 +369,11 @@ pub struct Config {
     /// mechanism added in 883e2e2.
     #[serde(default)]
     pub no_plan: bool,
+
+    /// Inject a prompt hint encouraging the agent to use dynamic workflows.
+    /// Only meaningful with no_plan.
+    #[serde(default)]
+    pub workflow: bool,
 
     /// Extra environment variables to inject into the agent process.
     /// Useful for CCR provider API keys, proxy settings, etc.

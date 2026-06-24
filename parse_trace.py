@@ -427,20 +427,35 @@ class TraceParser:
         subagent_map: dict[str, SubAgent] = {}   # tool_use_id -> SubAgent
         task_stack: dict[str, int] = {}        # tool_use_id -> event index
         task_brackets: dict[str, tuple[int, int]] = {}  # tool_use_id -> (start, end)
+        workflow_tasks: dict[str, str] = {}    # task_id -> tool_use_id
+        workflow_progress: dict[str, list[dict]] = defaultdict(list)  # tool_use_id -> progress events
 
         for i, (lineno, obj) in enumerate(events):
             sub = obj.get("subtype")
             if sub == "task_started":
                 tid = obj.get("tool_use_id", "")
+                task_id = obj.get("task_id", "")
                 if tid:
-                    task_stack[tid] = i
-                    subagent_map[tid] = SubAgent(
-                        task_id=obj.get("task_id", ""),
-                        tool_use_id=tid,
-                        description=obj.get("description", ""),
-                        prompt=obj.get("prompt", ""),
-                        status="running",
-                    )
+                    if obj.get("task_type") == "local_workflow":
+                        # Workflow: don't open a bracket (no task_notification).
+                        # Collect progress events and synthesize later.
+                        workflow_tasks[task_id] = tid
+                        subagent_map[tid] = SubAgent(
+                            task_id=task_id,
+                            tool_use_id=tid,
+                            description=obj.get("description", ""),
+                            prompt=obj.get("prompt", ""),
+                            status="running",
+                        )
+                    else:
+                        task_stack[tid] = i
+                        subagent_map[tid] = SubAgent(
+                            task_id=task_id,
+                            tool_use_id=tid,
+                            description=obj.get("description", ""),
+                            prompt=obj.get("prompt", ""),
+                            status="running",
+                        )
             elif sub == "task_notification":
                 tid = obj.get("tool_use_id", "")
                 if tid and tid in task_stack:
@@ -452,6 +467,29 @@ class TraceParser:
                     st.total_tokens = usage.get("total_tokens", 0)
                     st.total_tool_uses = usage.get("tool_uses", 0)
                     st.duration_ms = usage.get("duration_ms", 0)
+            elif sub == "task_progress":
+                tid = obj.get("tool_use_id", "")
+                task_id = obj.get("task_id", "")
+                # Route workflow progress separately from regular sub-agent progress.
+                if task_id in workflow_tasks:
+                    workflow_progress[workflow_tasks[task_id]].append(obj)
+                elif tid and tid in subagent_map:
+                    usage = obj.get("usage", {})
+                    subagent_map[tid].progress_snapshots.append(ProgressSnapshot(
+                        total_tokens=usage.get("total_tokens", 0),
+                        tool_uses=usage.get("tool_uses", 0),
+                        duration_ms=usage.get("duration_ms", 0),
+                        last_tool_name=obj.get("last_tool_name", "") or "",
+                        description=obj.get("description", "") or "",
+                    ))
+            elif sub == "task_updated":
+                task_id = obj.get("task_id", "")
+                if task_id in workflow_tasks:
+                    tid = workflow_tasks[task_id]
+                    if tid in subagent_map:
+                        patch = obj.get("patch", {})
+                        if patch.get("status"):
+                            subagent_map[tid].status = patch["status"]
 
         # Map each event index to the sub-agent tool_use_id it belongs to
         subagent_index: dict[int, str] = {}
@@ -476,17 +514,6 @@ class TraceParser:
                 ))
                 if sub == "init":
                     session.init = self._parse_init(obj)
-                elif sub == "task_progress":
-                    tid = obj.get("tool_use_id", "")
-                    if tid in subagent_map:
-                        usage = obj.get("usage", {})
-                        subagent_map[tid].progress_snapshots.append(ProgressSnapshot(
-                            total_tokens=usage.get("total_tokens", 0),
-                            tool_uses=usage.get("tool_uses", 0),
-                            duration_ms=usage.get("duration_ms", 0),
-                            last_tool_name=obj.get("last_tool_name", "") or "",
-                            description=obj.get("description", "") or "",
-                        ))
                 elif sub == "compact_boundary" and i not in subagent_index:
                     md = obj.get("compact_metadata") or {}
                     session.compact_events.append(CompactEvent(
@@ -563,6 +590,85 @@ class TraceParser:
                 sa.conversation = _synthesize_async_subagent_turns(
                     sa.progress_snapshots
                 )
+
+        # Synthesize workflow sub-agents from task_progress events.
+        # Workflow phases are independent context-isolated agents.  Create one
+        # SubAgent per phase (agent label), each with grey turns (we don't know
+        # the individual tool calls).  Inject synthetic Task ToolUses after the
+        # original Workflow ToolUse so each phase gets its own purple guide line.
+        # The original Workflow ToolUse stays for the purple dispatch bar on T1.
+        for tid, progress_events in workflow_progress.items():
+            if tid not in subagent_map:
+                continue
+            parent_sa = subagent_map[tid]
+            # Inherit description/prompt from the task_started event so tooltips
+            # on the purple bars show meaningful content.
+            parent_desc = parent_sa.description or ""
+            parent_prompt = parent_sa.prompt or ""
+
+            # Group progress events by agent label.
+            agent_groups: dict[str, list[dict]] = defaultdict(list)
+            agent_order: list[str] = []
+            for ev in progress_events:
+                desc = ev.get("description", "") or "workflow-step"
+                if desc not in agent_groups:
+                    agent_order.append(desc)
+                agent_groups[desc].append(ev)
+
+            # Create one SubAgent per workflow agent.
+            # prev_tokens carries across agents because task_progress total_tokens
+            # is cumulative across the entire workflow, not per-agent.
+            wf_subagents: list[tuple[str, SubAgent]] = []
+            prev_tokens = 0
+            for label in agent_order:
+                evts = agent_groups[label]
+                turns, prev_tokens = _synthesize_workflow_agent_turns(evts, prev_tokens)
+                last_usage = evts[-1].get("usage", {}) if evts else {}
+                sa = SubAgent(
+                    task_id=parent_sa.task_id,
+                    tool_use_id=f"{tid}:{label}",
+                    description=label,
+                    prompt=parent_prompt,
+                    status="completed",
+                    conversation=turns,
+                    is_async=True,
+                    total_tokens=last_usage.get("total_tokens", 0),
+                    total_tool_uses=last_usage.get("tool_uses", 0),
+                    duration_ms=last_usage.get("duration_ms", 0),
+                )
+                subagent_map[sa.tool_use_id] = sa
+                wf_subagents.append((label, sa))
+
+            # Inject synthetic Task ToolUses into the parent turn after the
+            # original Workflow ToolUse.  Each Task carries its own SubAgent.
+            # Also patch the Workflow ToolUse input so its tooltip shows
+            # the description and prompt (original input only has "script").
+            # Then remove the parent SubAgent so it doesn't create a phantom
+            # empty sub-agent block with 0 turns.
+            for turn in session.conversation:
+                for blk in turn.content_blocks:
+                    if blk.type == "tool_use" and blk.tool_use and blk.tool_use.id == tid:
+                        # Patch Workflow ToolUse input for tooltip.
+                        if isinstance(blk.tool_use.input, dict):
+                            blk.tool_use.input.setdefault("description", parent_desc)
+                            blk.tool_use.input.setdefault("prompt", parent_prompt)
+                        insert_idx = turn.content_blocks.index(blk) + 1
+                        for j, (label, sa) in enumerate(wf_subagents):
+                            synthetic_tu = ToolUse(
+                                id=sa.tool_use_id,
+                                name="Task",
+                                input={
+                                    "description": label,
+                                    "prompt": parent_prompt,
+                                },
+                            )
+                            synthetic_tu.subagent = sa
+                            turn.content_blocks.insert(
+                                insert_idx + j,
+                                ContentBlock(type="tool_use", tool_use=synthetic_tu),
+                            )
+                        break
+            subagent_map.pop(tid, None)
 
         # Attach SubAgent objects to their parent Agent ToolUse
         self._attach_subagents(session.conversation, subagent_map)
@@ -656,7 +762,7 @@ class TraceParser:
             for block in turn.content_blocks:
                 if block.type == "tool_use" and block.tool_use is not None:
                     tu = block.tool_use
-                    if tu.name.lower() in ("agent", "task") and tu.id in subagent_map:
+                    if tu.name.lower() in ("agent", "task", "workflow") and tu.id in subagent_map:
                         tu.subagent = subagent_map[tu.id]
 
     def _parse_init(self, obj: dict) -> InitEvent:
@@ -727,7 +833,8 @@ def print_session_stats(sessions: list[Session]) -> None:
         main_with_thinking = sum(1 for t in s.conversation if t.thinking_texts)
         main_tool_uses = count_tools_in_conversation(s.conversation)
         agent_calls = [
-            tu for t in s.conversation for tu in t.tool_uses if tu.name.lower() in ("agent", "task")
+            tu for t in s.conversation for tu in t.tool_uses
+            if tu.name.lower() in ("agent", "task") and tu.subagent is not None
         ]
 
         print(f"\n  --- Main conversation ---")
@@ -1233,7 +1340,7 @@ def _classify_tool(tu: ToolUse) -> str:
     if name_lower == "bash":
         cmd = tu.input.get("command", "") if isinstance(tu.input, dict) else ""
         return _classify_bash(cmd)
-    if name_lower in ("agent", "task"):
+    if name_lower in ("agent", "task", "workflow"):
         return CAT_SUBAGENT
     if name_lower in ("todowrite", "lsp"):
         return CAT_OTHER
@@ -1318,6 +1425,73 @@ def _synthesize_async_subagent_turns(
     return turns
 
 
+def _synthesize_workflow_agent_turns(
+    progress_events: list[dict],
+    prev_tokens: int = 0,
+) -> tuple[list[Turn], int]:
+    """Workflow tasks contain multiple sequential agents, each tracked by
+    `task_progress` events.  Build one pseudo-Turn per progress event,
+    using token deltas between consecutive events to approximate work done.
+
+    The `workflow_progress` array in each event contains `workflow_agent`
+    entries with `lastToolName` and `lastToolSummary`, which describe the
+    actual tool the agent was using.  Use these for colorized tool names
+    instead of the generic "Other" fallback.
+
+    `prev_tokens` carries across agents because total_tokens is cumulative
+    across the entire workflow.  Returns (turns, final_prev_tokens).
+    """
+    turns: list[Turn] = []
+    for idx, ev in enumerate(progress_events):
+        usage = ev.get("usage", {})
+        total_tokens = usage.get("total_tokens", 0)
+        token_delta = max(total_tokens - prev_tokens, 0)
+        prev_tokens = total_tokens
+
+        desc = ev.get("description", "") or "workflow-step"
+
+        # Extract phase title and actual tool info from workflow_progress.
+        phase_title = ""
+        tool_name = ""
+        tool_summary = ""
+        for wp in ev.get("workflow_progress") or []:
+            if wp.get("type") == "workflow_phase":
+                phase_title = wp.get("title", "")
+            elif wp.get("type") == "workflow_agent":
+                # Prefer the most recent agent entry's tool info.
+                tn = wp.get("lastToolName", "")
+                ts = wp.get("lastToolSummary", "")
+                if tn:
+                    tool_name = tn
+                if ts:
+                    tool_summary = ts
+
+        label = f"{phase_title}: {desc}" if phase_title and phase_title not in desc else desc
+
+        # Build a ToolUse with the real tool name so _classify_tool assigns
+        # the correct color (Read=blue, Write=green, Bash=build/yellow, etc.).
+        effective_name = tool_name if tool_name else "Other"
+        synthetic_input: dict = {"description": label}
+        if tool_name:
+            if tool_name.lower() == "bash":
+                synthetic_input["command"] = tool_summary
+            elif tool_name.lower() in ("read", "write", "edit"):
+                synthetic_input["file_path"] = tool_summary
+            elif tool_name.lower() in ("glob", "grep"):
+                synthetic_input["pattern"] = tool_summary
+
+        tu = ToolUse(
+            id=f"workflow-step-{idx}",
+            name=effective_name,
+            input=synthetic_input,
+            size_override=token_delta,
+        )
+        turn = Turn(turn_index=len(turns) + 1)
+        turn.content_blocks.append(ContentBlock(type="tool_use", tool_use=tu))
+        turns.append(turn)
+    return turns, prev_tokens
+
+
 def _think_size(turn: Turn) -> int:
     return sum(
         len(b.thinking or "") if b.type == "thinking" else len(b.text or "")
@@ -1373,9 +1547,18 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
         elif name_lower in ("write", "edit"):
             target = ((tu.input.get("file_path") or tu.input.get("filePath") or "") if isinstance(tu.input, dict) else "") or desc_fallback
             tip = f"{tu.name}: {target}"
-        elif name_lower in ("agent", "task"):
-            desc = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
-            prompt_preview = (tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ") if isinstance(tu.input, dict) else "")
+        elif name_lower in ("agent", "task", "workflow"):
+            desc = ""
+            prompt_text = ""
+            result_preview = ""
+            if isinstance(tu.input, dict):
+                desc = tu.input.get("description", "")
+                prompt_text = tu.input.get("prompt", "")
+            # Workflow ToolUse.input has only "script"; fall back to SubAgent.
+            if tu.subagent:
+                desc = desc or tu.subagent.description or ""
+                prompt_text = prompt_text or tu.subagent.prompt or ""
+            prompt_preview = prompt_text[:PREVIEW_SIZE].replace("\n", " ") if prompt_text else ""
             result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
             tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
         else:
@@ -1444,10 +1627,10 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
             sub_idx = 0
             sub_count = sum(
                 1 for tu in t.tool_uses
-                if tu.name.lower() in ("agent", "task") and tu.subagent is not None
+                if tu.name.lower() in ("agent", "task", "workflow") and tu.subagent is not None
             )
             for tu in t.tool_uses:
-                if tu.name.lower() in ("agent", "task") and tu.subagent:
+                if tu.name.lower() in ("agent", "task", "workflow") and tu.subagent:
                     sub_idx += 1
                     sub_prefix = f"{prefix}T{t.turn_index}/A{sub_idx}:"
                     grp_start = len(rows)
@@ -1529,11 +1712,13 @@ def _format_compact_int(n: int) -> str:
 def _sum_subagent_tokens(turns: list[Turn]) -> dict[str, int]:
     """Recursively sum token usage from all sub-agents in a turn tree.
 
-    Returns a dict with keys: input, output, cache_read, cache_write, total.
-    For sub-agents that only have a flat total_tokens (no per-turn breakdown),
-    the total is counted but input/output/cache are left as 0.
+    Returns a dict with keys: input, output, cache_read, cache_write, total, unclassified.
+    - input/output/cache_read/cache_write: tokens from sub-agents that have per-turn
+      breakdown (OpenCode exports).
+    - unclassified: flat total_tokens from sub-agents without breakdown (Claude).
+    - total: sum of all tokens regardless of classification.
     """
-    agg = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+    agg = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0, "unclassified": 0}
 
     for turn in turns:
         for blk in turn.content_blocks:
@@ -1549,23 +1734,18 @@ def _sum_subagent_tokens(turns: list[Turn]) -> dict[str, int]:
                     agg["output"] += t.usage.output_tokens
                     agg["cache_read"] += t.usage.cache_read_tokens
                     agg["cache_write"] += t.usage.cache_creation_tokens
-                    agg["total"] += (
-                        t.usage.input_tokens
-                        + t.usage.output_tokens
-                        + t.usage.cache_read_tokens
-                        + t.usage.cache_creation_tokens
-                    )
                     has_breakdown = True
 
-            # If no per-turn breakdown, fall back to the flat total.
+            # If no per-turn breakdown, count as unclassified.
             if not has_breakdown and sa.total_tokens:
-                agg["total"] += sa.total_tokens
+                agg["unclassified"] += sa.total_tokens
 
             # Recurse into nested sub-agents.
             child = _sum_subagent_tokens(sa.conversation)
             for k in agg:
                 agg[k] += child[k]
 
+    agg["total"] = agg["input"] + agg["output"] + agg["cache_read"] + agg["cache_write"] + agg["unclassified"]
     return agg
 
 
@@ -1583,7 +1763,7 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
             parts.append(f"{sync_n} sub-agents")
     if s.compact_events:
         parts.append(f"{len(s.compact_events)} compactions")
-    # Token totals: main session + all sub-agents (recursive).
+    # Token totals: main session + classified sub-agent tokens.
     in_tok = 0
     out_tok = 0
     cache_r = 0
@@ -1599,19 +1779,18 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
     out_tok += sub_tok["output"]
     cache_r += sub_tok["cache_read"]
     cache_c += sub_tok["cache_write"]
-    # For sub-agents without per-turn breakdown, their total is in sub_tok["total"]
-    # but not in the per-field sums. Add the remainder to "in_tok" as a fallback
-    # so the total figure is still accurate.
-    accounted = sub_tok["input"] + sub_tok["output"] + sub_tok["cache_read"] + sub_tok["cache_write"]
-    unaccounted_sub = sub_tok["total"] - accounted
-    if unaccounted_sub > 0:
-        in_tok += unaccounted_sub
+    # Main + classified sub-agent tokens.
     if in_tok or out_tok or cache_r or cache_c:
         parts.append(
             f"{_format_compact_int(in_tok + out_tok)} new tok "
             f"(in={_format_compact_int(in_tok)} out={_format_compact_int(out_tok)} "
             f"cache_r={_format_compact_int(cache_r)} "
             f"cache_c={_format_compact_int(cache_c)})"
+        )
+    # Unclassified sub-agent tokens (Claude: no per-turn breakdown available).
+    if sub_tok["unclassified"] > 0:
+        parts.append(
+            f"+{_format_compact_int(sub_tok['unclassified'])} sub-agent tok (mixed)"
         )
     # Use the timestamp-derived wall clock — the only field that matches
     # actual elapsed time. Frame-side `duration_ms` is broken for async
@@ -1628,7 +1807,10 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
     elif r is not None and r.duration_ms:
         parts.append(_format_duration(r.duration_ms))
     if r is not None and r.total_cost_usd:
-        parts.append(f"${r.total_cost_usd:.2f}")
+        cost_label = f"${r.total_cost_usd:.2f}"
+        if sub_tok["unclassified"] > 0:
+            cost_label += " (main only)"
+        parts.append(cost_label)
     if r is not None and r.is_error:
         parts.append(f"⚠ stop={r.stop_reason}")
     return "   ".join(parts)
@@ -1664,7 +1846,8 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         row_heights.append(h)
         cursor += h
     total_rows_height = cursor - pad_top
-    height = pad_top + total_rows_height + pad_bottom
+    grand_total_extra = (row_h + 12) if len(sessions) > 1 else 0
+    height = pad_top + total_rows_height + grand_total_extra + pad_bottom
     width = label_w + max_depth * indent_px + bar_inset + bar_w + 40
 
     out: list[str] = []
@@ -1725,14 +1908,17 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         if grp.tool_use is not None:
             tu = grp.tool_use
             size = _tool_size(tu)
-            desc = tu.input.get("description", "") if isinstance(tu.input, dict) else ""
-            prompt_preview = (
-                tu.input.get("prompt", "")[:PREVIEW_SIZE].replace("\n", " ")
-                if isinstance(tu.input, dict) else ""
-            )
-            result_preview = (
-                tu.result.content[:PREVIEW_SIZE] if tu.result else ""
-            ).replace("\n", " ")
+            desc = ""
+            prompt_text = ""
+            result_preview = ""
+            if isinstance(tu.input, dict):
+                desc = tu.input.get("description", "")
+                prompt_text = tu.input.get("prompt", "")
+            if tu.subagent:
+                desc = desc or tu.subagent.description or ""
+                prompt_text = prompt_text or tu.subagent.prompt or ""
+            prompt_preview = prompt_text[:PREVIEW_SIZE].replace("\n", " ") if prompt_text else ""
+            result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
             tooltip_lines.append(f"{CAT_SUBAGENT}: {size:,} chars")
             tooltip_lines.append(f"[task] {desc}")
             tooltip_lines.append(f"[prompt] {prompt_preview}")
@@ -1846,6 +2032,60 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             x += w
             if i < len(row.segments) - 1:
                 x += seg_gap
+
+    # Grand total across all sessions.
+    if len(sessions) > 1:
+        grand_in = 0
+        grand_out = 0
+        grand_cache_r = 0
+        grand_cache_c = 0
+        grand_unc = 0
+        grand_cost = 0.0
+        for s in sessions:
+            r = s.result
+            if r is not None and r.model_usage:
+                for mu in r.model_usage.values():
+                    grand_in += mu.input_tokens
+                    grand_out += mu.output_tokens
+                    grand_cache_r += mu.cache_read_tokens
+                    grand_cache_c += mu.cache_creation_tokens
+            if r is not None:
+                grand_cost += r.total_cost_usd
+            sub = _sum_subagent_tokens(s.conversation)
+            grand_in += sub["input"]
+            grand_out += sub["output"]
+            grand_cache_r += sub["cache_read"]
+            grand_cache_c += sub["cache_write"]
+            grand_unc += sub["unclassified"]
+        grand_y = cursor + 6
+        grand_text = (
+            f"Grand total: "
+            f"{_format_compact_int(grand_in + grand_out)} new tok "
+            f"(in={_format_compact_int(grand_in)} out={_format_compact_int(grand_out)} "
+            f"cache_r={_format_compact_int(grand_cache_r)} "
+            f"cache_c={_format_compact_int(grand_cache_c)})"
+        )
+        if grand_unc > 0:
+            grand_text += f"   +{_format_compact_int(grand_unc)} sub-agent tok (mixed)"
+        if grand_cost > 0:
+            grand_cost_label = f"   ${grand_cost:.2f}"
+            has_unclassified = any(
+                _sum_subagent_tokens(s.conversation)["unclassified"] > 0 for s in sessions
+            )
+            if has_unclassified:
+                grand_cost_label += " (main only)"
+            grand_text += grand_cost_label
+        band_x = label_w
+        band_w = width - band_x - 40
+        out.append(
+            f'<rect x="{band_x}" y="{grand_y}" width="{band_w}" '
+            f'height="{row_h}" fill="#2a2f3a" stroke="{_GRID}" stroke-width="0.5"/>'
+        )
+        out.append(
+            f'<text x="{band_x + 8}" y="{grand_y + 11}" '
+            f'fill="{_TITLE}" font-size="11" font-weight="bold">'
+            f'{html.escape(grand_text)}</text>'
+        )
 
     out.append('</svg>')
     return "\n".join(out)

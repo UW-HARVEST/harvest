@@ -46,6 +46,12 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub no_plan: bool,
 
+    /// Inject a prompt hint encouraging the agent to use dynamic workflows
+    /// (Claude Code's multi-agent orchestration feature). Only meaningful with
+    /// --no-plan; requires --agentic and --agentic-agent claude.
+    #[arg(long, requires = "no_plan")]
+    pub workflow: bool,
+
     /// Provide the agent with pre-built analysis tools (c_sandbox, symbol_diff).
     /// Only meaningful when --agentic is set.
     #[arg(long, requires = "agentic")]

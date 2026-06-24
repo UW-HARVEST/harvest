@@ -2,6 +2,7 @@
 Translate the C code in c_src/ to Rust that produces **byte-identical output** for the same inputs.
 Write Cargo.toml and src/ files in the current directory (NOT in c_src/).
 
+{WORKFLOW_HINT}
 **CRITICAL CONSTRAINT: Pure Rust Translation Only**
 
 You MUST faithfully translate ALL C source files to **pure Rust**. Do NOT use

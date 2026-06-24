@@ -142,9 +142,15 @@ impl Tool for TranslateAgentic {
         // can write to it without any special permissions. We inject the absolute
         // path into the prompt so the agent knows exactly where to append entries.
         let local_wishlist = translated.join("tool_wishlist.json");
+        let workflow_hint = if config.workflow && agent == AgentKind::Claude {
+            "You must use a workflow.\n\n".to_owned()
+        } else {
+            String::new()
+        };
         let translate_prompt = translate_prompt
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace("{WORKFLOW_HINT}", &workflow_hint)
             .replace(
                 "{MODEL_LIMITS}",
                 &match (agent, &config.model) {
@@ -369,7 +375,7 @@ pub struct Config {
     #[serde(alias = "prompt_claude_translate")]
     pub prompt_translate: Option<PathBuf>,
 
-    /// Agent timeout in seconds. Defaults to 1800 (30 minutes).
+    /// Agent timeout in seconds.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
@@ -385,6 +391,11 @@ pub struct Config {
     /// mechanism added in 883e2e2.
     #[serde(default)]
     pub no_plan: bool,
+
+    /// Inject a prompt hint encouraging the agent to use dynamic workflows
+    /// (Claude Code's multi-agent orchestration). Only meaningful with no_plan.
+    #[serde(default)]
+    pub workflow: bool,
 
     /// Extra environment variables to inject into the agent process.
     /// Useful for CCR provider API keys, proxy settings, etc.

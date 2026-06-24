@@ -154,6 +154,7 @@ pub fn run_all_benchmarks(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    workflow: bool,
     wait_until: Option<u64>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
@@ -177,6 +178,7 @@ pub fn run_all_benchmarks(
             agent_tools,
             agentic_model,
             no_plan,
+            workflow,
             wait_until,
         );
 
@@ -269,6 +271,7 @@ fn benchmark_single_program(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    workflow: bool,
     wait_until: Option<u64>,
 ) -> ProgramEvalStats {
     let program_name = program_dir
@@ -371,6 +374,10 @@ fn benchmark_single_program(
         if no_plan {
             effective_overrides.push("tools.translate_agentic.no_plan=true".to_owned());
             effective_overrides.push("tools.verify_fix_agentic.no_plan=true".to_owned());
+        }
+        if workflow {
+            effective_overrides.push("tools.translate_agentic.workflow=true".to_owned());
+            effective_overrides.push("tools.verify_fix_agentic.workflow=true".to_owned());
         }
         if let Some(ts) = wait_until {
             effective_overrides.push(format!("tools.verify_fix_agentic.wait_until={ts}"));
@@ -607,6 +614,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agent_tools,
         args.agentic_model.as_deref(),
         args.no_plan,
+        args.workflow,
         args.wait_until,
     )?;
     let csv_output_path = args.output_dir.join("results.csv");

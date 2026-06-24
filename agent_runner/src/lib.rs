@@ -72,20 +72,22 @@ pub struct OpenCodeModelLimits {
 pub fn load_opencode_model_limits(
     model: &str,
 ) -> Result<OpenCodeModelLimits, Box<dyn std::error::Error>> {
-    let (provider, id) = parse_opencode_model(model)?;
+    let (provider, metadata_id) = parse_opencode_model(model)?;
     let provider_output = run_opencode_models(Some(&provider))?;
-    if let Some(limits) = extract_model_limits_from_output(&provider_output, &provider, &id) {
+    if let Some(limits) =
+        extract_model_limits_from_output(&provider_output, &provider, &metadata_id)
+    {
         info!(
-            "Resolved OpenCode model limits from provider listing (provider={provider}, id={id}): context={}, output={:?}",
+            "Resolved OpenCode model limits from provider listing (provider={provider}, id={metadata_id}): context={}, output={:?}",
             limits.context, limits.output,
         );
         return Ok(limits);
     }
 
     let all_output = run_opencode_models(None)?;
-    if let Some(limits) = extract_model_limits_from_output(&all_output, &provider, &id) {
+    if let Some(limits) = extract_model_limits_from_output(&all_output, &provider, &metadata_id) {
         info!(
-            "Resolved OpenCode model limits from global listing (provider={provider}, id={id}): context={}, output={:?}",
+            "Resolved OpenCode model limits from global listing (provider={provider}, id={metadata_id}): context={}, output={:?}",
             limits.context, limits.output,
         );
         return Ok(limits);
@@ -108,9 +110,14 @@ pub fn render_model_limits_block(limits: &OpenCodeModelLimits) -> String {
 }
 
 fn parse_opencode_model(model: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    // Split "provider/id" or "provider/id:suffix"
+    // The colon suffix (e.g. ":floor") is a provider-specific routing hint
+    // that must be passed to OpenCode as-is, but stripped when matching
+    // model metadata (limit.context etc.) from the registry.
     match model.split_once('/') {
-        Some((provider, id)) if !provider.is_empty() && !id.is_empty() => {
-            Ok((provider.to_string(), id.to_string()))
+        Some((provider, raw_id)) if !provider.is_empty() && !raw_id.is_empty() => {
+            let metadata_id = raw_id.split_once(':').map(|(id, _)| id).unwrap_or(raw_id);
+            Ok((provider.to_string(), metadata_id.to_string()))
         }
         _ => Err(format!("OpenCode model must be in provider/model format, got: {model}").into()),
     }
@@ -318,7 +325,8 @@ fn invoke_claude(
         format!(
             "set -o pipefail; timeout {} claude -p \"$PROMPT\" \
              {model_flag}\
-             --allowedTools 'Bash(*)' 'Write' 'Edit' \
+             --allowed-tools 'Bash(*)' 'Write' 'Edit' \
+             --dangerously-skip-permissions \
              {append_sys_flag}\
              --max-turns 1000 \
              --output-format stream-json --verbose \
@@ -716,5 +724,17 @@ mod tests {
         assert!(
             extract_model_limits_from_output(sample, "other-provider", "mimo-v2.5-pro").is_none()
         );
+    }
+
+    #[test]
+    fn parse_opencode_model_strips_colon_suffix() {
+        let (provider, metadata_id) =
+            parse_opencode_model("openrouter/xiaomi/mimo-v2.5-pro:floor").unwrap();
+        assert_eq!(provider, "openrouter");
+        assert_eq!(metadata_id, "xiaomi/mimo-v2.5-pro");
+
+        let (provider, metadata_id) = parse_opencode_model("opencode-go/deepseek-v4-pro").unwrap();
+        assert_eq!(provider, "opencode-go");
+        assert_eq!(metadata_id, "deepseek-v4-pro");
     }
 }

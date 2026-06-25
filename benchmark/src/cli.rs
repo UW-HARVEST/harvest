@@ -9,13 +9,39 @@ use std::path::PathBuf;
 pub struct Args {
     /// Input directory containing subdirectories with benchmarks
     #[arg(
+        required_unless_present = "test",
         help = "Path to the directory containing example subdirectories (each with test_case/ and test_vectors/)"
     )]
-    pub input_dir: PathBuf,
+    pub input_dir: Option<PathBuf>,
 
     /// Output directory where the translated Rust projects will be written
-    #[arg(help = "Path to the output directory for all translated Rust projects")]
-    pub output_dir: PathBuf,
+    #[arg(
+        required_unless_present = "test",
+        help = "Path to the output directory for all translated Rust projects"
+    )]
+    pub output_dir: Option<PathBuf>,
+
+    /// Test an already-translated output directory without running translation.
+    /// Accepts either an output root containing program subdirectories, or one
+    /// translated program directory with Cargo.toml, runner/, and test_vectors/.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "modular",
+            "agentic",
+            "agentic_verify",
+            "agentic_agent",
+            "agentic_model",
+            "no_plan",
+            "workflow",
+            "agent_tools",
+            "config",
+            "wait_until",
+            "input_dir",
+            "output_dir"
+        ]
+    )]
+    pub test: Option<PathBuf>,
 
     /// Use modular translation rather than standard all-at-once translation.
     #[arg(long, conflicts_with = "agentic")]

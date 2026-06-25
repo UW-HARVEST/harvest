@@ -89,16 +89,21 @@ pub fn run_library_validation(
     cargo.ensure_cdylib();
     cargo.save()?;
 
-    // Copy runner directory for cando2 testing
-    cargo_utils::copy_directory_recursive(&input_dir.join("runner"), &output_dir.join("runner"))
+    // Copy runner/test vectors from the original test case unless this is a
+    // test-only rerun of an already-translated output directory.
+    if input_dir != output_dir {
+        cargo_utils::copy_directory_recursive(
+            &input_dir.join("runner"),
+            &output_dir.join("runner"),
+        )
         .map_err(|e| format!("Failed to copy runner directory: {}", e))?;
 
-    // Copy test_vectors directory
-    cargo_utils::copy_directory_recursive(
-        &input_dir.join("test_vectors"),
-        &output_dir.join("test_vectors"),
-    )
-    .map_err(|e| format!("Failed to copy test_vectors directory: {}", e))?;
+        cargo_utils::copy_directory_recursive(
+            &input_dir.join("test_vectors"),
+            &output_dir.join("test_vectors"),
+        )
+        .map_err(|e| format!("Failed to copy test_vectors directory: {}", e))?;
+    }
 
     // Rebuild to generate cdylib
     log::info!("Rebuilding project as cdylib...");
@@ -132,7 +137,13 @@ pub fn run_library_validation(
     log::info!("Runner binary located at: {}", runner_bin.display());
 
     // Run tests
-    run_test_suite(&runner_bin, &ld_library_path, test_cases, timeout)
+    run_test_suite(
+        &runner_bin,
+        output_dir,
+        &ld_library_path,
+        test_cases,
+        timeout,
+    )
 }
 
 /// Locates the compiled shared library artifact in the target directory.
@@ -448,7 +459,7 @@ fn locate_runner_binary(runner_dir: &Path, runner_target_dir: &Path) -> HarvestR
 ///
 /// # Process
 /// For each test case:
-/// 1. Spawn runner with: `runner lib -c <test_case.json>`
+/// 1. Spawn runner with cando2 0.2.x CLI: `runner -t <root> -v <vector> --rust lib`
 /// 2. Set environment: RUST_ARTIFACTS=1, LD_LIBRARY_PATH
 /// 3. Apply timeout
 /// 4. Validate exit code (success = test passed)
@@ -463,6 +474,7 @@ fn locate_runner_binary(runner_dir: &Path, runner_target_dir: &Path) -> HarvestR
 /// Tuple of (test_results, error_messages, passed_count)
 pub fn run_test_suite(
     runner_bin: &Path,
+    test_root: &Path,
     ld_library_path: &str,
     test_cases: &[TestCase],
     timeout: u64,
@@ -495,8 +507,13 @@ pub fn run_test_suite(
             test_cases.len()
         );
 
-        let result =
-            run_single_library_test(runner_bin, test_case, ld_library_path, timeout_duration);
+        let result = run_single_library_test(
+            runner_bin,
+            test_root,
+            test_case,
+            ld_library_path,
+            timeout_duration,
+        );
 
         match result {
             Ok(output) if output.status.success() => {
@@ -537,29 +554,36 @@ pub fn run_test_suite(
 /// Runs a single library test case.
 ///
 /// Spawns the runner process with appropriate environment variables and applies a timeout.
-/// The runner is invoked with: `runner lib -c <test_case.json>`
+/// The runner is invoked with cando2 0.2.x CLI:
+/// `runner -t <test_root> -v test_vectors/<case>.json --rust lib`.
+///
+/// Older benchmark code used `runner lib -c <case>`, but cando2 0.2.x treats
+/// vector selection as a global option before the `lib` subcommand.
 ///
 /// # Environment Variables
 /// - `RUST_ARTIFACTS=1`: Tells cando2 to load Rust-compiled libraries
 /// - Library search path variable (`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PATH` depending on platform)
 fn run_single_library_test(
     runner_bin: &Path,
+    test_root: &Path,
     test_case: &TestCase,
     ld_library_path: &str,
     timeout: Duration,
 ) -> HarvestResult<Output> {
-    let runner_dir = runner_bin.parent().ok_or_else(|| {
-        format!(
-            "Runner binary path has no parent directory: {}",
-            runner_bin.display()
-        )
-    })?;
+    let runner_dir = test_root.join("runner");
+    let test_root_abs = test_root
+        .canonicalize()
+        .unwrap_or_else(|_| test_root.to_path_buf());
+    let vector_path = &test_case.filename;
 
     let mut cmd = Command::new(runner_bin);
-    cmd.arg("lib")
-        .arg("-c")
-        .arg(&test_case.filename)
-        .current_dir(runner_dir)
+    cmd.arg("-t")
+        .arg(&test_root_abs)
+        .arg("-v")
+        .arg(vector_path)
+        .arg("--rust")
+        .arg("lib")
+        .current_dir(&runner_dir)
         .env(RUST_ARTIFACTS_ENV, "1")
         .env(LD_LIBRARY_PATH_ENV, ld_library_path)
         .stdin(Stdio::piped())

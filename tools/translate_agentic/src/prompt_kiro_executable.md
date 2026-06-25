@@ -14,6 +14,8 @@ Do NOT modify anything in c_src/.
 
 {MODEL_LIMITS}
 
+{RUST_TOOLCHAIN_CONTEXT}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

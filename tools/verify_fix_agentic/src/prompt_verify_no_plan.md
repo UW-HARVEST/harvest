@@ -50,6 +50,8 @@ on any single step.
 
 {MODEL_LIMITS}
 
+{RUST_TOOLCHAIN_CONTEXT}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

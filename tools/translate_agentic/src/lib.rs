@@ -142,6 +142,8 @@ impl Tool for TranslateAgentic {
         // can write to it without any special permissions. We inject the absolute
         // path into the prompt so the agent knows exactly where to append entries.
         let local_wishlist = translated.join("tool_wishlist.json");
+        let rust_toolchain_context =
+            agent_runner::detect_rust_toolchain_context(&context.config.input)?;
         let workflow_hint = if config.workflow && agent == AgentKind::Claude {
             "You must use a workflow.\n\n".to_owned()
         } else {
@@ -150,6 +152,10 @@ impl Tool for TranslateAgentic {
         let translate_prompt = translate_prompt
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace(
+                "{RUST_TOOLCHAIN_CONTEXT}",
+                &rust_toolchain_context.prompt_block,
+            )
             .replace("{WORKFLOW_HINT}", &workflow_hint)
             .replace(
                 "{MODEL_LIMITS}",
@@ -172,6 +178,7 @@ impl Tool for TranslateAgentic {
             no_plan,
             extra_env: &config.env,
             output_log_path: config.output_log_path.as_deref(),
+            rust_toolchain: Some(&rust_toolchain_context.required_version),
         })?;
 
         // Copy the wishlist out before the tempdir is dropped.

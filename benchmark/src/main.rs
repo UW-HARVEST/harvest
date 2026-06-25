@@ -506,13 +506,13 @@ fn main() -> HarvestResult<()> {
     set_user_only_umask();
     let args = Args::parse();
 
-    // Validate input directory exists
-    validate_input_directory(&args.input_dir)?;
-
-    // Create output directory if it doesn't exist
-    ensure_output_directory(&args.output_dir)?;
-
-    let log_file = File::create(args.output_dir.join("output.log"))?;
+    let log_root = args
+        .test
+        .as_ref()
+        .or(args.output_dir.as_ref())
+        .expect("clap requires either --test or output_dir");
+    ensure_output_directory(log_root)?;
+    let log_file = File::create(log_root.join("output.log"))?;
     TeeLogger::init(log::LevelFilter::Info, log_file)?;
     log::info!("Harvest version: {}", get_version());
     run(args)
@@ -559,10 +559,172 @@ fn apply_regex_filter(
     Ok(())
 }
 
+fn translated_program_dirs(path: &Path) -> HarvestResult<Vec<PathBuf>> {
+    if path.join("Cargo.toml").exists() && path.join("test_vectors").is_dir() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let path = entry?.path();
+        if path.is_dir() && path.join("Cargo.toml").exists() && path.join("test_vectors").is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    Ok(dirs)
+}
+
+fn test_existing_program(program_dir: &Path, timeout: u64) -> ProgramEvalStats {
+    let program_name = program_dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let mut result = ProgramEvalStats::new(&program_name);
+    result.translation_success = true;
+
+    log::info!("Testing translated program: {}", program_name);
+    log::info!("Program directory: {}", program_dir.display());
+
+    let test_vectors_dir = program_dir.join("test_vectors");
+    let test_cases = match parse_test_vectors(&test_vectors_dir) {
+        Ok(vectors) => vectors,
+        Err(e) => {
+            result.error_message = Some(e.to_string());
+            return result;
+        }
+    };
+    result.total_tests = test_cases.len();
+
+    let (test_results, error_messages) = if program_dir.join("runner").is_dir() {
+        match harness::library::run_library_validation(
+            &program_name,
+            program_dir,
+            program_dir,
+            &test_cases,
+            timeout,
+        ) {
+            Ok(r) => {
+                result.rust_build_success = true;
+                r
+            }
+            Err(e) => {
+                result.rust_build_success = false;
+                result.error_message = Some(format!("Library validation failed: {e}"));
+                return result;
+            }
+        }
+    } else {
+        let output = std::process::Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .current_dir(program_dir)
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                result.rust_build_success = true;
+                let binary_path = program_dir.join("target/release/driver");
+                if !binary_path.exists() {
+                    result.error_message = Some(format!(
+                        "Built executable project but driver binary was not found at {}",
+                        binary_path.display()
+                    ));
+                    return result;
+                }
+                run_test_validation(&binary_path, &test_cases, timeout, program_dir)
+            }
+            Ok(output) => {
+                result.rust_build_success = false;
+                result.error_message = Some(format!(
+                    "cargo build --release failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+                return result;
+            }
+            Err(e) => {
+                result.rust_build_success = false;
+                result.error_message = Some(format!("Failed to run cargo build: {e}"));
+                return result;
+            }
+        }
+    };
+
+    result.passed_tests = test_results
+        .iter()
+        .filter(|t| t.passed && !t.skipped)
+        .count();
+    result.skipped_tests = test_results.iter().filter(|t| t.skipped).count();
+    result.test_results = test_results;
+
+    if !error_messages.is_empty() {
+        let error_file_path = program_dir.join("results.err");
+        if let Err(e) = write_error_file(&error_file_path, &error_messages) {
+            log::info!("Warning: Failed to write error file: {}", e);
+        }
+    }
+
+    result
+}
+
+fn run_test_only(
+    test_path: &Path,
+    timeout: u64,
+    filter: Option<&str>,
+    exclude: Option<&str>,
+) -> HarvestResult<Vec<ProgramEvalStats>> {
+    validate_input_directory(test_path)?;
+    let mut program_dirs = translated_program_dirs(test_path)?;
+    if let Some(filter_pattern) = filter {
+        apply_regex_filter(&mut program_dirs, filter_pattern, true, "Filter")?;
+    }
+    if let Some(exclude_pattern) = exclude {
+        apply_regex_filter(&mut program_dirs, exclude_pattern, false, "Exclude")?;
+    }
+    log_found_programs(&program_dirs, test_path)?;
+    Ok(program_dirs
+        .iter()
+        .map(|program_dir| test_existing_program(program_dir, timeout))
+        .collect())
+}
+
 fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
-    log::info!("Input directory: {}", args.input_dir.display());
-    log::info!("Output directory: {}", args.output_dir.display());
+
+    if let Some(test_path) = &args.test {
+        log::info!("Test-only mode: {}", test_path.display());
+        let results = run_test_only(
+            test_path,
+            args.timeout,
+            args.filter.as_deref(),
+            args.exclude.as_deref(),
+        )?;
+        let csv_output_path = test_path.join("results.csv");
+        write_csv_results(&csv_output_path, &results)?;
+        let summary_stats = SummaryStats::from_results(&results);
+        log_summary_stats(&summary_stats);
+        log::info!("\nOutput Files:");
+        log::info!("  Tested translated projects: {}", test_path.display());
+        log::info!("  CSV results: {}", csv_output_path.display());
+        log::info!("  Error logs: results.err files in each translated project directory");
+        log_failing_programs(&results);
+        log::info!("\nTest-only processing complete.");
+        return Ok(());
+    }
+
+    let input_dir = args
+        .input_dir
+        .as_ref()
+        .expect("clap requires input_dir unless --test is used");
+    let output_dir = args
+        .output_dir
+        .as_ref()
+        .expect("clap requires output_dir unless --test is used");
+
+    validate_input_directory(input_dir)?;
+    ensure_output_directory(output_dir)?;
+
+    log::info!("Input directory: {}", input_dir.display());
+    log::info!("Output directory: {}", output_dir.display());
     log::info!(
         "Using {} Translation",
         if args.modular {
@@ -576,10 +738,10 @@ fn run(args: Args) -> HarvestResult<()> {
 
     // Get the programs to evaluate.
     // If the input itself is a single test case root, run just that; otherwise, run children.
-    let mut program_dirs = if parse_benchmark_dir(&args.input_dir).is_ok() {
-        vec![args.input_dir.clone()]
+    let mut program_dirs = if parse_benchmark_dir(input_dir).is_ok() {
+        vec![input_dir.clone()]
     } else {
-        collect_program_dirs(&args.input_dir)?
+        collect_program_dirs(input_dir)?
     };
 
     if let Some(filter_pattern) = &args.filter {
@@ -590,7 +752,7 @@ fn run(args: Args) -> HarvestResult<()> {
         apply_regex_filter(&mut program_dirs, exclude_pattern, false, "Exclude")?;
     }
 
-    log_found_programs(&program_dirs, &args.input_dir)?;
+    log_found_programs(&program_dirs, input_dir)?;
 
     // Process all programs
     let agentic_agent = args
@@ -604,7 +766,7 @@ fn run(args: Args) -> HarvestResult<()> {
         });
     let results = run_all_benchmarks(
         &program_dirs,
-        &args.output_dir,
+        output_dir,
         &args.config,
         args.timeout,
         args.modular,
@@ -617,14 +779,14 @@ fn run(args: Args) -> HarvestResult<()> {
         args.workflow,
         args.wait_until,
     )?;
-    let csv_output_path = args.output_dir.join("results.csv");
+    let csv_output_path = output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;
 
     let summary_stats = SummaryStats::from_results(&results);
     log_summary_stats(&summary_stats);
 
     log::info!("\nOutput Files:");
-    log::info!("  Translated projects: {}", args.output_dir.display());
+    log::info!("  Translated projects: {}", output_dir.display());
     log::info!("  CSV results: {}", csv_output_path.display());
     log::info!("  Error logs: results.err files in each translated project directory");
 
@@ -635,7 +797,7 @@ fn run(args: Args) -> HarvestResult<()> {
         "\nProcessing complete! Check the CSV file and individual project directories for detailed results."
     );
 
-    cleanup_benchmarks(&results, &args.output_dir);
+    cleanup_benchmarks(&results, output_dir);
 
     Ok(())
 }

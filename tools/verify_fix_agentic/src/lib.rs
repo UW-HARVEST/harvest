@@ -111,6 +111,8 @@ impl Tool for VerifyFixAgentic {
         // The wishlist file lives inside translated_rust/ so the agent can write to it
         // without any special permissions. The absolute path is injected into the prompt.
         let local_wishlist = translated.join("tool_wishlist.json");
+        let rust_toolchain_context =
+            agent_runner::detect_rust_toolchain_context(&context.config.input)?;
 
         // Look near the original input dir; the case_dir tempdir does not contain
         // CMakePresets.json because raw_source only mirrors `test_case/` content.
@@ -125,6 +127,10 @@ impl Tool for VerifyFixAgentic {
             .replace("{ALL_CONFIGURATIONS}", &render_configurations(&test_config))
             .replace("{WISHLIST_PATH}", &local_wishlist.to_string_lossy())
             .replace("{AGENT_TOOLS_SECTION}", &agent_tools_section)
+            .replace(
+                "{RUST_TOOLCHAIN_CONTEXT}",
+                &rust_toolchain_context.prompt_block,
+            )
             .replace("{WORKFLOW_HINT}", &workflow_hint)
             .replace(
                 "{MODEL_LIMITS}",
@@ -157,6 +163,7 @@ impl Tool for VerifyFixAgentic {
             no_plan: config.no_plan,
             extra_env: &config.env,
             output_log_path: config.output_log_path.as_deref(),
+            rust_toolchain: Some(&rust_toolchain_context.required_version),
         })?;
         info!("Verification complete");
 

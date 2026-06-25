@@ -2,7 +2,7 @@ use harvest_core::config::AgentKind;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use tracing::{info, warn};
 
@@ -61,6 +61,13 @@ pub struct AgentInvocation<'a> {
     pub no_plan: bool,
     pub extra_env: &'a HashMap<String, String>,
     pub output_log_path: Option<&'a Path>,
+    pub rust_toolchain: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustToolchainContext {
+    pub required_version: String,
+    pub prompt_block: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +114,150 @@ pub fn render_model_limits_block(limits: &OpenCodeModelLimits) -> String {
         lines.push(format!("output_limit: {output}"));
     }
     lines.join("\n")
+}
+
+pub fn detect_rust_toolchain_context(
+    input_path: &Path,
+) -> Result<RustToolchainContext, Box<dyn std::error::Error>> {
+    let repo_root = std::env::current_dir()?;
+    let root_toolchain = read_toolchain_channel(&repo_root);
+    let test_corpus_root = find_test_corpus_root(input_path, &repo_root);
+    let test_corpus_toolchain = test_corpus_root
+        .as_ref()
+        .and_then(|root| read_toolchain_channel(root));
+    let cando2_cargo = test_corpus_root
+        .as_ref()
+        .map(|root| root.join("tools/cando2/Cargo.toml"));
+    let cando2_rust_version = cando2_cargo
+        .as_ref()
+        .and_then(|path| read_cargo_rust_version(path));
+
+    let required_version = cando2_rust_version
+        .clone()
+        .or_else(|| test_corpus_toolchain.clone())
+        .or_else(|| root_toolchain.clone())
+        .ok_or("Unable to determine required Rust toolchain version from rust-toolchain.toml or cando2 Cargo.toml")?;
+
+    check_version_match(
+        "HARVEST rust-toolchain.toml",
+        root_toolchain.as_deref(),
+        &required_version,
+    )?;
+    check_version_match(
+        "Test-Corpus rust-toolchain.toml",
+        test_corpus_toolchain.as_deref(),
+        &required_version,
+    )?;
+    check_version_match(
+        "cando2 rust-version",
+        cando2_rust_version.as_deref(),
+        &required_version,
+    )?;
+
+    let rustc_version = command_stdout("rustc", &["--version"])?;
+    let cargo_version = command_stdout("cargo", &["--version"])?;
+    let active_rustc = parse_rustc_semver(&rustc_version).ok_or_else(|| {
+        format!(
+            "Could not parse rustc version from `{}`",
+            rustc_version.trim()
+        )
+    })?;
+    if active_rustc != required_version {
+        return Err(format!(
+            "Rust toolchain mismatch: required {required_version} from Test-Corpus/cando2 contract, but active rustc is {active_rustc} (`{}`)",
+            rustc_version.trim()
+        )
+        .into());
+    }
+
+    let prompt_block = format!(
+        "### Rust toolchain contract\n\
+         - Required Rust toolchain: `{required_version}`\n\
+         - Detected rustc: `{}`\n\
+         - Detected cargo: `{}`\n\
+         - All self-tests and build checks MUST use this exact toolchain. Run Cargo as `RUSTUP_TOOLCHAIN={required_version} cargo ...` (or verify `rustc --version` reports `{required_version}` first). If a different Rust version is active, stop and report an environment/toolchain problem instead of treating test failures as translation bugs.",
+        rustc_version.trim(),
+        cargo_version.trim(),
+    );
+
+    Ok(RustToolchainContext {
+        required_version,
+        prompt_block,
+    })
+}
+
+fn find_test_corpus_root(input_path: &Path, repo_root: &Path) -> Option<PathBuf> {
+    let absolute = if input_path.is_absolute() {
+        input_path.to_path_buf()
+    } else {
+        repo_root.join(input_path)
+    };
+    for ancestor in absolute.ancestors() {
+        if ancestor.file_name().and_then(|s| s.to_str()) == Some("Test-Corpus") {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    let candidate = repo_root.join("Test-Corpus");
+    candidate.exists().then_some(candidate)
+}
+
+fn read_toolchain_channel(dir: &Path) -> Option<String> {
+    read_quoted_value(&dir.join("rust-toolchain.toml"), "channel")
+        .or_else(|| fs::read_to_string(dir.join("rust-toolchain")).ok())
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn read_cargo_rust_version(path: &Path) -> Option<String> {
+    read_quoted_value(path, "rust-version")
+}
+
+fn read_quoted_value(path: &Path, key: &str) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(key) {
+            continue;
+        }
+        let (_, value) = trimmed.split_once('=')?;
+        return Some(value.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty());
+    }
+    None
+}
+
+fn check_version_match(
+    label: &str,
+    found: Option<&str>,
+    required: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(found) = found {
+        if found != required {
+            return Err(format!(
+                "Rust toolchain contract mismatch: {label} is {found}, required version is {required}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn command_stdout(cmd: &str, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new(cmd).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} {} failed with status {}: {}",
+            cmd,
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_rustc_semver(version: &str) -> Option<String> {
+    version.split_whitespace().nth(1).map(|v| v.to_string())
 }
 
 fn parse_opencode_model(model: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
@@ -398,6 +549,11 @@ fn run_bash_agent(
 
     if let Some(model) = invocation.model {
         cmd.env("MODEL", model);
+    }
+
+    if let Some(toolchain) = invocation.rust_toolchain {
+        info!("Injecting RUSTUP_TOOLCHAIN={toolchain}");
+        cmd.env("RUSTUP_TOOLCHAIN", toolchain);
     }
 
     for (key, value) in invocation.extra_env {

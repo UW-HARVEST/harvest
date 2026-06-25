@@ -1,6 +1,4 @@
 <!-- markdownlint-disable MD041 -->
-{MODEL_LIMITS}
-
 You are testing a C-to-Rust translation for correctness. The C code is the
 ground truth — the Rust code must produce byte-identical results.
 
@@ -57,6 +55,10 @@ thing to recover state.
 ## Invariants (do not drift across compactions)
 
 These rules govern verification. They must survive every compaction unchanged.
+
+{MODEL_LIMITS}
+
+{RUST_TOOLCHAIN_CONTEXT}
 
 ### AFTER ANY COMPACTION: `cat PLAN.md HYPOTHESES.md` is your FIRST action before anything.
 

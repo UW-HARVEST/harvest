@@ -22,8 +22,6 @@ Before doing anything else, you MUST:
 
 ### 0.1 Self-assessment
 
-{MODEL_LIMITS}
-
 Output the following in your first response:
 
 ```
@@ -104,6 +102,10 @@ amount of context loss.
 
 These rules are not negotiable and must survive every compaction unchanged.
 When in doubt, re-read this section.
+
+{MODEL_LIMITS}
+
+{RUST_TOOLCHAIN_CONTEXT}
 
 ### AFTER ANY COMPACTION: `cat PLAN.md` is your FIRST action before anything.
 

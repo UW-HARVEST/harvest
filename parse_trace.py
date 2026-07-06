@@ -623,6 +623,20 @@ class TraceParser:
             for label in agent_order:
                 evts = agent_groups[label]
                 turns, prev_tokens = _synthesize_workflow_agent_turns(evts, prev_tokens)
+                # Use per-agent tokens from workflow_progress[].tokens (which is
+                # cumulative per-agent, starting from ~8k for the system prompt).
+                # Do NOT use event-level usage.total_tokens — that is cumulative
+                # across the ENTIRE workflow and would double-count.
+                # Note: wp.label (e.g. "setup") differs from event description
+                # (e.g. "Setup: setup"), so we match by taking the LAST
+                # workflow_agent entry's tokens (each event has one active agent).
+                agent_token_end = 0
+                for ev in evts:
+                    for wp in ev.get("workflow_progress", []):
+                        if wp.get("type") == "workflow_agent":
+                            tok = wp.get("tokens", 0)
+                            if tok:
+                                agent_token_end = tok
                 last_usage = evts[-1].get("usage", {}) if evts else {}
                 sa = SubAgent(
                     task_id=parent_sa.task_id,
@@ -632,7 +646,7 @@ class TraceParser:
                     status="completed",
                     conversation=turns,
                     is_async=True,
-                    total_tokens=last_usage.get("total_tokens", 0),
+                    total_tokens=agent_token_end,
                     total_tool_uses=last_usage.get("tool_uses", 0),
                     duration_ms=last_usage.get("duration_ms", 0),
                 )
@@ -2210,13 +2224,14 @@ class OpenCodeParser:
             if typ == "step_finish" and current_turn is not None:
                 tokens = part.get("tokens", {})
                 cache = tokens.get("cache", {})
-                # OpenCode reports `total` as the grand total, `input` as a
-                # small delta sometimes.  Use total minus output minus reasoning
-                # as the true input-token count.
-                total_tok = tokens.get("total", 0)
+                # Use the explicit `input` field from step_finish, NOT
+                # `total - output - reasoning`.  The `total` field includes
+                # cache_read tokens, so subtracting output/reasoning from it
+                # inflates input by the cache_read amount.  The `input` field
+                # already contains only the true non-cached input tokens.
+                in_tok = tokens.get("input", 0)
                 out_tok = tokens.get("output", 0)
                 reason_tok = tokens.get("reasoning", 0)
-                in_tok = max(total_tok - out_tok - reason_tok, 0)
                 turn_usage = TokenUsage(
                     input_tokens=in_tok,
                     output_tokens=out_tok,
@@ -2357,10 +2372,12 @@ class OpenCodeExportParser:
                 if ptype == "step-finish" and current_turn is not None:
                     tokens = part.get("tokens", {})
                     cache = tokens.get("cache", {})
-                    total_tok = tokens.get("total", 0)
+                    # Use the explicit `input` field, NOT `total - output -
+                    # reasoning`.  The `total` field includes cache_read, so
+                    # the subtraction would inflate input by the cache_read amount.
+                    in_tok = tokens.get("input", 0)
                     out_tok = tokens.get("output", 0)
                     reason_tok = tokens.get("reasoning", 0)
-                    in_tok = max(total_tok - out_tok - reason_tok, 0)
                     current_turn.usage = TokenUsage(
                         input_tokens=in_tok,
                         output_tokens=out_tok,

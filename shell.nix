@@ -1,6 +1,8 @@
-{ pkgs ? import <nixpkgs> {} }:
-
-pkgs.mkShell {
+let
+  # release 24.11, pinned
+  nixpkgs = fetchTarball "https://github.com/NixOS/nixpkgs/archive/nixos-26.05.tar.gz";
+  pkgs = import nixpkgs { config = {}; overlays = []; };
+in pkgs.mkShell {
   buildInputs = [
     pkgs.rustup
     pkgs.rustPlatform.bindgenHook

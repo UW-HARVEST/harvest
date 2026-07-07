@@ -65,6 +65,7 @@ const PROMPT_KIRO_LIBRARY: &str = include_str!("prompt_kiro_library.md");
 const PROMPT_KIRO_CONFIGURABLE: &str = include_str!("prompt_kiro_configurable.md");
 const PROMPT_TRANSLATE: &str = include_str!("prompt_translate.md");
 const PROMPT_TRANSLATE_NO_PLAN: &str = include_str!("prompt_translate_no_plan.md");
+const PROMPT_TRANSLATE_NO_PLAN_FILE: &str = include_str!("prompt_translate_no_plan_file.md");
 
 pub struct TranslateAgentic;
 
@@ -98,6 +99,11 @@ impl Tool for TranslateAgentic {
             .ok_or("No ProjectSpec representation found in IR")?;
 
         let agent = context.config.agentic_agent;
+        if config.no_plan && config.no_plan_file {
+            return Err(
+                "tools.translate_agentic: no_plan and no_plan_file are mutually exclusive".into(),
+            );
+        }
         let translate_prompt = load_prompt(&config, &project_spec.kind, agent)?;
         let no_plan = config.no_plan;
 
@@ -176,6 +182,7 @@ impl Tool for TranslateAgentic {
             timeout_secs: config.timeout_secs,
             model: config.model.as_deref(),
             no_plan,
+            no_plan_file: config.no_plan_file,
             extra_env: &config.env,
             output_log_path: config.output_log_path.as_deref(),
             rust_toolchain: Some(&rust_toolchain_context.required_version),
@@ -345,6 +352,7 @@ fn load_prompt(
         AgentKind::Claude | AgentKind::OpenCode => match &config.prompt_translate {
             Some(p) => Ok(fs::read_to_string(p)?),
             None if config.no_plan => Ok(PROMPT_TRANSLATE_NO_PLAN.to_owned()),
+            None if config.no_plan_file => Ok(PROMPT_TRANSLATE_NO_PLAN_FILE.to_owned()),
             None => Ok(PROMPT_TRANSLATE.to_owned()),
         },
         AgentKind::Kiro => {
@@ -398,6 +406,14 @@ pub struct Config {
     /// mechanism added in 883e2e2.
     #[serde(default)]
     pub no_plan: bool,
+
+    /// If true, use the ablation prompt that keeps the sub-agent push and
+    /// context-management guidance but never mentions PLAN.md or writing
+    /// plans to disk (the agent may still do so spontaneously), and skip the
+    /// `--append-system-prompt` flag. Isolates the effect of plan-file
+    /// persistence from sub-agent usage. Mutually exclusive with `no_plan`.
+    #[serde(default)]
+    pub no_plan_file: bool,
 
     /// Inject a prompt hint encouraging the agent to use dynamic workflows
     /// (Claude Code's multi-agent orchestration). Only meaningful with no_plan.

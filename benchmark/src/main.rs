@@ -154,6 +154,7 @@ pub fn run_all_benchmarks(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    no_plan_file: bool,
     workflow: bool,
     wait_until: Option<u64>,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
@@ -178,6 +179,7 @@ pub fn run_all_benchmarks(
             agent_tools,
             agentic_model,
             no_plan,
+            no_plan_file,
             workflow,
             wait_until,
         );
@@ -271,6 +273,7 @@ fn benchmark_single_program(
     agent_tools: bool,
     agentic_model: Option<&str>,
     no_plan: bool,
+    no_plan_file: bool,
     workflow: bool,
     wait_until: Option<u64>,
 ) -> ProgramEvalStats {
@@ -374,6 +377,10 @@ fn benchmark_single_program(
         if no_plan {
             effective_overrides.push("tools.translate_agentic.no_plan=true".to_owned());
             effective_overrides.push("tools.verify_fix_agentic.no_plan=true".to_owned());
+        }
+        if no_plan_file {
+            effective_overrides.push("tools.translate_agentic.no_plan_file=true".to_owned());
+            effective_overrides.push("tools.verify_fix_agentic.no_plan_file=true".to_owned());
         }
         if workflow {
             effective_overrides.push("tools.translate_agentic.workflow=true".to_owned());
@@ -776,6 +783,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.agent_tools,
         args.agentic_model.as_deref(),
         args.no_plan,
+        args.no_plan_file,
         args.workflow,
         args.wait_until,
     )?;

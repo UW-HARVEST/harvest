@@ -59,9 +59,21 @@ pub struct AgentInvocation<'a> {
     pub timeout_secs: u64,
     pub model: Option<&'a str>,
     pub no_plan: bool,
+    pub no_plan_file: bool,
     pub extra_env: &'a HashMap<String, String>,
     pub output_log_path: Option<&'a Path>,
     pub rust_toolchain: Option<&'a str>,
+}
+
+impl AgentInvocation<'_> {
+    /// Whether the prompt instructs the agent to maintain persistent plan
+    /// files (PLAN.md / HYPOTHESES.md). Both `no_plan` (no plan, no sub-agent
+    /// push) and `no_plan_file` (sub-agent push kept, plan files never
+    /// mentioned) drop that instruction, so the per-turn "read PLAN.md after
+    /// compaction" system prompt must not be injected in either mode.
+    fn plan_files_enabled(&self) -> bool {
+        !self.no_plan && !self.no_plan_file
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,7 +429,13 @@ fn prepare_agent_files(invocation: &AgentInvocation<'_>) -> Result<(), Box<dyn s
             OpenCodeAgentConfig {
                 name: invocation.phase.opencode_agent_name(),
                 description: invocation.phase.opencode_description(),
-                system_prompt: invocation.phase.append_system_prompt(),
+                // The compaction-recovery hint references PLAN.md/HYPOTHESES.md,
+                // which do not exist when plan files are disabled.
+                system_prompt: if invocation.plan_files_enabled() {
+                    invocation.phase.append_system_prompt()
+                } else {
+                    ""
+                },
             },
         ),
     }
@@ -451,10 +469,11 @@ fn invoke_claude(
 ) -> Result<ExitStatus, Box<dyn std::error::Error>> {
     let use_ccr = claude_uses_ccr(invocation.model);
     info!(
-        "Invoking Claude Code {} agent (model={}, no_plan={}, timeout={}s, ccr={}, extra_env={} vars)",
+        "Invoking Claude Code {} agent (model={}, no_plan={}, no_plan_file={}, timeout={}s, ccr={}, extra_env={} vars)",
         invocation.phase.label(),
         invocation.model.unwrap_or("(cli default)"),
         invocation.no_plan,
+        invocation.no_plan_file,
         invocation.timeout_secs,
         use_ccr,
         invocation.extra_env.len()
@@ -464,10 +483,10 @@ fn invoke_claude(
         .model
         .map(|_| "--model \"$MODEL\" ")
         .unwrap_or_default();
-    let append_sys_flag = if invocation.no_plan {
-        ""
-    } else {
+    let append_sys_flag = if invocation.plan_files_enabled() {
         "--append-system-prompt \"$APPEND_SYS\" "
+    } else {
+        ""
     };
 
     let status = run_bash_agent(
@@ -542,7 +561,7 @@ fn run_bash_agent(
         .current_dir(invocation.work_dir);
 
     if let Some(system_prompt) = append_system_prompt {
-        if !invocation.no_plan {
+        if invocation.plan_files_enabled() {
             cmd.env("APPEND_SYS", system_prompt);
         }
     }

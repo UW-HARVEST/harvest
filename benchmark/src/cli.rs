@@ -33,6 +33,7 @@ pub struct Args {
             "agentic_agent",
             "agentic_model",
             "no_plan",
+            "no_plan_file",
             "workflow",
             "agent_tools",
             "config",
@@ -71,6 +72,16 @@ pub struct Args {
     /// mechanism. Applies to both translator and verifier. Requires --agentic.
     #[arg(long, requires = "agentic")]
     pub no_plan: bool,
+
+    /// Ablation mode: keep the sub-agent push and context-management guidance
+    /// from the standard prompts, but never mention PLAN.md / HYPOTHESES.md or
+    /// writing plans to disk (the agent may still do so spontaneously), and
+    /// skip the `--append-system-prompt` compaction-recovery hint. Isolates
+    /// the effect of plan-file persistence from sub-agent usage. Applies to
+    /// both translator and verifier. Requires --agentic; mutually exclusive
+    /// with --no-plan.
+    #[arg(long, requires = "agentic", conflicts_with = "no_plan")]
+    pub no_plan_file: bool,
 
     /// Inject a prompt hint encouraging the agent to use dynamic workflows
     /// (Claude Code's multi-agent orchestration feature). Only meaningful with

@@ -368,3 +368,25 @@ To keep visualizations up to date during long runs:
 
 Open the generated `trace_*_timeline.svg` in a browser tab and refresh to
 follow the run's progress in real time.
+
+## Known issue: Claude Code async sub-agents can be killed mid-run
+
+As of Claude Code 2.1.201 (and some earlier 2.1.x versions), Claude Code
+changed the default sub-agent execution mode from synchronous to
+asynchronous. In the terminal UI, launching a sub-agent frees the input
+box while the sub-agent runs in the background, and its completion is later
+delivered to the main agent as a system message.
+
+We suspect this caused a bug for the non-interactive `claude -p` mode
+that Harvest uses. When only background sub-agents are running and the main
+agent has no foreground task, the state that "frees the input box" in the
+terminal UI appears to be treated as the end of the `claude -p` process. The
+process then exits and kills still-running sub-agents.
+
+We have observed this in real runs. The main agent ends a turn with
+"waiting for the background agents", the process exits, and the trace shows
+`task_notification` events with `"status":"stopped"` (instead of
+`"completed"`) for sub-agents that were killed mid-translation, leaving
+declared Rust modules whose files were never written. If a run fails with
+seemingly unfinished work, check the trace for `"status":"stopped"`
+notifications to identify this kind of failure.

@@ -6,7 +6,7 @@ mod ir_utils;
 mod logger;
 mod runner;
 mod stats;
-use crate::cli::Args;
+use crate::cli::{Args, TestHarness};
 use crate::error::HarvestResult;
 use crate::harness::{
     cleanup_benchmarks, parse_benchmark_dir, parse_test_vectors, validate_binary_output,
@@ -157,6 +157,7 @@ pub fn run_all_benchmarks(
     no_plan_file: bool,
     workflow: bool,
     wait_until: Option<u64>,
+    test_harness: TestHarness,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -182,6 +183,7 @@ pub fn run_all_benchmarks(
             no_plan_file,
             workflow,
             wait_until,
+            test_harness,
         );
 
         results.push(result);
@@ -276,6 +278,7 @@ fn benchmark_single_program(
     no_plan_file: bool,
     workflow: bool,
     wait_until: Option<u64>,
+    test_harness: TestHarness,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -430,20 +433,56 @@ fn benchmark_single_program(
         return result;
     }
 
-    // Library and executable validation differ.
+    // Validation harness selection.
+    // - gtest: a gtest_suite/ in the test case is preferred when present
+    //   (auto), or forced via --test-harness gtest.
     // - Library projects always use cando2 (runner + test_vectors via FFI).
     // - Configurable projects can be tested either way; pick library validation only
     //   when an input `runner/` exists, otherwise fall back to running the driver
     //   binary against test_vectors (executable-style tests).
     // - Executable projects run the binary directly against test vectors.
     // - Unknown project kinds fall back to the binary path if available.
-    let runner_exists = program_dir.join("runner").is_dir();
-    let use_library_validation = match project_kind {
-        Some(ProjectKind::Library) => true,
-        Some(ProjectKind::Configurable) => runner_exists,
-        _ => false,
+    let gtest_available = program_dir.join(harness::gtest::GTEST_SUITE_DIR).is_dir();
+    if test_harness == TestHarness::Gtest && !gtest_available {
+        let error = format!(
+            "--test-harness gtest requested, but {} has no gtest_suite/ directory",
+            program_dir.display()
+        );
+        log::error!("{}", error);
+        result.error_message = Some(error);
+        return result;
+    }
+    let use_gtest_validation = match test_harness {
+        TestHarness::Gtest => true,
+        TestHarness::Auto => gtest_available,
+        TestHarness::Lib | TestHarness::Bin => false,
     };
-    let (test_results, error_messages) =
+    let runner_exists = program_dir.join("runner").is_dir();
+    let use_library_validation = match test_harness {
+        TestHarness::Lib => true,
+        TestHarness::Bin => false,
+        TestHarness::Auto | TestHarness::Gtest => match project_kind {
+            Some(ProjectKind::Library) => true,
+            Some(ProjectKind::Configurable) => runner_exists,
+            _ => false,
+        },
+    };
+    let (test_results, error_messages) = if use_gtest_validation {
+        match harness::gtest::run_gtest_validation(&program_name, program_dir, &output_dir, timeout)
+        {
+            Ok(r) => {
+                // gtest defines its own test set; the vector count no longer applies.
+                result.total_tests = r.0.len();
+                r
+            }
+            Err(e) => {
+                let error_msg = format!("GoogleTest validation failed: {}", e);
+                log::error!("{}", error_msg);
+                result.error_message = Some(error_msg);
+                return result;
+            }
+        }
+    } else {
         match (use_library_validation, translation_result.rust_binary_path) {
             (true, _) => {
                 match harness::library::run_library_validation(
@@ -474,7 +513,8 @@ fn benchmark_single_program(
                 result.error_message = Some(error);
                 return result;
             }
-        };
+        }
+    };
 
     result.passed_tests = test_results
         .iter()
@@ -581,7 +621,11 @@ fn translated_program_dirs(path: &Path) -> HarvestResult<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn test_existing_program(program_dir: &Path, timeout: u64) -> ProgramEvalStats {
+fn test_existing_program(
+    program_dir: &Path,
+    timeout: u64,
+    test_harness: TestHarness,
+) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
         .unwrap_or_default()
@@ -603,7 +647,40 @@ fn test_existing_program(program_dir: &Path, timeout: u64) -> ProgramEvalStats {
     };
     result.total_tests = test_cases.len();
 
-    let (test_results, error_messages) = if program_dir.join("runner").is_dir() {
+    let gtest_available = program_dir.join(harness::gtest::GTEST_SUITE_DIR).is_dir();
+    if test_harness == TestHarness::Gtest && !gtest_available {
+        result.error_message = Some(format!(
+            "--test-harness gtest requested, but {} has no gtest_suite/ directory",
+            program_dir.display()
+        ));
+        return result;
+    }
+    let use_gtest_validation = match test_harness {
+        TestHarness::Gtest => true,
+        TestHarness::Auto => gtest_available,
+        TestHarness::Lib | TestHarness::Bin => false,
+    };
+    let use_library_validation = match test_harness {
+        TestHarness::Lib => true,
+        TestHarness::Bin => false,
+        TestHarness::Auto | TestHarness::Gtest => program_dir.join("runner").is_dir(),
+    };
+    let (test_results, error_messages) = if use_gtest_validation {
+        match harness::gtest::run_gtest_validation(&program_name, program_dir, program_dir, timeout)
+        {
+            Ok(r) => {
+                result.rust_build_success = true;
+                // gtest defines its own test set; the vector count no longer applies.
+                result.total_tests = r.0.len();
+                r
+            }
+            Err(e) => {
+                result.rust_build_success = false;
+                result.error_message = Some(format!("GoogleTest validation failed: {e}"));
+                return result;
+            }
+        }
+    } else if use_library_validation {
         match harness::library::run_library_validation(
             &program_name,
             program_dir,
@@ -678,6 +755,7 @@ fn run_test_only(
     timeout: u64,
     filter: Option<&str>,
     exclude: Option<&str>,
+    test_harness: TestHarness,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     validate_input_directory(test_path)?;
     let mut program_dirs = translated_program_dirs(test_path)?;
@@ -690,7 +768,7 @@ fn run_test_only(
     log_found_programs(&program_dirs, test_path)?;
     Ok(program_dirs
         .iter()
-        .map(|program_dir| test_existing_program(program_dir, timeout))
+        .map(|program_dir| test_existing_program(program_dir, timeout, test_harness))
         .collect())
 }
 
@@ -704,6 +782,7 @@ fn run(args: Args) -> HarvestResult<()> {
             args.timeout,
             args.filter.as_deref(),
             args.exclude.as_deref(),
+            args.test_harness,
         )?;
         let csv_output_path = test_path.join("results.csv");
         write_csv_results(&csv_output_path, &results)?;
@@ -786,6 +865,7 @@ fn run(args: Args) -> HarvestResult<()> {
         args.no_plan_file,
         args.workflow,
         args.wait_until,
+        args.test_harness,
     )?;
     let csv_output_path = output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

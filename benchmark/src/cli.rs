@@ -1,5 +1,19 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+/// Which validation harness to run translated projects against.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestHarness {
+    /// Prefer a gtest_suite/ when the test case provides one, otherwise fall
+    /// back to library (cando2 runner) or executable (driver) validation.
+    Auto,
+    /// Force the GoogleTest suite (error if the test case has no gtest_suite/).
+    Gtest,
+    /// Force cando2 library validation (runner/ + test_vectors/).
+    Lib,
+    /// Force executable validation (driver binary against test_vectors/).
+    Bin,
+}
 
 #[derive(Parser)]
 #[command(name = "harvest-benchmark")]
@@ -97,6 +111,12 @@ pub struct Args {
     /// Set a configuration value; format $NAME=$VALUE.
     #[arg(long, short)]
     pub config: Vec<String>,
+
+    /// Validation harness selection. Defaults to auto: use the GoogleTest
+    /// suite when the test case ships a gtest_suite/ directory, otherwise the
+    /// existing library (cando2) or executable (driver) validation.
+    #[arg(long, value_enum, default_value_t = TestHarness::Auto)]
+    pub test_harness: TestHarness,
 
     /// Timeout in seconds for running test cases
     #[arg(long, default_value = "10")]

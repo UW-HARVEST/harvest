@@ -1,6 +1,7 @@
 /// This module `harness` is intended to contain code that is specific to a particular set of benchmarks,
 /// for example, parsing code for benchmark-specific configs.
 /// Currently, that is just the MITLL tractor benchmarks.
+pub mod gtest;
 pub mod library;
 
 use crate::runner;

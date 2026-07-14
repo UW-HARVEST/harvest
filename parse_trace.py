@@ -153,6 +153,12 @@ class ToolUse:
     # estimate so the bar segment has a meaningful width.
     size_override: Optional[int] = None
 
+    # True when the trace shows this call never completed: an OpenCode export
+    # captured its state as "running"/"pending", meaning the agent process
+    # ended (typically killed by the harness timeout) while the tool — most
+    # often a `task` sub-agent — was still in flight.
+    frozen: bool = False
+
 
 @dataclass
 class ContentBlock:
@@ -329,6 +335,14 @@ class Session:
     # main-agent-active time), and `result.duration_api_ms` double-counts
     # parallel sub-agent work.
     wall_clock_ms: int = 0
+
+    # Wall-clock duration of the agent *process* (from the harness's
+    # "Invoking ... agent" log line to its post-exit export/append line),
+    # when those agent_runner markers are present in the trace. A large gap
+    # between this and `wall_clock_ms` means the process sat idle after the
+    # session's last recorded activity — e.g. an OpenCode stall that ended
+    # only when the harness timeout killed the process.
+    process_wall_ms: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -857,15 +871,36 @@ def print_session_stats(sessions: list[Session]) -> None:
         print(f"  Tool calls by name:           {dict(sorted(main_tool_uses.items()))}")
         print(f"  Agent (sub-agent) calls:      {len(agent_calls)}")
 
+        frozen_tasks = [
+            tu for t in s.conversation for tu in t.tool_uses if tu.frozen
+        ]
+        if frozen_tasks:
+            print(f"  ⚠ FROZEN tool calls:          {len(frozen_tasks)} "
+                  "(still running when the process ended)")
+
+        stall_ms = _stall_gap_ms(s)
+        if stall_ms:
+            print(
+                f"  ⚠ STALL: no session activity for {_format_duration(stall_ms)} "
+                f"before the process ended (process ran "
+                f"{_format_duration(s.process_wall_ms)}, session active "
+                f"{_format_duration(s.wall_clock_ms)}) — likely stalled until "
+                "the harness timeout killed it"
+            )
+
         for ag in agent_calls:
             st = ag.subagent
             if st:
                 sub_turns = len(st.conversation)
                 sub_tools = count_tools_in_conversation(st.conversation)
                 prog_steps = len(st.progress_snapshots)
+                frozen_note = (
+                    "  ⚠ FROZEN (never completed; process ended mid-task)"
+                    if ag.frozen or st.status in ("running", "pending") else ""
+                )
                 print(f"\n  --- Sub-agent [{st.description}] ---")
                 print(f"    task_id:        {st.task_id}")
-                print(f"    status:         {st.status}")
+                print(f"    status:         {st.status}{frozen_note}")
                 print(f"    turns:          {sub_turns}")
                 print(f"    tool calls:     {dict(sorted(sub_tools.items()))}")
                 print(f"    progress snaps: {prog_steps}")
@@ -1574,7 +1609,8 @@ def _segment_turn(turn: Turn) -> list[_Segment]:
                 prompt_text = prompt_text or tu.subagent.prompt or ""
             prompt_preview = prompt_text[:PREVIEW_SIZE].replace("\n", " ") if prompt_text else ""
             result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
-            tip = f"[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
+            frozen_note = "⚠ FROZEN — never completed\n" if tu.frozen else ""
+            tip = f"{frozen_note}[task] {desc}\n[prompt] {prompt_preview}\n[result] {result_preview}"
         else:
             tip = f"{tu.name}: {desc_fallback}" if desc_fallback else tu.name
         segs.append(_Segment(cat, size, tip))
@@ -1717,6 +1753,35 @@ def _format_duration(ms: int) -> str:
     return f"{h}h{m:02d}m"
 
 
+_STALL_GAP_MS = 600_000  # ≥10 min between last session activity and process death
+
+
+def _stall_gap_ms(s: Session) -> int:
+    """Dead time between the session's last recorded activity and the agent
+    process's end. Nonzero only when agent_runner markers were found and the
+    gap exceeds `_STALL_GAP_MS` — the signature of a stalled process that sat
+    idle until the harness timeout killed it."""
+    if (
+        s.process_wall_ms
+        and s.wall_clock_ms
+        and s.process_wall_ms > s.wall_clock_ms + _STALL_GAP_MS
+    ):
+        return s.process_wall_ms - s.wall_clock_ms
+    return 0
+
+
+def _count_frozen_tools(turns: list[Turn]) -> int:
+    """Recursively count tool calls frozen mid-flight (never completed)."""
+    n = 0
+    for t in turns:
+        for tu in t.tool_uses:
+            if tu.frozen:
+                n += 1
+            if tu.subagent is not None:
+                n += _count_frozen_tools(tu.subagent.conversation)
+    return n
+
+
 def _format_compact_int(n: int) -> str:
     if n >= 1_000_000: return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:     return f"{n / 1_000:.1f}k"
@@ -1827,6 +1892,17 @@ def _format_session_summary(s: Session, s_idx: int) -> str:
         parts.append(cost_label)
     if r is not None and r.is_error:
         parts.append(f"⚠ stop={r.stop_reason}")
+    # Stall + frozen-task warnings: the session data alone under-reports wall
+    # time when the process hung after its last activity (see _stall_gap_ms).
+    stall_ms = _stall_gap_ms(s)
+    if stall_ms:
+        parts.append(
+            f"⚠ stalled {_format_duration(stall_ms)} after last activity "
+            f"(process ran {_format_duration(s.process_wall_ms)})"
+        )
+    frozen_n = _count_frozen_tools(s.conversation)
+    if frozen_n:
+        parts.append(f"⚠ {frozen_n} frozen task(s) never completed")
     return "   ".join(parts)
 
 
@@ -1914,10 +1990,18 @@ def render_timeline_svg(sessions: list[Session]) -> str:
     # `bar_inset` pixels to the left of the actual bars. Hovering the line
     # surfaces the same tooltip as the parent's purple Agent bar segment.
     group_color = CAT_COLORS.get(CAT_SUBAGENT, "#9b80c8")
+    frozen_color = "#d9534f"  # red: this sub-agent never completed
     for grp in groups:
         gx = label_w + grp.depth * indent_px + 3
         gy1 = row_y[grp.start_idx] + 1
         gy2 = row_y[grp.end_idx] + row_heights[grp.end_idx] - 1
+        frozen = grp.tool_use is not None and (
+            grp.tool_use.frozen
+            or (
+                grp.tool_use.subagent is not None
+                and grp.tool_use.subagent.status in ("running", "pending")
+            )
+        )
         tooltip_lines = []
         if grp.tool_use is not None:
             tu = grp.tool_use
@@ -1933,6 +2017,10 @@ def render_timeline_svg(sessions: list[Session]) -> str:
                 prompt_text = prompt_text or tu.subagent.prompt or ""
             prompt_preview = prompt_text[:PREVIEW_SIZE].replace("\n", " ") if prompt_text else ""
             result_preview = (tu.result.content[:PREVIEW_SIZE] if tu.result else "").replace("\n", " ")
+            if frozen:
+                tooltip_lines.append(
+                    "⚠ FROZEN — still running when the process ended"
+                )
             tooltip_lines.append(f"{CAT_SUBAGENT}: {size:,} chars")
             tooltip_lines.append(f"[task] {desc}")
             tooltip_lines.append(f"[prompt] {prompt_preview}")
@@ -1940,18 +2028,19 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         tooltip = html.escape("\n".join(tooltip_lines)) if tooltip_lines else ""
         # Async sub-agents: dashed line, signaling that the row order is
         # only approximate (synthesized from progress snapshots, not a true
-        # API conversation).
+        # API conversation). Frozen sub-agents: red line.
         dash_attr = ' stroke-dasharray="5,3"' if grp.is_async else ''
+        line_color = frozen_color if frozen else group_color
         if tooltip:
             out.append(
                 f'<g><title>{tooltip}</title>'
                 f'<line x1="{gx}" y1="{gy1}" x2="{gx}" y2="{gy2}" '
-                f'stroke="{group_color}" stroke-width="3"{dash_attr}/></g>'
+                f'stroke="{line_color}" stroke-width="3"{dash_attr}/></g>'
             )
         else:
             out.append(
                 f'<line x1="{gx}" y1="{gy1}" x2="{gx}" y2="{gy2}" '
-                f'stroke="{group_color}" stroke-width="3"{dash_attr}/>'
+                f'stroke="{line_color}" stroke-width="3"{dash_attr}/>'
             )
 
     for idx, row in enumerate(rows):
@@ -2355,15 +2444,30 @@ class OpenCodeExportParser:
                     status = state.get("status", "")
                     call_id = part.get("callID", f"export-{turn_index}")
 
+                    # A tool still "running"/"pending" in a post-mortem export
+                    # never completed: the agent process ended (usually killed
+                    # by the harness timeout) while this call was in flight.
+                    frozen = status in ("running", "pending")
+
                     result = None
-                    if output is not None or status:
+                    if frozen:
+                        result = ToolResult(
+                            tool_use_id=call_id,
+                            content=f"[FROZEN: still '{status}' at export time — "
+                                    "never completed before the process ended]",
+                            is_error=True,
+                        )
+                    elif output is not None or status:
                         result = ToolResult(
                             tool_use_id=call_id,
                             content=str(output) if output is not None else "",
                             is_error=status in ("error", "failed"),
                         )
 
-                    tu = ToolUse(id=call_id, name=tool_name, input=inp, result=result)
+                    tu = ToolUse(
+                        id=call_id, name=tool_name, input=inp,
+                        result=result, frozen=frozen,
+                    )
                     current_turn.content_blocks.append(
                         ContentBlock(type="tool_use", tool_use=tu)
                     )
@@ -2391,6 +2495,13 @@ class OpenCodeExportParser:
                     session.conversation.append(current_turn)
                     current_turn = None
                     continue
+
+        # Flush a trailing unfinished turn. A session that ended mid-flight
+        # (stall / timeout kill) has a final message with no step-finish;
+        # dropping it would hide exactly the frozen tool calls we want to see.
+        if current_turn is not None and current_turn.content_blocks:
+            session.conversation.append(current_turn)
+            current_turn = None
 
         # Build result from info-level aggregation
         info_tokens = info.get("tokens", {})
@@ -2712,6 +2823,69 @@ def _fetch_live_opencode_exports(
     return live_exports
 
 
+_ISO_TS_RE = re.compile(r"(20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)")
+
+
+def _extract_runner_phase_windows(path: str) -> list[tuple[str, int, int]]:
+    """Extract per-phase agent *process* windows from agent_runner log lines.
+
+    The benchmark trace interleaves the agent's JSON stream with agent_runner
+    tracing lines (ISO-8601 timestamps). The window from
+    "Invoking OpenCode <phase> agent" to the first post-exit marker
+    ("Exporting OpenCode session" / "Appended agent trace") is the real
+    process lifetime — including any stall between the session's last
+    activity and the harness timeout kill, which is invisible in the
+    session's own data.
+
+    Returns a list of (phase, start_ms, end_ms) in file order; windows with
+    no end marker are omitted.
+    """
+    from datetime import datetime
+
+    windows: list[tuple[str, int, int]] = []
+    open_phase: Optional[str] = None
+    open_start_ms = 0
+
+    def _iso_ms(line: str) -> Optional[int]:
+        m = _ISO_TS_RE.search(line)
+        if not m:
+            return None
+        try:
+            dt = datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return int(dt.timestamp() * 1000)
+
+    try:
+        with open(path, "r", errors="replace") as f:
+            for line in f:
+                if line.lstrip().startswith("{"):
+                    continue  # JSON event/export content, not a runner log line
+                if "Invoking OpenCode" in line and "agent" in line:
+                    ts = _iso_ms(line)
+                    if ts is None:
+                        continue
+                    phase = (
+                        "translation" if "translation agent" in line
+                        else "verification" if "verification agent" in line
+                        else "unknown"
+                    )
+                    open_phase = phase
+                    open_start_ms = ts
+                elif open_phase is not None and (
+                    "Exporting OpenCode session" in line
+                    or "Appended agent trace" in line
+                ):
+                    ts = _iso_ms(line)
+                    if ts is not None and ts >= open_start_ms:
+                        windows.append((open_phase, open_start_ms, ts))
+                    open_phase = None
+    except OSError:
+        return []
+
+    return windows
+
+
 def parse_mixed_trace_file(path: str, fmt: str = "auto") -> list[Session]:
     """Parse a trace file that may contain both JSONL events and export blocks.
 
@@ -2798,6 +2972,18 @@ def parse_mixed_trace_file(path: str, fmt: str = "auto") -> list[Session]:
     # If we found nothing at all, fall back to the raw parsers.
     if not sessions:
         return OpenCodeParser().parse_file(path)
+
+    # Attach agent-process wall time from agent_runner markers, so stall
+    # time between the session's last activity and the process's death
+    # (timeout kill) becomes visible. Match windows to root sessions by
+    # phase, in file order.
+    for phase, start_ms, end_ms in _extract_runner_phase_windows(path):
+        for session in sessions:
+            if session.process_wall_ms == 0 and (
+                session.phase == phase or phase == "unknown"
+            ):
+                session.process_wall_ms = end_ms - start_ms
+                break
 
     return sessions
 

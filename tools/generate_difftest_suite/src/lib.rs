@@ -112,7 +112,7 @@ fn extract_c_api(
     let mut usage = LLMUsageTotals::default();
     let (response, u) = llm.invoke(&request)?;
     usage.add_usage(u.as_ref());
-    info!("Token usage [api extraction] - {usage}");
+    info!("Token usage [api extraction] - {usage:?}");
 
     let api: ApiResponse = serde_json::from_str(&response)?;
 

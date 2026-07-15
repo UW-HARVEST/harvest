@@ -143,6 +143,10 @@ When in doubt, re-read this section.
 - The exported symbol name is the FINAL linker symbol after all preprocessor
   renames. If C has `#define foo NAMESPACE(foo)` producing `PREFIX_foo`, the
   Rust export is named `PREFIX_foo`, not `foo`.
+- Export the ENTIRE public symbol surface: every non-`static` function the C
+  shared library exports needs a matching Rust export — including functions
+  no test or caller in the repo appears to use. Completeness is verified with
+  `nm -D` against the C build; a missing symbol is a test failure.
 
 ### Behavioral fidelity
 - Do NOT fix bugs in the original C. Reproduce behavior exactly.
@@ -261,6 +265,8 @@ point that is not part of the original library, plan to translate it early.
    a sub-agent so the C code and the new Rust code never have to live in
    YOUR context. Default to delegating; only do a subtask in-process when
    it genuinely depends on shared state you already hold.
+
+{CLAUDE_ASYNC_SUBAGENT_WARNING}
 
    Things you keep:
    - PLAN.md ownership (sub-agents do NOT edit PLAN.md)

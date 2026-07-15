@@ -60,6 +60,10 @@ backend or variant, then wire up feature gates.
   `#define foo NAMESPACE(foo)` makes the linker symbol `PREFIX_foo`, not `foo`).
   The Rust `#[no_mangle]` name must match the FINAL linker symbol, not the
   source-level name.
+- Export the ENTIRE public symbol surface: every non-static function the C
+  shared library exports needs a matching Rust export — including functions
+  nothing in the repo appears to call (verified later with `nm -D` against
+  the C build)
 - Do NOT fix bugs in the original C code — reproduce behavior exactly
 - Preserve the exact order of error checks and validation
 - Match C's stdin reading behavior exactly (scanf reads across newlines, fgets does not)

@@ -76,6 +76,20 @@ impl AgentInvocation<'_> {
     }
 }
 
+/// Temporary workaround for a Claude Code CLI bug: recent versions default to
+/// asynchronous sub-agents, and in headless (`claude -p`) mode the process
+/// exits as soon as the main agent ends its turn — killing any sub-agents
+/// still running in the background. Prompt-building tools substitute this text
+/// for `{CLAUDE_ASYNC_SUBAGENT_WARNING}` when the agent is Claude, and an
+/// empty string otherwise. Remove once the CLI is fixed.
+pub const CLAUDE_ASYNC_SUBAGENT_WARNING: &str = "\
+**Claude Code headless bug — do not end your turn while sub-agents are \
+running.** Recent Claude Code versions launch sub-agents asynchronously by \
+default, and in headless (`claude -p`) mode ending your turn while a \
+sub-agent is still running kills the whole session, including the sub-agent. \
+After dispatching sub-agents, keep the main turn alive and actively wait \
+until every one of them has finished and reported back.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustToolchainContext {
     pub required_version: String,

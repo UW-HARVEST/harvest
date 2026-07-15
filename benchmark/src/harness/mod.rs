@@ -146,7 +146,11 @@ pub fn parse_benchmark_dir(input_dir: &Path) -> HarvestResult<(PathBuf, PathBuf)
         .into());
     }
 
-    if !test_vectors_dir.exists() || !test_vectors_dir.is_dir() {
+    // JSON vectors are optional for test cases that ship a GoogleTest suite
+    // instead (gtest_suite/); everything else still requires test_vectors/.
+    if (!test_vectors_dir.exists() || !test_vectors_dir.is_dir())
+        && !input_dir.join(crate::harness::gtest::GTEST_SUITE_DIR).is_dir()
+    {
         return Err(format!(
             "Required test_vectors directory not found: {}",
             test_vectors_dir.display()

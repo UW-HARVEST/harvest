@@ -315,13 +315,18 @@ fn benchmark_single_program(
             .unwrap_or_else(|| "unknown".to_string())
     );
 
-    // Parse test vectors
-    let test_cases = match parse_test_vectors(test_vectors_dir) {
-        Ok(vectors) => vectors,
-        Err(e) => {
-            result.error_message = Some(e.to_string());
-            return result;
+    // Parse test vectors. gtest-only test cases (gtest_suite/ and no
+    // test_vectors/) define their test set in the suite instead.
+    let test_cases = if test_vectors_dir.is_dir() {
+        match parse_test_vectors(&test_vectors_dir) {
+            Ok(vectors) => vectors,
+            Err(e) => {
+                result.error_message = Some(e.to_string());
+                return result;
+            }
         }
+    } else {
+        Vec::new()
     };
 
     result.total_tests = test_cases.len();
@@ -606,14 +611,23 @@ fn apply_regex_filter(
     Ok(())
 }
 
+/// A translated program directory carries its test definition either as
+/// cando2/stdio JSON vectors (`test_vectors/`) or as a GoogleTest suite
+/// (`gtest_suite/`).
+fn is_translated_program_dir(path: &Path) -> bool {
+    path.join("Cargo.toml").exists()
+        && (path.join("test_vectors").is_dir()
+            || path.join(harness::gtest::GTEST_SUITE_DIR).is_dir())
+}
+
 fn translated_program_dirs(path: &Path) -> HarvestResult<Vec<PathBuf>> {
-    if path.join("Cargo.toml").exists() && path.join("test_vectors").is_dir() {
+    if is_translated_program_dir(path) {
         return Ok(vec![path.to_path_buf()]);
     }
     let mut dirs = Vec::new();
     for entry in std::fs::read_dir(path)? {
         let path = entry?.path();
-        if path.is_dir() && path.join("Cargo.toml").exists() && path.join("test_vectors").is_dir() {
+        if path.is_dir() && is_translated_program_dir(&path) {
             dirs.push(path);
         }
     }
@@ -637,17 +651,29 @@ fn test_existing_program(
     log::info!("Testing translated program: {}", program_name);
     log::info!("Program directory: {}", program_dir.display());
 
+    let gtest_available = program_dir.join(harness::gtest::GTEST_SUITE_DIR).is_dir();
+
+    // gtest-only programs need no JSON vectors: the suite defines the test set.
     let test_vectors_dir = program_dir.join("test_vectors");
-    let test_cases = match parse_test_vectors(&test_vectors_dir) {
-        Ok(vectors) => vectors,
-        Err(e) => {
-            result.error_message = Some(e.to_string());
-            return result;
+    let test_cases = if test_vectors_dir.is_dir() {
+        match parse_test_vectors(&test_vectors_dir) {
+            Ok(vectors) => vectors,
+            Err(e) => {
+                result.error_message = Some(e.to_string());
+                return result;
+            }
         }
+    } else if gtest_available {
+        Vec::new()
+    } else {
+        result.error_message = Some(format!(
+            "Required test_vectors directory not found: {}",
+            test_vectors_dir.display()
+        ));
+        return result;
     };
     result.total_tests = test_cases.len();
 
-    let gtest_available = program_dir.join(harness::gtest::GTEST_SUITE_DIR).is_dir();
     if test_harness == TestHarness::Gtest && !gtest_available {
         result.error_message = Some(format!(
             "--test-harness gtest requested, but {} has no gtest_suite/ directory",

@@ -1,0 +1,49 @@
+{
+    "name": "c_api",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "functions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "return_type": { "type": "string" },
+                        "param_types": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["name", "return_type", "param_types"],
+                    "additionalProperties": false
+                }
+            },
+            "structs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "fields": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "type": { "type": "string" }
+                                },
+                                "required": ["name", "type"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["name", "fields"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["functions", "structs"],
+        "additionalProperties": false
+    }
+}

@@ -6,11 +6,13 @@ mod runner;
 mod scheduler;
 pub mod util;
 
+use build_c_artifact::BuildCArtifact;
 use build_config::BuildConfig;
-use build_project_spec::BuildProjectSpec;
+use build_project_spec::{BuildProjectSpec, ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
 use emit_build_features::EmitBuildFeatures;
 use fix_declarations_llm::FixDeclarationsLlm;
+use generate_difftest_suite::GenerateDiffTestSuite;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
 use harvest_core::{HarvestIR, diagnostics};
@@ -18,6 +20,7 @@ use load_raw_source::LoadRawSource;
 use modular_translation_llm::ModularTranslationLlm;
 use quantize_rust_spans::QuantizeRustSpans;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
+use run_difftest::{DiffTestResult, RunDiffTest};
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -93,6 +96,32 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
                 current_pkg_id = fix;
                 current_build_id = new_build;
             }
+        }
+
+        // Differential testing: for library projects, generate a C test harness that
+        // exercises the public API through both the original C build and the translated
+        // Rust candidate, and report how many calls diverge. Not yet wired into a repair
+        // loop, and executable projects are not yet supported (see generate_exec_difftests
+        // / run_exec_difftest).
+        let is_library = matches!(
+            ir.get::<ProjectSpec>(project_spec)
+                .ok_or("transpile: no ProjectSpec in IR")?
+                .kind,
+            ProjectKind::Library
+        );
+        if is_library {
+            let c_artifact = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
+            let diff_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
+            let diff_result_id =
+                scheduler.queue_after(RunDiffTest, &[diff_suite, c_artifact, current_pkg_id]);
+            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+            let diff_result = ir
+                .get::<DiffTestResult>(diff_result_id)
+                .ok_or("transpile: no DiffTestResult in IR")?;
+            info!(
+                "Diff test: {}/{} passed ({} failed)",
+                diff_result.passed, diff_result.total, diff_result.failed
+            );
         }
 
         scheduler.queue_after(WriteOutput, &[current_build_id]);

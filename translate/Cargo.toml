@@ -35,6 +35,8 @@ raw_source_to_cargo_llm.workspace = true
 translate_agentic.workspace = true
 verify_fix_agentic.workspace = true
 build_c_artifact.workspace = true
+generate_difftest_suite.workspace = true
+run_difftest.workspace = true
 
 [dev-dependencies]
 full_source.workspace = true

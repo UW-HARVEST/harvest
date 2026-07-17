@@ -156,6 +156,8 @@ These rules are not negotiable.
 
 {RUST_TOOLCHAIN_CONTEXT}
 
+{WORKDIR_BOUNDARY}
+
 ### Cargo features
 - Feature names exposed to the build harness are the **bare lowercase VALUE**
   of each CMake cache variable, NOT the variable name nor a prefix-decorated

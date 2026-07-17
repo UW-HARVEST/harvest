@@ -894,10 +894,13 @@ def print_session_stats(sessions: list[Session]) -> None:
                 sub_turns = len(st.conversation)
                 sub_tools = count_tools_in_conversation(st.conversation)
                 prog_steps = len(st.progress_snapshots)
-                frozen_note = (
-                    "  ⚠ FROZEN (never completed; process ended mid-task)"
-                    if ag.frozen or st.status in ("running", "pending") else ""
-                )
+                in_flight = st.status in ("running", "pending")
+                if ag.frozen or (in_flight and _session_ended(s)):
+                    frozen_note = "  ⚠ FROZEN (never completed; process ended mid-task)"
+                elif in_flight:
+                    frozen_note = "  ⏳ in progress (live trace — no result event yet)"
+                else:
+                    frozen_note = ""
                 print(f"\n  --- Sub-agent [{st.description}] ---")
                 print(f"    task_id:        {st.task_id}")
                 print(f"    status:         {st.status}{frozen_note}")
@@ -1644,6 +1647,23 @@ class _Group:
     end_idx: int     # last row index (inclusive)
     tool_use: Optional[ToolUse] = None  # the parent's Agent ToolUse that spawned this group
     is_async: bool = False
+    session_ended: bool = True  # False for a live trace (no result event yet)
+
+
+def _session_ended(s: Session) -> bool:
+    """
+    Whether the process behind this session is known to have finished.
+
+    A Claude stream trace ends with a `result` event; without one the trace
+    is either still being written (live visualization of a running session)
+    or was killed hard. A sub-agent with status "running" must NOT be
+    reported as frozen unless the session actually ended — otherwise every
+    in-flight sync sub-agent in a live trace shows up as a false FROZEN.
+    OpenCode sessions come from post-mortem exports, so they count as ended.
+    """
+    if s.agent_type == "claude":
+        return s.result is not None
+    return True
 
 
 def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
@@ -1662,7 +1682,8 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
     groups: list[_Group] = []
 
     def emit(turns: list[Turn], prefix: str, depth: int,
-             compacts_by_after: dict[int, list[CompactEvent]]) -> None:
+             compacts_by_after: dict[int, list[CompactEvent]],
+             session_ended: bool) -> None:
         # Compaction can occur before any turn was issued (rare).
         for ev in compacts_by_after.get(0, []):
             rows.append(_Row(label="", depth=depth, compact=ev))
@@ -1687,7 +1708,8 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
                     sub_compacts: dict[int, list[CompactEvent]] = defaultdict(list)
                     for ev in tu.subagent.compact_events:
                         sub_compacts[ev.after_turn_index].append(ev)
-                    emit(tu.subagent.conversation, sub_prefix, depth + 1, sub_compacts)
+                    emit(tu.subagent.conversation, sub_prefix, depth + 1,
+                         sub_compacts, session_ended)
                     grp_end = len(rows) - 1
                     if grp_end >= grp_start:
                         groups.append(_Group(
@@ -1695,6 +1717,7 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
                             start_idx=grp_start, end_idx=grp_end,
                             tool_use=tu,
                             is_async=tu.subagent.is_async,
+                            session_ended=session_ended,
                         ))
                     # Insert a thin spacer between sibling sub-agents so the
                     # boundary between A{n} and A{n+1} is visually obvious
@@ -1716,7 +1739,7 @@ def _flatten_rows(sessions: list[Session]) -> tuple[list[_Row], list[_Group]]:
         by_after: dict[int, list[CompactEvent]] = defaultdict(list)
         for ev in s.compact_events:
             by_after[ev.after_turn_index].append(ev)
-        emit(s.conversation, prefix, 0, by_after)
+        emit(s.conversation, prefix, 0, by_after, _session_ended(s))
         # Append a summary banner at the end of this session.
         rows.append(_Row(
             label="", depth=0, summary_text=_format_session_summary(s, s_idx),
@@ -1995,12 +2018,16 @@ def render_timeline_svg(sessions: list[Session]) -> str:
         gx = label_w + grp.depth * indent_px + 3
         gy1 = row_y[grp.start_idx] + 1
         gy2 = row_y[grp.end_idx] + row_heights[grp.end_idx] - 1
+        # Status-based frozen inference is only valid once the session has
+        # actually ended; in a live trace a "running" sub-agent is just a
+        # sub-agent that is still running.
+        in_flight = (
+            grp.tool_use is not None
+            and grp.tool_use.subagent is not None
+            and grp.tool_use.subagent.status in ("running", "pending")
+        )
         frozen = grp.tool_use is not None and (
-            grp.tool_use.frozen
-            or (
-                grp.tool_use.subagent is not None
-                and grp.tool_use.subagent.status in ("running", "pending")
-            )
+            grp.tool_use.frozen or (grp.session_ended and in_flight)
         )
         tooltip_lines = []
         if grp.tool_use is not None:
@@ -2020,6 +2047,10 @@ def render_timeline_svg(sessions: list[Session]) -> str:
             if frozen:
                 tooltip_lines.append(
                     "⚠ FROZEN — still running when the process ended"
+                )
+            elif in_flight:
+                tooltip_lines.append(
+                    "⏳ in progress — trace has no result event yet (live session)"
                 )
             tooltip_lines.append(f"{CAT_SUBAGENT}: {size:,} chars")
             tooltip_lines.append(f"[task] {desc}")

@@ -52,6 +52,8 @@ on any single step.
 
 {RUST_TOOLCHAIN_CONTEXT}
 
+{WORKDIR_BOUNDARY}
+
 {AGENT_TOOLS_SECTION}
 
 ## Static Analysis Tool Wishlist

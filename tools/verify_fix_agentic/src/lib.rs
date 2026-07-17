@@ -146,6 +146,10 @@ impl Tool for VerifyFixAgentic {
                 "{RUST_TOOLCHAIN_CONTEXT}",
                 &rust_toolchain_context.prompt_block,
             )
+            .replace(
+                "{WORKDIR_BOUNDARY}",
+                &agent_runner::render_workdir_boundary(agent, &translated),
+            )
             .replace("{WORKFLOW_HINT}", &workflow_hint)
             .replace(
                 "{MODEL_LIMITS}",

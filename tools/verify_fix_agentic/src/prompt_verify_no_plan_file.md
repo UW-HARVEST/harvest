@@ -45,6 +45,8 @@ These rules govern verification. They are not negotiable.
 
 {RUST_TOOLCHAIN_CONTEXT}
 
+{WORKDIR_BOUNDARY}
+
 ### Ground truth
 - The C code is the authoritative reference. Rust outputs must match C
   byte-for-byte (binary stdout AND every public function output under

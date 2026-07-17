@@ -841,12 +841,71 @@ const OPENCODE_LOCAL_PERMISSIONS: &[(&str, &str)] = &[
     ("skill", "deny"),
 ];
 
+/// The run's private temp directory: the parent of `work_dir`
+/// (`/tmp/.tmpXXXX` for `/tmp/.tmpXXXX/translated_rust`).
+fn run_tempdir(work_dir: &Path) -> &Path {
+    work_dir.parent().unwrap_or(work_dir)
+}
+
+/// Project-level OpenCode config written alongside the agent definitions.
+/// `external_directory` defaults to "ask", and task sub-agent sessions do not
+/// inherit `--dangerously-skip-permissions`, so in a headless run any
+/// sub-agent tool call that touches a path outside the project directory
+/// blocks forever on the unanswerable permission prompt, freezing the whole
+/// session until the harness timeout kills it. Scoping external access to
+/// this run's temp directory and denying everything else makes "ask"
+/// unreachable: a mistyped or out-of-run path fails fast with an error the
+/// agent can see and correct, and concurrent runs cannot touch each other's
+/// tempdirs. OpenCode resolves permission rules last-match-wins, so the
+/// catch-all deny must come before the tempdir allow.
+fn opencode_project_config(work_dir: &Path) -> String {
+    let tempdir_pattern = format!("{}/**", run_tempdir(work_dir).display());
+    format!(
+        r#"{{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {{
+    "external_directory": {{
+      "*": "deny",
+      {}: "allow"
+    }}
+  }}
+}}
+"#,
+        serde_json::to_string(&tempdir_pattern).expect("path pattern serializes to JSON"),
+    )
+}
+
+const WORKDIR_BOUNDARY_TEMPLATE: &str = r#"### Filesystem boundary
+- `{TEMPDIR}` is the ONLY directory you may read or write.
+- Keep all scratch files inside the project directory.
+- Prefer relative paths. Never retype the absolute temp-directory prefix
+  by hand: a single typo in it makes the path "external" and the call is
+  denied.
+- When you dispatch sub-agents, copy this entire "Filesystem boundary"
+  section into every sub-agent prompt verbatim."#;
+
+/// Prompt block telling the agent it may only touch files under this run's
+/// temp directory, mirroring the `external_directory` policy that
+/// `opencode_project_config` enforces. Rendered for OpenCode only; other
+/// agents get an empty string (substituted for `{WORKDIR_BOUNDARY}`).
+pub fn render_workdir_boundary(agent: AgentKind, work_dir: &Path) -> String {
+    if agent != AgentKind::OpenCode {
+        return String::new();
+    }
+    WORKDIR_BOUNDARY_TEMPLATE.replace("{TEMPDIR}", &run_tempdir(work_dir).display().to_string())
+}
+
 fn write_opencode_agent(
     work_dir: &Path,
     config: OpenCodeAgentConfig<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agents_dir = work_dir.join(".opencode/agents");
     fs::create_dir_all(&agents_dir)?;
+
+    fs::write(
+        work_dir.join(".opencode/opencode.json"),
+        opencode_project_config(work_dir),
+    )?;
 
     let mut permissions = String::new();
     for (tool, policy) in OPENCODE_LOCAL_PERMISSIONS {
@@ -880,6 +939,58 @@ mod tests {
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("websearch", "deny")));
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("skill", "deny")));
         assert!(OPENCODE_LOCAL_PERMISSIONS.contains(&("bash", "allow")));
+    }
+
+    #[test]
+    fn opencode_project_config_scopes_external_directory_to_run_tempdir() {
+        let work_dir = Path::new("/tmp/.tmpAbc123/translated_rust");
+        let raw = opencode_project_config(work_dir);
+        let config: serde_json::Value =
+            serde_json::from_str(&raw).expect("project config must be valid JSON");
+        let rules = config
+            .pointer("/permission/external_directory")
+            .and_then(|v| v.as_object())
+            .expect("external_directory rules present");
+        assert_eq!(rules.get("*").and_then(|v| v.as_str()), Some("deny"));
+        assert_eq!(
+            rules.get("/tmp/.tmpAbc123/**").and_then(|v| v.as_str()),
+            Some("allow")
+        );
+        // OpenCode resolves rules last-match-wins: the catch-all deny must
+        // appear before the tempdir allow in the serialized config.
+        assert!(raw.find("\"*\"").unwrap() < raw.find("/tmp/.tmpAbc123/**").unwrap());
+    }
+
+    #[test]
+    fn write_opencode_agent_writes_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write_opencode_agent(
+            dir.path(),
+            OpenCodeAgentConfig {
+                name: "harvest-translate",
+                description: "test",
+                system_prompt: "",
+            },
+        )
+        .unwrap();
+        let config = fs::read_to_string(dir.path().join(".opencode/opencode.json")).unwrap();
+        assert_eq!(config, opencode_project_config(dir.path()));
+        assert!(
+            dir.path()
+                .join(".opencode/agents/harvest-translate.md")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn workdir_boundary_rendered_for_opencode_only() {
+        let work_dir = Path::new("/tmp/.tmpAbc123/translated_rust");
+        let block = render_workdir_boundary(AgentKind::OpenCode, work_dir);
+        assert!(block.starts_with("### Filesystem boundary"));
+        assert!(block.contains("/tmp/.tmpAbc123"));
+        assert!(block.contains("sub-agent prompt"));
+        assert_eq!(render_workdir_boundary(AgentKind::Claude, work_dir), "");
+        assert_eq!(render_workdir_boundary(AgentKind::Kiro, work_dir), "");
     }
 
     #[test]

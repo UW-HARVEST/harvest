@@ -107,6 +107,8 @@ When in doubt, re-read this section.
 
 {RUST_TOOLCHAIN_CONTEXT}
 
+{WORKDIR_BOUNDARY}
+
 ### AFTER ANY COMPACTION: `cat PLAN.md` is your FIRST action before anything.
 
 ### Cargo features

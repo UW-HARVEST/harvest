@@ -60,6 +60,8 @@ These rules govern verification. They must survive every compaction unchanged.
 
 {RUST_TOOLCHAIN_CONTEXT}
 
+{WORKDIR_BOUNDARY}
+
 ### AFTER ANY COMPACTION: `cat PLAN.md HYPOTHESES.md` is your FIRST action before anything.
 
 ### Ground truth

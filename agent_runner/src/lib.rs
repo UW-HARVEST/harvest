@@ -83,12 +83,18 @@ impl AgentInvocation<'_> {
 /// for `{CLAUDE_ASYNC_SUBAGENT_WARNING}` when the agent is Claude, and an
 /// empty string otherwise. Remove once the CLI is fixed.
 pub const CLAUDE_ASYNC_SUBAGENT_WARNING: &str = "\
-**Claude Code headless bug — do not end your turn while sub-agents are \
-running.** Recent Claude Code versions launch sub-agents asynchronously by \
-default, and in headless (`claude -p`) mode ending your turn while a \
-sub-agent is still running kills the whole session, including the sub-agent. \
-After dispatching sub-agents, keep the main turn alive and actively wait \
-until every one of them has finished and reported back.";
+**Claude Code headless bug — background sub-agents get killed.** Recent \
+Claude Code versions launch sub-agents asynchronously by default. In this \
+headless (`claude -p`) session that is fatal in two ways: ending your turn \
+while a background sub-agent is still running kills it (there is NO \
+automatic resume — a reply that says \"waiting for the agents\" ends the \
+session), and a context compaction can kill background sub-agents mid-run. \
+Therefore launch EVERY sub-agent with `run_in_background: false` \
+(synchronous) and wait for its result before doing anything else. If a task \
+somehow ends up in the background anyway, do not end your turn: block on it \
+with repeated Bash polling (e.g. have the sub-agent touch a sentinel file \
+when done, then `timeout 540 bash -c 'until [ -f <sentinel> ]; do sleep 5; \
+done'` in a loop) until it has finished and reported back.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustToolchainContext {

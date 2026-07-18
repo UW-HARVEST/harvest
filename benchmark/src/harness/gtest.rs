@@ -7,8 +7,8 @@
 //!
 //! # Contract with the suite
 //! - `gtest_suite/CMakeLists.txt` accepts `-DTEST_LIB_PATH=<abs .so>` (library
-//!   under test) and `-DGTEST_PIN_CMAKE=<abs gtest.cmake>` (shared, tag-pinned
-//!   GoogleTest fetched from `tools/cmake/gtest.cmake` in the corpus).
+//!   under test) and is otherwise self-contained: it declares its own
+//!   tag-pinned GoogleTest via FetchContent.
 //! - The test executable target is named `harvest_gtest`.
 //!
 //! # Execution model
@@ -37,9 +37,6 @@ const GTEST_BUILD_SUBDIR: &str = "target/gtest_build";
 
 /// Required name of the suite's test executable target
 const GTEST_BINARY_NAME: &str = "harvest_gtest";
-
-/// Self-contained copy of the shared GoogleTest pin inside the output directory
-const GTEST_PIN_COPY: &str = "translated_tools/cmake/gtest.cmake";
 
 /// Environment variable for shared library search paths
 #[cfg(target_os = "macos")]
@@ -105,10 +102,7 @@ pub fn run_gtest_validation(
     let lib_path = lib_path.canonicalize().unwrap_or(lib_path);
     log::info!("Located library at: {}", lib_path.display());
 
-    let gtest_pin = locate_gtest_pin(input_dir, output_dir)?;
-    log::info!("Using GoogleTest pin: {}", gtest_pin.display());
-
-    let gtest_bin = build_gtest_suite(output_dir, &suite_dir, &lib_path, &gtest_pin)?;
+    let gtest_bin = build_gtest_suite(output_dir, &suite_dir, &lib_path)?;
     log::info!("GoogleTest suite built at: {}", gtest_bin.display());
 
     let ld_library_path = lib_path
@@ -122,48 +116,11 @@ pub fn run_gtest_validation(
     run_gtest_tests(&gtest_bin, &ld_library_path, &test_names, timeout)
 }
 
-/// Locates the shared GoogleTest pin (`tools/cmake/gtest.cmake`).
-///
-/// Prefers a copy already inside the output directory (self-contained test-only
-/// reruns), otherwise walks up the ancestors of the input directory and copies
-/// the pin into the output directory for self-containment.
-fn locate_gtest_pin(input_dir: &Path, output_dir: &Path) -> HarvestResult<PathBuf> {
-    let pin_copy = output_dir.join(GTEST_PIN_COPY);
-    if pin_copy.exists() {
-        return Ok(pin_copy.canonicalize().unwrap_or(pin_copy));
-    }
-
-    let found = input_dir
-        .ancestors()
-        .flat_map(|ancestor| {
-            [
-                ancestor.join("tools").join("cmake").join("gtest.cmake"),
-                ancestor
-                    .join("Test-Corpus")
-                    .join("tools")
-                    .join("cmake")
-                    .join("gtest.cmake"),
-            ]
-        })
-        .find(|p| p.exists())
-        .ok_or_else(|| {
-            "Unable to locate gtest.cmake (searched ancestors for tools/cmake/gtest.cmake)"
-                .to_string()
-        })?;
-
-    if let Some(parent) = pin_copy.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&found, &pin_copy)?;
-    Ok(pin_copy.canonicalize().unwrap_or(pin_copy))
-}
-
 /// Configures and builds the gtest suite, returning the test binary path.
 fn build_gtest_suite(
     output_dir: &Path,
     suite_dir: &Path,
     lib_path: &Path,
-    gtest_pin: &Path,
 ) -> HarvestResult<PathBuf> {
     let build_dir = output_dir.join(GTEST_BUILD_SUBDIR);
     fs::create_dir_all(&build_dir)?;
@@ -176,7 +133,6 @@ fn build_gtest_suite(
         .arg(&build_dir)
         .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg(format!("-DTEST_LIB_PATH={}", lib_path.display()))
-        .arg(format!("-DGTEST_PIN_CMAKE={}", gtest_pin.display()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

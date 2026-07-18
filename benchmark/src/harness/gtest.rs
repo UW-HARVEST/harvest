@@ -113,7 +113,102 @@ pub fn run_gtest_validation(
     let test_names = list_gtest_tests(&gtest_bin, &ld_library_path)?;
     log::info!("Discovered {} GoogleTest test(s)", test_names.len());
 
-    run_gtest_tests(&gtest_bin, &ld_library_path, &test_names, timeout)
+    let budgets = load_gtest_budgets(&suite_dir);
+    if budgets.is_some() {
+        log::info!("Using per-test timeout budgets from {}", BUDGETS_FILE);
+    }
+
+    run_gtest_tests(&gtest_bin, &ld_library_path, &test_names, timeout, budgets.as_ref())
+}
+
+/// Name of the optional per-test timeout manifest inside `gtest_suite/`.
+const BUDGETS_FILE: &str = "budgets.json";
+
+/// Optional per-test timeout budgets shipped with a gtest suite.
+///
+/// `baselines` maps test names (exact, or with `*` wildcards for
+/// parameterized groups) to the measured runtime of that test **against the
+/// original C library**, in seconds. The harness grants each test
+/// `max(baseline * default_factor, min_seconds)` before killing it; tests
+/// without a baseline entry fall back to the global `--timeout` value.
+#[derive(serde::Deserialize)]
+pub struct GtestBudgets {
+    #[serde(default = "default_factor")]
+    pub default_factor: f64,
+    #[serde(default = "default_min_seconds")]
+    pub min_seconds: f64,
+    #[serde(default)]
+    pub baselines: std::collections::HashMap<String, f64>,
+}
+
+fn default_factor() -> f64 {
+    3.0
+}
+
+fn default_min_seconds() -> f64 {
+    10.0
+}
+
+/// Loads `budgets.json` from the suite directory, if present and valid.
+/// A malformed file is logged and ignored (falls back to the global timeout).
+fn load_gtest_budgets(suite_dir: &Path) -> Option<GtestBudgets> {
+    let path = suite_dir.join(BUDGETS_FILE);
+    let raw = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<GtestBudgets>(&raw) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            log::warn!("Ignoring malformed {}: {}", path.display(), e);
+            None
+        }
+    }
+}
+
+/// Matches a test name against a budget key: exact match, or a `*` wildcard
+/// pattern (each `*` matches any run of characters).
+fn budget_key_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == name;
+    }
+    let segments: Vec<&str> = pattern.split('*').collect();
+    let mut rest = name;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.is_empty() {
+            continue;
+        }
+        match rest.find(seg) {
+            Some(pos) => {
+                // The first segment must anchor at the start.
+                if i == 0 && pos != 0 {
+                    return false;
+                }
+                rest = &rest[pos + seg.len()..];
+            }
+            None => return false,
+        }
+    }
+    // The last segment must anchor at the end.
+    match segments.last() {
+        Some(last) if !last.is_empty() => name.ends_with(last),
+        _ => true,
+    }
+}
+
+impl GtestBudgets {
+    /// Per-test timeout in seconds: `max(baseline * factor, min_seconds)` when
+    /// a baseline is known (exact entries win over wildcard ones), otherwise
+    /// the supplied fallback (the global `--timeout`).
+    fn timeout_secs(&self, test_name: &str, fallback: u64) -> u64 {
+        let baseline = self.baselines.get(test_name).copied().or_else(|| {
+            self.baselines
+                .iter()
+                .find(|(k, _)| budget_key_matches(k, test_name))
+                .map(|(_, v)| *v)
+        });
+        match baseline {
+            Some(b) => (b * self.default_factor).max(self.min_seconds).ceil() as u64,
+            None => fallback,
+        }
+    }
 }
 
 /// Configures and builds the gtest suite, returning the test binary path.
@@ -226,19 +321,24 @@ fn run_gtest_tests(
     ld_library_path: &str,
     test_names: &[String],
     timeout: u64,
+    budgets: Option<&GtestBudgets>,
 ) -> HarvestResult<(Vec<TestResult>, Vec<String>)> {
     let mut test_results = Vec::new();
     let mut error_messages = Vec::new();
-    let timeout_duration = Duration::from_secs(timeout);
 
     log::info!("Validating library outputs against GoogleTest suite...");
 
     for (i, name) in test_names.iter().enumerate() {
+        let test_timeout = budgets
+            .map(|b| b.timeout_secs(name, timeout))
+            .unwrap_or(timeout);
+        let timeout_duration = Duration::from_secs(test_timeout);
         log::info!(
-            "Running gtest {} ({} of {})...",
+            "Running gtest {} ({} of {}, timeout {}s)...",
             name,
             i + 1,
-            test_names.len()
+            test_names.len(),
+            test_timeout
         );
 
         match run_single_gtest(gtest_bin, ld_library_path, name, timeout_duration) {

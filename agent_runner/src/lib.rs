@@ -416,6 +416,25 @@ pub fn invoke_agent(invocation: AgentInvocation<'_>) -> Result<(), Box<dyn std::
     fs::create_dir_all(&logs_dir)?;
     let log_path = logs_dir.join(invocation.phase.log_file_name());
 
+    let agent_display = match invocation.agent {
+        AgentKind::Kiro => "Kiro",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::OpenCode => "OpenCode",
+    };
+    // Phase markers mirrored into the shared output log so it is
+    // self-sufficient for trace analysis: parse_trace derives the agent
+    // *process* lifetime (stall detection, session-end inference) from the
+    // "Invoking …" → "Exporting …"/"Appended …" ISO-timestamped window,
+    // which previously only existed on stderr (i.e. in manually captured
+    // `&>` trace files).
+    append_output_log_line(
+        invocation.output_log_path,
+        &format!(
+            "Invoking {agent_display} {} agent (marker)",
+            invocation.phase.label()
+        ),
+    );
+
     let status = match invocation.agent {
         AgentKind::Kiro => invoke_kiro(&invocation, &log_path)?,
         AgentKind::Claude => invoke_claude(&invocation, &log_path)?,
@@ -424,16 +443,79 @@ pub fn invoke_agent(invocation: AgentInvocation<'_>) -> Result<(), Box<dyn std::
 
     if !status.success() {
         warn!("{} agent exited with {status}", invocation.phase.label());
+        // Mirror the abnormal exit into the shared output log: the agent's
+        // own stdout/stderr are already tee'd into the per-agent log, but
+        // runner diagnostics otherwise exist only on stderr.
+        append_output_log_line(
+            invocation.output_log_path,
+            &format!(
+                "WARNING: {} agent exited with {status}",
+                invocation.phase.label()
+            ),
+        );
     }
 
     if invocation.agent == AgentKind::OpenCode {
-        if let Err(e) = export_opencode_sessions(&log_path, invocation.output_log_path) {
+        append_output_log_line(
+            invocation.output_log_path,
+            &format!(
+                "Exporting OpenCode sessions ({} agent exited: {status})",
+                invocation.phase.label()
+            ),
+        );
+        if let Err(e) = export_opencode_sessions(&log_path) {
             warn!("OpenCode session export failed (non-fatal): {e}");
+            append_output_log_line(
+                invocation.output_log_path,
+                &format!("WARNING: OpenCode session export failed (non-fatal): {e}"),
+            );
         }
     }
 
     append_trace_if_requested(&log_path, invocation.output_log_path)?;
+    append_output_log_line(
+        invocation.output_log_path,
+        &format!("Appended agent trace ({} phase done)", invocation.phase.label()),
+    );
     Ok(())
+}
+
+/// Appends one ISO-timestamped runner marker line to the shared output log,
+/// formatted like a tracing log line so `parse_trace.py` picks it up with the
+/// same regexes it already uses on stderr-captured traces. Best-effort: a
+/// missing/unwritable output log is not an error.
+fn append_output_log_line(output_log_path: Option<&Path>, msg: &str) {
+    let Some(out_path) = output_log_path else {
+        return;
+    };
+    use std::io::Write;
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(out_path) {
+        let _ = writeln!(f, "{}  INFO agent_runner: {}", iso_utc_now(), msg);
+    }
+}
+
+/// Current UTC time as ISO-8601 (`2026-07-18T12:34:56.789Z`) without a chrono
+/// dependency (civil-from-days algorithm).
+fn iso_utc_now() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs() as i64;
+    let millis = d.subsec_millis();
+    let days = secs.div_euclid(86400);
+    let sod = secs.rem_euclid(86400);
+    let (h, m, s) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
 }
 
 fn prepare_agent_files(invocation: &AgentInvocation<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -693,12 +775,12 @@ fn export_opencode_session(session_id: &str) -> Result<String, Box<dyn std::erro
 
     Ok(raw.to_string())
 }
-/// sub-agent sessions, appending each export block to `log_path` and
-/// `output_log_path` (if set).
-fn export_opencode_sessions(
-    log_path: &Path,
-    output_log_path: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// sub-agent sessions, appending each export block to `log_path` only.
+/// The shared output log receives exactly one copy of everything (exports
+/// included) via `append_trace_if_requested`, which copies the whole
+/// per-agent log afterwards — appending here too used to double every
+/// export block in output.log.
+fn export_opencode_sessions(log_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let session_ids = extract_session_ids_from_log(log_path);
     if session_ids.is_empty() {
         info!("No session IDs found in OpenCode log; skipping export");
@@ -718,7 +800,9 @@ fn export_opencode_sessions(
                 let marker = format!("## opencode-export: {sid}\n");
                 let block = format!("{marker}{json}\n");
 
-                // Append to the per-agent log file.
+                // Append to the per-agent log file. (Not to the shared output
+                // log: append_trace_if_requested copies this whole file there
+                // afterwards — a direct append here would duplicate it.)
                 fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -727,18 +811,6 @@ fn export_opencode_sessions(
                         use std::io::Write;
                         f.write_all(block.as_bytes())
                     })?;
-
-                // Also append to the shared output log if configured.
-                if let Some(out_path) = output_log_path {
-                    fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(out_path)
-                        .and_then(|mut f| {
-                            use std::io::Write;
-                            f.write_all(block.as_bytes())
-                        })?;
-                }
 
                 // Write the export block to stderr (same stream as tracing log
                 // messages) under a lock so the entire multi-line JSON object is

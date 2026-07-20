@@ -7,6 +7,7 @@ agentic = false
 agentic_verify = false
 agentic_agent = "kiro"
 max_repair_passes = 2
+max_diff_repair_passes = 0
 
 [tools.raw_source_to_cargo_llm]
 address = "http://localhost:11434"
@@ -27,6 +28,12 @@ model = "codellama:7b"
 max_tokens = 10000
 
 [tools.generate_difftest_suite]
+address = "http://localhost:11434"
+backend = "ollama"
+model = "codellama:7b"
+max_tokens = 10000
+
+[tools.fix_diff_failures]
 address = "http://localhost:11434"
 backend = "ollama"
 model = "codellama:7b"

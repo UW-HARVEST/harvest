@@ -1,0 +1,15 @@
+[package]
+name = "fix_diff_failures"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+full_source.workspace = true
+harvest_core.workspace = true
+run_difftest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

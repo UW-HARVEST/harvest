@@ -76,6 +76,10 @@ pub struct Config {
     #[serde(default = "default_max_repair_passes")]
     pub max_repair_passes: usize,
 
+    /// Maximum number of LLM-based repair passes to attempt after a failed differential test.
+    #[serde(default = "default_max_diff_repair_passes")]
+    pub max_diff_repair_passes: usize,
+
     /// Sub-configuration for each tool.
     pub tools: HashMap<String, serde_json::Value>,
 
@@ -89,6 +93,10 @@ pub struct Config {
 
 fn default_max_repair_passes() -> usize {
     2
+}
+
+fn default_max_diff_repair_passes() -> usize {
+    0
 }
 
 impl Config {
@@ -105,6 +113,7 @@ impl Config {
             agentic_agent: AgentKind::Kiro,
             log_filter: "off".to_owned(),
             max_repair_passes: 0,
+            max_diff_repair_passes: 0,
             tools: Default::default(),
             unknown: Default::default(),
         }

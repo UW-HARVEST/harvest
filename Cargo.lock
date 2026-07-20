@@ -1186,6 +1186,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fix_diff_failures"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "run_difftest",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1460,6 +1472,7 @@ dependencies = [
  "directories",
  "emit_build_features",
  "fix_declarations_llm",
+ "fix_diff_failures",
  "full_source",
  "generate_difftest_suite",
  "harvest_core",

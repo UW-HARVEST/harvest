@@ -6,7 +6,9 @@ Rules:
 - Be surgical: change only the lines that are wrong. Do not rewrite working functions.
 - Do not change the public API or function signatures.
 - Do not add comments.
-- Return ALL Rust source files in the "files" list, including unchanged ones.
+- Return only the files you changed in the "files" list, using their path relative to the
+  project root (e.g. "src/lib.rs"). Do not return unchanged files, and do not use absolute
+  paths.
 
 Library failure lines (FAIL diff_* / WARN diff_*):
 - FAIL names the test ID and the function whose return value differed between C and Rust.

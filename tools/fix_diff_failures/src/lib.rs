@@ -1,6 +1,5 @@
 use full_source::{CargoPackage, RawSource};
 use harvest_core::config::unknown_field_warning;
-use harvest_core::fs::RawDir;
 use harvest_core::llm::{HarvestLLM, LLMConfig, LLMUsageTotals, build_request};
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
@@ -110,9 +109,21 @@ impl Tool for FixDiffFailures {
         let files: OutputFiles = serde_json::from_str(&response)?;
         info!("LLM returned {} files", files.files.len());
 
-        let mut out_dir = RawDir::default();
+        // Clone the existing package and overlay only the files the LLM returned, rather than
+        // rebuilding from scratch -- this preserves Cargo.toml and any files the LLM omits
+        // (see the updated system prompt, which now asks for changed files only). set_file
+        // errors if the file already exists, so overwrite in place when it does and only fall
+        // back to inserting a new file when it doesn't.
+        let mut out_dir = cargo_package.dir.clone();
         for file in files.files {
-            out_dir.set_file(&file.path, file.contents.into())?;
+            let contents: Vec<u8> = file.contents.into();
+            match out_dir.get_file_mut(&file.path) {
+                Ok(existing) => *existing = contents,
+                Err(harvest_core::fs::GetFileError::DoesNotExist) => {
+                    out_dir.set_file(&file.path, contents)?;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
 
         info!("Token usage [total] - {usage_totals:?}");

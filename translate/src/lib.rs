@@ -12,6 +12,8 @@ use build_project_spec::{BuildProjectSpec, ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
 use emit_build_features::EmitBuildFeatures;
 use fix_declarations_llm::FixDeclarationsLlm;
+use fix_diff_failures::FixDiffFailures;
+use full_source::CargoPackage;
 use generate_difftest_suite::GenerateDiffTestSuite;
 use harvest_core::config::Config;
 use harvest_core::utils::get_version;
@@ -100,9 +102,8 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
 
         // Differential testing: for library projects, generate a C test harness that
         // exercises the public API through both the original C build and the translated
-        // Rust candidate, and report how many calls diverge. Not yet wired into a repair
-        // loop, and executable projects are not yet supported (see generate_exec_difftests
-        // / run_exec_difftest).
+        // Rust candidate, and repair candidates that fail. Executable projects are not
+        // yet supported (see generate_exec_difftests / run_exec_difftest).
         let is_library = matches!(
             ir.get::<ProjectSpec>(project_spec)
                 .ok_or("transpile: no ProjectSpec in IR")?
@@ -112,9 +113,60 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         if is_library {
             let c_artifact = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
             let diff_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
-            let diff_result_id =
+            let mut diff_result_id =
                 scheduler.queue_after(RunDiffTest, &[diff_suite, c_artifact, current_pkg_id]);
             scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+            let mut best_passed = ir
+                .get::<DiffTestResult>(diff_result_id)
+                .ok_or("transpile: no DiffTestResult in IR")?
+                .passed;
+
+            for _ in 0..config.max_diff_repair_passes {
+                let failed = ir
+                    .get::<DiffTestResult>(diff_result_id)
+                    .ok_or("transpile: no DiffTestResult in IR")?
+                    .failed;
+                if failed == 0 {
+                    break;
+                }
+
+                let fix = scheduler
+                    .queue_after(FixDiffFailures, &[diff_result_id, load_src, current_pkg_id]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                // FixDiffFailures can itself hard-error (observed: the LLM returning a file
+                // list with a non-relative path, which RawDir::set_file rejects). If it does,
+                // `fix` never lands in the IR. Queuing TryCargoBuild/RunDiffTest on `fix`
+                // regardless would permanently strand them -- their input can never become
+                // ready -- which the scheduler treats as fatal (run_all errors out) rather
+                // than recoverable. Check first, and treat a missing `fix` as a rejected
+                // attempt, same as a downstream tool failing.
+                if ir.get::<CargoPackage>(fix).is_none() {
+                    continue;
+                }
+
+                let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+                let new_diff_result_id =
+                    scheduler.queue_after(RunDiffTest, &[diff_suite, c_artifact, fix]);
+                scheduler.run_all(&mut runner, &mut ir, config.clone())?;
+
+                // RunDiffTest (unlike TryCargoBuild) hard-errors instead of encoding failure
+                // in its result -- e.g. if the LLM's patch doesn't build as a cdylib. The
+                // ToolRunner swallows that error and just never inserts the representation,
+                // so a missing Id here means "this repair attempt failed," not "the pipeline
+                // is broken." Treat it as a rejected candidate and keep iterating from the
+                // last-accepted state.
+                let Some(new_result) = ir.get::<DiffTestResult>(new_diff_result_id) else {
+                    continue;
+                };
+                if new_result.passed > best_passed {
+                    best_passed = new_result.passed;
+                    current_pkg_id = fix;
+                    current_build_id = new_build;
+                    diff_result_id = new_diff_result_id;
+                }
+            }
+
             let diff_result = ir
                 .get::<DiffTestResult>(diff_result_id)
                 .ok_or("transpile: no DiffTestResult in IR")?;

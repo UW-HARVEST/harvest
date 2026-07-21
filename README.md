@@ -47,7 +47,7 @@ If you have [rustup](https://rustup.rs) installed, you can build the code by
 running the following command from the root of this repository:
 
 ```bash
-cargo build --releas
+cargo build --release
 ```
 
 If you do not use rustup, you will need a sufficiently-new stable Rust compiler.

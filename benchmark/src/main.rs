@@ -798,8 +798,206 @@ fn run_test_only(
         .collect())
 }
 
+/// Overall wall-clock budget for the conform agent (not per-test). Matches the
+/// verify stage's default; the per-test grading timeout is the `--timeout` flag.
+const CONFORM_AGENT_TIMEOUT_SECS: u64 = 36000;
+
+/// Determines which external test harness a translated program directory
+/// carries, and the directory names that constitute it, honoring an explicit
+/// `--test-harness` override.
+fn detect_conform_harness(
+    program_dir: &Path,
+    test_harness: TestHarness,
+) -> HarvestResult<(conform_agentic::ConformHarness, Vec<String>)> {
+    use conform_agentic::ConformHarness as H;
+    let has_gtest = program_dir.join(harness::gtest::GTEST_SUITE_DIR).is_dir();
+    let has_runner = program_dir.join("runner").is_dir();
+    let has_vectors = program_dir.join("test_vectors").is_dir();
+    let gtest = || (H::Gtest, vec!["gtest_suite".to_string()]);
+    let lib = || {
+        (
+            H::Lib,
+            vec!["runner".to_string(), "test_vectors".to_string()],
+        )
+    };
+    let bin = || (H::Bin, vec!["test_vectors".to_string()]);
+    match test_harness {
+        TestHarness::Gtest => has_gtest.then(gtest).ok_or_else(|| {
+            format!(
+                "--test-harness gtest, but {} has no gtest_suite/",
+                program_dir.display()
+            )
+            .into()
+        }),
+        TestHarness::Lib => has_runner.then(lib).ok_or_else(|| {
+            format!(
+                "--test-harness lib, but {} has no runner/",
+                program_dir.display()
+            )
+            .into()
+        }),
+        TestHarness::Bin => has_vectors.then(bin).ok_or_else(|| {
+            format!(
+                "--test-harness bin, but {} has no test_vectors/",
+                program_dir.display()
+            )
+            .into()
+        }),
+        TestHarness::Auto => {
+            if has_gtest {
+                Ok(gtest())
+            } else if has_runner {
+                Ok(lib())
+            } else if has_vectors {
+                Ok(bin())
+            } else {
+                Err(format!(
+                    "no external test suite found in {} (looked for gtest_suite/, runner/, test_vectors/)",
+                    program_dir.display()
+                )
+                .into())
+            }
+        }
+    }
+}
+
+/// Third-stage conformance mode: refine each already-translated program in
+/// `input_root` so its external tests pass, writing refined copies under
+/// `output_root`. The agent runs tempdir-isolated (never touching the input);
+/// grading afterward uses a pristine copy of the same external tests taken
+/// from the untouched input, so editing the tests cannot help the agent.
+fn run_conform(
+    input_root: &Path,
+    output_root: &Path,
+    agent: harvest_core::config::AgentKind,
+    model: Option<&str>,
+    grading_timeout: u64,
+    test_harness: TestHarness,
+    output_log_path: &Path,
+) -> HarvestResult<Vec<ProgramEvalStats>> {
+    validate_input_directory(input_root)?;
+    let program_dirs = translated_program_dirs(input_root)?;
+    log_found_programs(&program_dirs, input_root)?;
+
+    let env = std::collections::HashMap::new();
+    let mut results = Vec::new();
+
+    for in_prog in &program_dirs {
+        let name = in_prog
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let out_prog = output_root.join(&name);
+        let mut result = ProgramEvalStats::new(&name);
+
+        log::info!("\n{}", "=".repeat(80));
+        log::info!("Conform: refining {}", name);
+        log::info!("{}", "=".repeat(80));
+
+        let (harness_kind, test_dirs) = match detect_conform_harness(in_prog, test_harness) {
+            Ok(hk) => hk,
+            Err(e) => {
+                result.error_message = Some(e.to_string());
+                results.push(result);
+                continue;
+            }
+        };
+
+        // 1. Run the refinement agent (tempdir-isolated) into out_prog.
+        if let Err(e) = conform_agentic::run(conform_agentic::ConformParams {
+            input_project_dir: in_prog,
+            output_project_dir: &out_prog,
+            harness: harness_kind,
+            test_dirs: &test_dirs,
+            agent,
+            model,
+            timeout_secs: CONFORM_AGENT_TIMEOUT_SECS,
+            env: &env,
+            output_log_path: Some(output_log_path),
+        }) {
+            result.error_message = Some(format!("Conform agent failed: {e}"));
+            results.push(result);
+            continue;
+        }
+
+        // 2. Re-copy a pristine external test suite from the untouched input
+        //    into the refined output, so the grade is against tests the agent
+        //    could not have edited.
+        let mut copy_failed = None;
+        for d in &test_dirs {
+            let src = in_prog.join(d);
+            let dst = out_prog.join(d);
+            if dst.exists() {
+                let _ = std::fs::remove_dir_all(&dst);
+            }
+            if let Err(e) = harvest_core::cargo_utils::copy_directory_recursive(&src, &dst) {
+                copy_failed = Some(format!("Failed to stage pristine {d}: {e}"));
+                break;
+            }
+        }
+        if let Some(e) = copy_failed {
+            result.error_message = Some(e);
+            results.push(result);
+            continue;
+        }
+
+        // 3. Grade independently, exactly like --test mode.
+        results.push(test_existing_program(
+            &out_prog,
+            grading_timeout,
+            test_harness,
+        ));
+    }
+
+    Ok(results)
+}
+
 fn run(args: Args) -> HarvestResult<()> {
     log::info!("Running Benchmarks");
+
+    if args.conform {
+        let input_dir = args
+            .input_dir
+            .as_ref()
+            .expect("clap requires input_dir for --conform");
+        let output_dir = args
+            .output_dir
+            .as_ref()
+            .expect("clap requires output_dir for --conform");
+        let agent = match args.agentic_agent.as_deref() {
+            Some(s) => match s.to_lowercase().as_str() {
+                "kiro" => harvest_core::config::AgentKind::Kiro,
+                "claude" => harvest_core::config::AgentKind::Claude,
+                "opencode" | "oc" => harvest_core::config::AgentKind::OpenCode,
+                other => return Err(format!("unknown agent kind: {other}").into()),
+            },
+            None => return Err("--conform requires --agentic-agent".into()),
+        };
+        validate_input_directory(input_dir)?;
+        ensure_output_directory(output_dir)?;
+        log::info!(
+            "Conform mode: {} -> {}",
+            input_dir.display(),
+            output_dir.display()
+        );
+        let results = run_conform(
+            input_dir,
+            output_dir,
+            agent,
+            args.agentic_model.as_deref(),
+            args.timeout,
+            args.test_harness,
+            &output_dir.join("output.log"),
+        )?;
+        let csv_output_path = output_dir.join("results.csv");
+        write_csv_results(&csv_output_path, &results)?;
+        let summary_stats = SummaryStats::from_results(&results);
+        log_summary_stats(&summary_stats);
+        log_failing_programs(&results);
+        log::info!("\nConform processing complete.");
+        return Ok(());
+    }
 
     if let Some(test_path) = &args.test {
         log::info!("Test-only mode: {}", test_path.display());

@@ -920,6 +920,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "conform_agentic"
+version = "0.1.0"
+dependencies = [
+ "agent_runner",
+ "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1373,8 +1383,10 @@ dependencies = [
 name = "harvest-benchmark"
 version = "0.1.0"
 dependencies = [
+ "agent_runner",
  "build_project_spec",
  "clap",
+ "conform_agentic",
  "csv",
  "full_source",
  "harvest_core",

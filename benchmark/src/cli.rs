@@ -58,6 +58,31 @@ pub struct Args {
     )]
     pub test: Option<PathBuf>,
 
+    /// Third-stage conformance refinement mode. Takes an already-translated
+    /// (post verify) program directory as input_dir and writes a refined copy
+    /// to output_dir. The external test suite (gtest_suite/ or the tractor
+    /// runner+vectors already present in the input) is revealed to the agent,
+    /// whose objective is to make every external test pass; the refined result
+    /// is then graded independently against a pristine copy of the same tests.
+    /// Decoupled from translate/verify. Requires --agentic-agent (and usually
+    /// --agentic-model). Test selection follows --test-harness (default auto,
+    /// gtest preferred).
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "test",
+            "modular",
+            "agentic",
+            "agentic_verify",
+            "no_plan",
+            "no_plan_file",
+            "workflow",
+            "agent_tools",
+            "wait_until"
+        ]
+    )]
+    pub conform: bool,
+
     /// Use modular translation rather than standard all-at-once translation.
     #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
@@ -70,14 +95,15 @@ pub struct Args {
     #[arg(long, requires = "agentic")]
     pub agentic_verify: bool,
 
-    /// Which agent to use for agentic translation: kiro, claude, or opencode (requires --agentic).
-    #[arg(long, requires = "agentic")]
+    /// Which agent to use: kiro, claude, or opencode. Used by --agentic and by
+    /// --conform (both need an agent).
+    #[arg(long)]
     pub agentic_agent: Option<String>,
 
-    /// Agent model to use for agentic translation/verification (requires --agentic).
+    /// Agent model to use for agentic translation/verification/conformance.
     /// Claude accepts short aliases ("sonnet", "opus", "haiku") or full model IDs.
     /// OpenCode expects provider/model format (for example, "opencode-go/deepseek-v4-pro").
-    #[arg(long, requires = "agentic")]
+    #[arg(long)]
     pub agentic_model: Option<String>,
 
     /// Use the pre-883e2e2 prompts (no PLAN.md / HYPOTHESES.md / Invariants /

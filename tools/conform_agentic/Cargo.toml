@@ -1,0 +1,13 @@
+[package]
+name = "conform_agentic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agent_runner.workspace = true
+harvest_core.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

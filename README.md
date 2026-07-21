@@ -371,6 +371,8 @@ follow the run's progress in real time.
 
 ## Known issue: Claude Code async sub-agents can be killed mid-run
 
+**This problem is mitigated by prompting the agent to only use synchronous sub-agents.**
+
 As of Claude Code 2.1.201 (and some earlier 2.1.x versions), Claude Code
 changed the default sub-agent execution mode from synchronous to
 asynchronous. In the terminal UI, launching a sub-agent frees the input

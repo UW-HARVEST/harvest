@@ -118,7 +118,13 @@ pub fn run_gtest_validation(
         log::info!("Using per-test timeout budgets from {}", BUDGETS_FILE);
     }
 
-    run_gtest_tests(&gtest_bin, &ld_library_path, &test_names, timeout, budgets.as_ref())
+    run_gtest_tests(
+        &gtest_bin,
+        &ld_library_path,
+        &test_names,
+        timeout,
+        budgets.as_ref(),
+    )
 }
 
 /// Name of the optional per-test timeout manifest inside `gtest_suite/`.

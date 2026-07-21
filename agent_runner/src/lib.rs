@@ -10,6 +10,10 @@ use tracing::{info, warn};
 pub enum AgentPhase {
     Translate,
     Verify,
+    /// Third-stage refinement: an already-translated project is given the
+    /// external test suite (gtest / tractor vectors) and refined until every
+    /// external test passes. Runs standalone, decoupled from translate/verify.
+    Conform,
 }
 
 impl AgentPhase {
@@ -17,6 +21,7 @@ impl AgentPhase {
         match self {
             AgentPhase::Translate => "translation",
             AgentPhase::Verify => "verification",
+            AgentPhase::Conform => "conformance",
         }
     }
 
@@ -24,6 +29,7 @@ impl AgentPhase {
         match self {
             AgentPhase::Translate => "translation.log",
             AgentPhase::Verify => "verify.log",
+            AgentPhase::Conform => "conform.log",
         }
     }
 
@@ -31,6 +37,7 @@ impl AgentPhase {
         match self {
             AgentPhase::Translate => "harvest-translate",
             AgentPhase::Verify => "harvest-verify",
+            AgentPhase::Conform => "harvest-conform",
         }
     }
 
@@ -38,6 +45,7 @@ impl AgentPhase {
         match self {
             AgentPhase::Translate => "Harvest agentic translation backend",
             AgentPhase::Verify => "Harvest agentic verification backend",
+            AgentPhase::Conform => "Harvest agentic conformance backend",
         }
     }
 
@@ -47,6 +55,7 @@ impl AgentPhase {
             AgentPhase::Verify => {
                 "After any context compaction, you MUST first read PLAN.md and HYPOTHESES.md."
             }
+            AgentPhase::Conform => "After any context compaction, you MUST first read CONFORM.md.",
         }
     }
 }
@@ -475,7 +484,10 @@ pub fn invoke_agent(invocation: AgentInvocation<'_>) -> Result<(), Box<dyn std::
     append_trace_if_requested(&log_path, invocation.output_log_path)?;
     append_output_log_line(
         invocation.output_log_path,
-        &format!("Appended agent trace ({} phase done)", invocation.phase.label()),
+        &format!(
+            "Appended agent trace ({} phase done)",
+            invocation.phase.label()
+        ),
     );
     Ok(())
 }
@@ -489,7 +501,11 @@ fn append_output_log_line(output_log_path: Option<&Path>, msg: &str) {
         return;
     };
     use std::io::Write;
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(out_path) {
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out_path)
+    {
         let _ = writeln!(f, "{}  INFO agent_runner: {}", iso_utc_now(), msg);
     }
 }
@@ -539,6 +555,7 @@ fn prepare_agent_files(invocation: &AgentInvocation<'_>) -> Result<(), Box<dyn s
                     ""
                 },
             },
+            invocation.model,
         ),
     }
 }
@@ -930,8 +947,15 @@ fn run_tempdir(work_dir: &Path) -> &Path {
 /// agent can see and correct, and concurrent runs cannot touch each other's
 /// tempdirs. OpenCode resolves permission rules last-match-wins, so the
 /// catch-all deny must come before the tempdir allow.
-fn opencode_project_config(work_dir: &Path) -> String {
+fn opencode_project_config(work_dir: &Path, model: Option<&str>) -> String {
     let tempdir_pattern = format!("{}/**", run_tempdir(work_dir).display());
+    let provider_block = match openrouter_provider_pin(model) {
+        Some(pin) => format!(
+            ",\n  \"provider\": {}",
+            serde_json::to_string(&pin).expect("provider pin serializes to JSON"),
+        ),
+        None => String::new(),
+    };
     format!(
         r#"{{
   "$schema": "https://opencode.ai/config.json",
@@ -940,11 +964,42 @@ fn opencode_project_config(work_dir: &Path) -> String {
       "*": "deny",
       {}: "allow"
     }}
-  }}
+  }}{}
 }}
 "#,
         serde_json::to_string(&tempdir_pattern).expect("path pattern serializes to JSON"),
+        provider_block,
     )
+}
+
+/// OpenRouter multiplexes each model across several upstream endpoints and
+/// load-balances across them by default, so `openrouter/xiaomi/mimo-v2.5-pro`
+/// may be served by any host — including ones with a smaller context window,
+/// higher price, or worse uptime than the model author's own first-party
+/// endpoint (a run was once routed to a 262k-context, 5x-priced third party
+/// that then dropped the stream). Pin the request to the author's first-party
+/// endpoint and disable fallbacks: for a first-party author OpenRouter's
+/// provider slug equals the author segment of the model id (verified for
+/// `xiaomi`; holds for `deepseek`, `minimax`, etc.), so a run never silently
+/// lands on an inferior host. Returns None for non-OpenRouter models (direct
+/// providers route to a single upstream and need no hint).
+fn openrouter_provider_pin(model: Option<&str>) -> Option<serde_json::Value> {
+    let rest = model?.strip_prefix("openrouter/")?;
+    // Drop any routing suffix (e.g. ":floor") so the key matches the registry
+    // model id, then take the author segment as the first-party provider slug.
+    let model_id = rest.split(':').next().unwrap_or(rest);
+    let author = model_id.split('/').next().filter(|s| !s.is_empty())?;
+    Some(serde_json::json!({
+        "openrouter": {
+            "models": {
+                model_id: {
+                    "options": {
+                        "provider": { "only": [author], "allow_fallbacks": false }
+                    }
+                }
+            }
+        }
+    }))
 }
 
 const WORKDIR_BOUNDARY_TEMPLATE: &str = r#"### Filesystem boundary
@@ -970,13 +1025,14 @@ pub fn render_workdir_boundary(agent: AgentKind, work_dir: &Path) -> String {
 fn write_opencode_agent(
     work_dir: &Path,
     config: OpenCodeAgentConfig<'_>,
+    model: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agents_dir = work_dir.join(".opencode/agents");
     fs::create_dir_all(&agents_dir)?;
 
     fs::write(
         work_dir.join(".opencode/opencode.json"),
-        opencode_project_config(work_dir),
+        opencode_project_config(work_dir, model),
     )?;
 
     let mut permissions = String::new();
@@ -1016,7 +1072,7 @@ mod tests {
     #[test]
     fn opencode_project_config_scopes_external_directory_to_run_tempdir() {
         let work_dir = Path::new("/tmp/.tmpAbc123/translated_rust");
-        let raw = opencode_project_config(work_dir);
+        let raw = opencode_project_config(work_dir, None);
         let config: serde_json::Value =
             serde_json::from_str(&raw).expect("project config must be valid JSON");
         let rules = config
@@ -1031,6 +1087,36 @@ mod tests {
         // OpenCode resolves rules last-match-wins: the catch-all deny must
         // appear before the tempdir allow in the serialized config.
         assert!(raw.find("\"*\"").unwrap() < raw.find("/tmp/.tmpAbc123/**").unwrap());
+        // No model → no provider routing block.
+        assert!(config.get("provider").is_none());
+    }
+
+    #[test]
+    fn opencode_project_config_pins_openrouter_to_author_endpoint() {
+        let work_dir = Path::new("/tmp/.tmpAbc123/translated_rust");
+        let raw = opencode_project_config(work_dir, Some("openrouter/xiaomi/mimo-v2.5-pro"));
+        let config: serde_json::Value =
+            serde_json::from_str(&raw).expect("project config must be valid JSON");
+        let opts = config
+            .pointer("/provider/openrouter/models/xiaomi~1mimo-v2.5-pro/options/provider")
+            .expect("openrouter provider pin present");
+        assert_eq!(
+            opts.pointer("/only").and_then(|v| v.as_array()),
+            Some(&vec![serde_json::json!("xiaomi")])
+        );
+        assert_eq!(
+            opts.pointer("/allow_fallbacks").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn opencode_project_config_no_pin_for_non_openrouter() {
+        let work_dir = Path::new("/tmp/.tmpAbc123/translated_rust");
+        let raw = opencode_project_config(work_dir, Some("opencode-go/mimo-v2.5"));
+        let config: serde_json::Value =
+            serde_json::from_str(&raw).expect("project config must be valid JSON");
+        assert!(config.get("provider").is_none());
     }
 
     #[test]
@@ -1043,10 +1129,11 @@ mod tests {
                 description: "test",
                 system_prompt: "",
             },
+            None,
         )
         .unwrap();
         let config = fs::read_to_string(dir.path().join(".opencode/opencode.json")).unwrap();
-        assert_eq!(config, opencode_project_config(dir.path()));
+        assert_eq!(config, opencode_project_config(dir.path(), None));
         assert!(
             dir.path()
                 .join(".opencode/agents/harvest-translate.md")

@@ -158,6 +158,8 @@ pub fn run_all_benchmarks(
     workflow: bool,
     wait_until: Option<u64>,
     test_harness: TestHarness,
+    verify_harness: crate::cli::VerifyHarness,
+    fuzz: bool,
 ) -> HarvestResult<Vec<ProgramEvalStats>> {
     // Process all examples
     let mut results = Vec::new();
@@ -184,6 +186,8 @@ pub fn run_all_benchmarks(
             workflow,
             wait_until,
             test_harness,
+            verify_harness,
+            fuzz,
         );
 
         results.push(result);
@@ -279,6 +283,8 @@ fn benchmark_single_program(
     workflow: bool,
     wait_until: Option<u64>,
     test_harness: TestHarness,
+    verify_harness: crate::cli::VerifyHarness,
+    fuzz: bool,
 ) -> ProgramEvalStats {
     let program_name = program_dir
         .file_name()
@@ -393,6 +399,12 @@ fn benchmark_single_program(
         if workflow {
             effective_overrides.push("tools.translate_agentic.workflow=true".to_owned());
             effective_overrides.push("tools.verify_fix_agentic.workflow=true".to_owned());
+        }
+        if verify_harness == crate::cli::VerifyHarness::Gtest {
+            effective_overrides.push("tools.verify_fix_agentic.verify_harness=gtest".to_owned());
+        }
+        if fuzz {
+            effective_overrides.push("tools.verify_fix_agentic.fuzz=true".to_owned());
         }
         if let Some(ts) = wait_until {
             effective_overrides.push(format!("tools.verify_fix_agentic.wait_until={ts}"));
@@ -1090,6 +1102,8 @@ fn run(args: Args) -> HarvestResult<()> {
         args.workflow,
         args.wait_until,
         args.test_harness,
+        args.verify_harness,
+        args.fuzz,
     )?;
     let csv_output_path = output_dir.join("results.csv");
     write_csv_results(&csv_output_path, &results)?;

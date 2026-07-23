@@ -4,14 +4,11 @@ ground truth — the Rust code must produce byte-identical results.
 
 - `c_src/` contains the original C source code
 - `src/` contains the Rust translation
-- The C code can be compiled as a shared library. Look at c_src/CMakeLists.txt
-  to understand the build system. Build it with:
-  ```
-  cd c_src && mkdir -p build && cd build && \
-  cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON {CMAKE_BUILD_FLAGS} && \
-  cmake --build .
-  ```
-- Find the resulting .so files in the build output
+
+The concrete mechanism you use to compare C against Rust — how you build each
+side and where you write the comparison — is described in **Step 2** below.
+Everything before it (PLAN.md, the HYPOTHESES.md discipline, the invariants)
+applies regardless of which comparison mechanism you use.
 
 ## Step 0: Read PLAN.md FIRST
 
@@ -66,8 +63,7 @@ These rules govern verification. They must survive every compaction unchanged.
 
 ### Ground truth
 - The C code is the authoritative reference. Rust outputs must match C
-  byte-for-byte (binary stdout AND every public function output under
-  libloading-based comparison).
+  byte-for-byte (binary stdout AND every public function output).
 - If C and Rust diverge, fix Rust. NEVER modify C.
 
 ### Cargo features (FRAMEWORK CONTRACT — also enforced at the final build)
@@ -83,8 +79,6 @@ These rules govern verification. They must survive every compaction unchanged.
 
 ### Boundaries
 - Do NOT modify anything in `c_src/`.
-- Add `libloading = "0.8"` to `[dev-dependencies]` in `Cargo.toml` (so your
-  integration tests can dlopen the C shared library).
 
 ### Configuration coverage
 - Every configuration listed under "Configurations to verify" in this task
@@ -172,35 +166,12 @@ turn looks like a summary rather than concrete work. In that case:
    yet `fixed`). That is your current work item.
 3. Resume from its `Action taken` field. Do not redo work already logged.
 
-## Step 2: Verification workflow
+{VERIFICATION_METHOD}
 
-Now do the actual verification:
-
-1. Build the C code as a shared library
-2. Write Rust integration tests (in tests/) that use `libloading`
-   to load the C .so and compare C vs Rust function outputs
-3. Start with the lowest-level functions and work upward to higher-level ones.
-   Look at the C headers to identify the public API and function call hierarchy.
-4. For each function: create fixed test inputs, call both C and Rust versions,
-   assert outputs match byte-for-byte
-5. Run `cargo test` and investigate any mismatches. Every time a test
-   exposes a divergence, append a hypothesis to `HYPOTHESES.md`.
-6. When you find a Rust function that produces different output than C,
-   fix the Rust code in src/ and re-run until the test passes. Update the
-   matching hypothesis to `fixed` after the Edit.
-7. Keep going until all public functions match
-8. If the project has a main binary, run both the C binary and the Rust binary
-   with the same inputs and compare their stdout byte-for-byte. Fix any differences.
-9. Compare `nm -D` on the C .so and the Rust .so. Every symbol the C .so
-   exports, the Rust .so must also export with the exact same name. This
-   includes symbols created by preprocessor macros. If the C .so exports it,
-   the Rust .so must export it — no exceptions. Add missing exports.
-
-All operational rules (libloading dev-dep, c_src boundary, per-configuration
-re-verification, the 600-second timeout cap) live in the `## Invariants`
-section of your `HYPOTHESES.md` template above. Re-read them from
-`HYPOTHESES.md` whenever you are unsure — do not work from memory of this
-prompt.
+All operational rules (the c_src boundary, per-configuration re-verification,
+the 600-second timeout cap) live in the `## Invariants` section of your
+`HYPOTHESES.md` template above. Re-read them from `HYPOTHESES.md` whenever you
+are unsure — do not work from memory of this prompt.
 
 
 {AGENT_TOOLS_SECTION}

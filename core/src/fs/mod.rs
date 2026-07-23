@@ -231,6 +231,20 @@ impl RawDir {
     /// # }
     /// ```
     pub fn populate_from(read_dir: ReadDir) -> std::io::Result<(Self, usize, usize)> {
+        RawDir::populate_from_filtered(read_dir, &|_| false)
+    }
+
+    /// Like [`RawDir::populate_from`], but skips any directory entry (at any
+    /// depth) whose file name satisfies `skip_dir`. Used for source ingestion
+    /// to keep build-artifact directories (`build/`, `target/`, ...) out of the
+    /// IR: they bloat the representation, can go stale (a pre-cleanup `build/`
+    /// carries object files and a shared library that no longer match the
+    /// source), and frequently contain symlinks that plain `populate_from`
+    /// rejects with `unimplemented!`.
+    pub fn populate_from_filtered(
+        read_dir: ReadDir,
+        skip_dir: &dyn Fn(&std::ffi::OsStr) -> bool,
+    ) -> std::io::Result<(Self, usize, usize)> {
         let mut directories = 0;
         let mut files = 0;
         let mut result = BTreeMap::default();
@@ -238,7 +252,11 @@ impl RawDir {
             let entry = entry?;
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
-                let (subdir, dirs, fs) = RawDir::populate_from(std::fs::read_dir(entry.path())?)?;
+                if skip_dir(&entry.file_name()) {
+                    continue;
+                }
+                let (subdir, dirs, fs) =
+                    RawDir::populate_from_filtered(std::fs::read_dir(entry.path())?, skip_dir)?;
                 directories += dirs + 1;
                 files += fs;
                 result.insert(entry.file_name(), RawEntry::Dir(subdir));

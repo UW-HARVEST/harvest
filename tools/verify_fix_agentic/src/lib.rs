@@ -24,6 +24,56 @@ const PROMPT_VERIFY: &str = include_str!("prompt_verify.md");
 const PROMPT_VERIFY_NO_PLAN: &str = include_str!("prompt_verify_no_plan.md");
 const PROMPT_VERIFY_NO_PLAN_FILE: &str = include_str!("prompt_verify_no_plan_file.md");
 
+/// Verification-method sections spliced into the standard prompt's
+/// `{VERIFICATION_METHOD}` slot (see `load_verify_prompt`).
+const METHOD_LIBLOADING: &str = include_str!("method_libloading.md");
+const METHOD_GTEST: &str = include_str!("method_gtest.md");
+/// FuzzTest guidance spliced into the gtest method's `{FUZZTEST_SECTION}` slot
+/// when fuzzing is enabled; replaced with empty string otherwise.
+const FUZZTEST_SECTION: &str = include_str!("fuzztest_section.md");
+
+/// Directory (inside translated_rust/) holding the gtest/fuzztest verification
+/// environment. Materialized for the gtest harness and stripped before freeze.
+const VERIFY_ENV_DIR: &str = "verify_env";
+
+/// FuzzTest release tag whose `cmake/BuildDependencies.cmake` was built against
+/// GoogleTest v1.17.0 (matching the pin in the template CMakeLists).
+const FUZZTEST_GIT_TAG: &str = "2026-06-29";
+
+// verify_env scaffold templates (materialized into translated_rust/verify_env/).
+const VE_CMAKELISTS: &str = include_str!("verify_env_template/CMakeLists.txt");
+const VE_TESTS_CC: &str = include_str!("verify_env_template/verification_tests.cc");
+const VE_DIFF_H: &str = include_str!("verify_env_template/harvest_diff.h");
+const VE_RUST_LIB_H: &str = include_str!("verify_env_template/rust_lib.h");
+const VE_BUILD_SH: &str = include_str!("verify_env_template/build.sh");
+const VE_BUILD_FUZZ_SH: &str = include_str!("verify_env_template/build_fuzz.sh");
+const VE_README: &str = include_str!("verify_env_template/README.md");
+
+// Vendored FuzzTest reference docs (Apache-2.0), materialized under
+// verify_env/docs/ only in fuzz mode for the agent to read on demand.
+const VE_DOCS: &[(&str, &str)] = &[
+    (
+        "NOTICE.md",
+        include_str!("verify_env_template/docs/NOTICE.md"),
+    ),
+    (
+        "domains-reference.md",
+        include_str!("verify_env_template/docs/domains-reference.md"),
+    ),
+    (
+        "fuzz-test-macro.md",
+        include_str!("verify_env_template/docs/fuzz-test-macro.md"),
+    ),
+    (
+        "flags-reference.md",
+        include_str!("verify_env_template/docs/flags-reference.md"),
+    ),
+    (
+        "use-cases.md",
+        include_str!("verify_env_template/docs/use-cases.md"),
+    ),
+];
+
 pub struct VerifyFixAgentic;
 
 impl Tool for VerifyFixAgentic {
@@ -162,6 +212,21 @@ impl Tool for VerifyFixAgentic {
                 },
             );
 
+        // Materialize the gtest/fuzztest verification environment when that
+        // harness is in effect. It matches the prompt the agent will see: the
+        // no-plan ablation prompts are libloading-only, so skip it there.
+        let gtest_harness_active = config.verify_harness == VerifyHarness::Gtest
+            && !config.no_plan
+            && !config.no_plan_file
+            && matches!(agent, AgentKind::Claude | AgentKind::OpenCode);
+        if gtest_harness_active {
+            materialize_verify_env(&translated, &c_src_dir, config.fuzz)?;
+            info!(
+                "Materialized gtest verification environment (fuzz={})",
+                config.fuzz
+            );
+        }
+
         // Kiro runs in case_dir (references translated_rust/ in prompt paths).
         // Claude and OpenCode run in translated_rust/ directly (references c_src/ and src/).
         let kiro_prompt;
@@ -285,6 +350,24 @@ impl Tool for VerifyFixAgentic {
             }
         }
 
+        // Keep the gtest/fuzztest verification environment in the frozen output
+        // (like the libloading tests/ dir) so it is available for inspection,
+        // but strip its build directories (build-*), which hold the fetched
+        // GoogleTest/FuzzTest/Abseil sources plus symlinks that would otherwise
+        // bloat the output and break the symlink-free freeze.
+        let verify_env_out = translated.join(VERIFY_ENV_DIR);
+        if verify_env_out.is_dir() {
+            match strip_build_dirs(&verify_env_out) {
+                Ok(n) if n > 0 => info!("Stripped {n} build dir(s) from verify_env/"),
+                Ok(_) => {}
+                Err(e) => warn!(
+                    "Failed to strip build dirs from {}: {}",
+                    verify_env_out.display(),
+                    e
+                ),
+            }
+        }
+
         for entry in collect_symlinks(&translated) {
             warn!("translated_rust contains symlink: {}", entry);
         }
@@ -296,7 +379,150 @@ impl Tool for VerifyFixAgentic {
     }
 }
 
-/// Loads the verify prompt for the given agent kind.
+/// Builds the verification-method section (`{VERIFICATION_METHOD}` slot of the
+/// standard prompt) for the selected harness, splicing in the FuzzTest guidance
+/// when fuzzing is enabled.
+fn build_method_section(config: &Config) -> String {
+    match config.verify_harness {
+        VerifyHarness::Libloading => METHOD_LIBLOADING.to_owned(),
+        VerifyHarness::Gtest => {
+            let section = if config.fuzz { FUZZTEST_SECTION } else { "" };
+            METHOD_GTEST.replace("{FUZZTEST_SECTION}", section)
+        }
+    }
+}
+
+/// Best-effort extraction of C preprocessor definitions from a project's
+/// `c_src/CMakeLists.txt` `target_compile_definitions(...)` calls, so the
+/// verify_env C build matches the flags the library is normally compiled with
+/// (e.g. `XXH_NAMESPACE=LZ4_`). Returns a space-separated list for CMake, or an
+/// empty string if none are found. The agent can correct it if the parse misses
+/// something.
+fn parse_c_compile_defs(cmakelists: &str) -> String {
+    const MARKER: &str = "target_compile_definitions";
+    const KEYWORDS: [&str; 3] = ["PRIVATE", "PUBLIC", "INTERFACE"];
+    let mut defs: Vec<String> = Vec::new();
+    let mut rest = cmakelists;
+    while let Some(pos) = rest.find(MARKER) {
+        rest = &rest[pos + MARKER.len()..];
+        // Take the tokens inside this call's parentheses.
+        let Some(open) = rest.find('(') else { break };
+        let Some(close) = rest[open..].find(')') else {
+            break;
+        };
+        let inside = &rest[open + 1..open + close];
+        rest = &rest[open + close..];
+        // First token is the target name; skip it and the visibility keywords.
+        for tok in inside.split_whitespace().skip(1) {
+            if KEYWORDS.contains(&tok) {
+                continue;
+            }
+            let looks_like_def = tok
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_')
+                .unwrap_or(false)
+                && tok
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '=');
+            if looks_like_def && !defs.iter().any(|d| d == tok) {
+                defs.push(tok.to_string());
+            }
+        }
+    }
+    defs.join(" ")
+}
+
+/// Materializes the gtest/fuzztest verification environment into
+/// `<translated>/verify_env/`, filling the CMake template for the requested mode
+/// and pre-seeding the C compile definitions parsed from `c_src/CMakeLists.txt`.
+fn materialize_verify_env(
+    translated: &Path,
+    c_src_dir: &Path,
+    fuzz: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env_dir = translated.join(VERIFY_ENV_DIR);
+    fs::create_dir_all(&env_dir)?;
+
+    let c_defs = fs::read_to_string(c_src_dir.join("CMakeLists.txt"))
+        .map(|s| parse_c_compile_defs(&s))
+        .unwrap_or_default();
+
+    let (declare, makeavail, setup_flags, test_link) = if fuzz {
+        (
+            format!(
+                "FetchContent_Declare(\n  fuzztest\n  GIT_REPOSITORY https://github.com/google/fuzztest.git\n  GIT_TAG        {FUZZTEST_GIT_TAG}\n)\n"
+            ),
+            " fuzztest".to_string(),
+            "\n# Enable fuzzing instrumentation AFTER the frameworks are configured, so\n# gtest/fuzztest/abseil are not themselves instrumented — only what follows.\nfuzztest_setup_fuzzing_flags()\n".to_string(),
+            "link_fuzztest(verification_tests)".to_string(),
+        )
+    } else {
+        (
+            String::new(),
+            String::new(),
+            String::new(),
+            "target_link_libraries(verification_tests PRIVATE GTest::gtest_main)".to_string(),
+        )
+    };
+
+    let cmakelists = VE_CMAKELISTS
+        .replace("{FUZZTEST_DECLARE}", &declare)
+        .replace("{FUZZTEST_MAKEAVAIL}", &makeavail)
+        .replace("{FUZZTEST_SETUP_FLAGS}", &setup_flags)
+        .replace("{TEST_LINK}", &test_link)
+        .replace("{C_COMPILE_DEFS}", &c_defs);
+
+    fs::write(env_dir.join("CMakeLists.txt"), cmakelists)?;
+    fs::write(env_dir.join("verification_tests.cc"), VE_TESTS_CC)?;
+    fs::write(env_dir.join("harvest_diff.h"), VE_DIFF_H)?;
+    fs::write(env_dir.join("rust_lib.h"), VE_RUST_LIB_H)?;
+    fs::write(env_dir.join("README.md"), VE_README)?;
+    write_script(&env_dir.join("build.sh"), VE_BUILD_SH)?;
+    if fuzz {
+        write_script(&env_dir.join("build_fuzz.sh"), VE_BUILD_FUZZ_SH)?;
+        // Vendored FuzzTest reference docs for on-demand reading (fuzz only).
+        let docs_dir = env_dir.join("docs");
+        fs::create_dir_all(&docs_dir)?;
+        for (name, contents) in VE_DOCS {
+            fs::write(docs_dir.join(name), contents)?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes build output directories (`build-*`, e.g. build-test/build-fuzz) from
+/// a verify_env directory so only the agent's source survives the freeze. These
+/// hold fetched GoogleTest/FuzzTest/Abseil sources and symlinks. Returns the
+/// number of build directories removed.
+fn strip_build_dirs(env_dir: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut removed = 0;
+    for entry in fs::read_dir(env_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if entry.file_name().to_string_lossy().starts_with("build-") {
+            fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Writes a shell script and marks it executable on Unix.
+fn write_script(path: &Path, contents: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
 fn load_verify_prompt(
     config: &Config,
     agent: AgentKind,
@@ -304,9 +530,14 @@ fn load_verify_prompt(
     match agent {
         AgentKind::Claude | AgentKind::OpenCode => match &config.prompt_verify {
             Some(p) => Ok(fs::read_to_string(p)?),
+            // The no-plan ablation prompts are libloading-only by construction
+            // (they predate the harness split); the harness/fuzz switch applies
+            // to the standard prompt.
             None if config.no_plan => Ok(PROMPT_VERIFY_NO_PLAN.to_owned()),
             None if config.no_plan_file => Ok(PROMPT_VERIFY_NO_PLAN_FILE.to_owned()),
-            None => Ok(PROMPT_VERIFY.to_owned()),
+            None => {
+                Ok(PROMPT_VERIFY.replace("{VERIFICATION_METHOD}", &build_method_section(config)))
+            }
         },
         AgentKind::Kiro => match &config.prompt_kiro_verify {
             Some(p) => Ok(fs::read_to_string(p)?),
@@ -372,6 +603,18 @@ fn render_configurations(cfg: &TestConfig) -> String {
     format!("Configurations to verify:\n{}", cfg.as_markdown_bullet())
 }
 
+/// Comparison mechanism the verification prompt describes.
+#[derive(Debug, Deserialize, Default, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum VerifyHarness {
+    /// dlopen the C `.so` from a Rust integration test (the original method).
+    #[default]
+    Libloading,
+    /// C++ GoogleTest environment with the C reference linked in and the Rust
+    /// translation loaded via `dlopen`.
+    Gtest,
+}
+
 /// Tool-specific configuration, read from `[tools.verify_fix_agentic]` in the HARVEST config.
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -411,6 +654,16 @@ pub struct Config {
     /// Only meaningful with no_plan.
     #[serde(default)]
     pub workflow: bool,
+
+    /// Which comparison mechanism the verification prompt describes.
+    #[serde(default)]
+    pub verify_harness: VerifyHarness,
+
+    /// When `verify_harness = gtest`, also describe FuzzTest as an
+    /// available capability and ship its scaffolding.
+    /// No effect under the libloading harness.
+    #[serde(default)]
+    pub fuzz: bool,
 
     /// Extra environment variables to inject into the agent process.
     /// Useful for CCR provider API keys, proxy settings, etc.
@@ -453,5 +706,106 @@ fn default_timeout_secs() -> u64 {
 impl Config {
     fn validate(&self) {
         unknown_field_warning("tools.verify_fix_agentic", &self.unknown);
+        if self.fuzz && self.verify_harness != VerifyHarness::Gtest {
+            warn!(
+                "tools.verify_fix_agentic: fuzz has no effect without verify_harness = gtest; ignoring"
+            );
+        }
+        if self.verify_harness == VerifyHarness::Gtest && (self.no_plan || self.no_plan_file) {
+            warn!(
+                "tools.verify_fix_agentic: verify_harness = gtest is not applied under no_plan/no_plan_file (those prompts are libloading-only); using libloading"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_lz4_style_compile_defs() {
+        let cmake = "\
+add_library(lz4 SHARED src/lz4.c)
+target_include_directories(lz4 PUBLIC include PRIVATE src)
+target_compile_definitions(lz4 PRIVATE XXH_NAMESPACE=LZ4_)
+target_compile_definitions(lz4 PRIVATE LZ4_HEAPMODE=0 LZ4F_HEAPMODE=0)
+";
+        assert_eq!(
+            parse_c_compile_defs(cmake),
+            "XXH_NAMESPACE=LZ4_ LZ4_HEAPMODE=0 LZ4F_HEAPMODE=0"
+        );
+    }
+
+    #[test]
+    fn no_compile_defs_yields_empty() {
+        let cmake = "add_library(foo SHARED src/foo.c)\n";
+        assert_eq!(parse_c_compile_defs(cmake), "");
+    }
+
+    #[test]
+    fn gtest_only_cmake_has_no_fuzztest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let translated = tmp.path();
+        let c_src = translated.join("c_src");
+        fs::create_dir_all(&c_src).unwrap();
+        fs::write(
+            c_src.join("CMakeLists.txt"),
+            "target_compile_definitions(x PRIVATE XXH_NAMESPACE=LZ4_)\n",
+        )
+        .unwrap();
+
+        materialize_verify_env(translated, &c_src, false).unwrap();
+        let cml = fs::read_to_string(translated.join("verify_env/CMakeLists.txt")).unwrap();
+        assert!(cml.contains("XXH_NAMESPACE=LZ4_"));
+        assert!(cml.contains("GTest::gtest_main"));
+        assert!(!cml.contains("fuzztest"));
+        assert!(!translated.join("verify_env/build_fuzz.sh").exists());
+    }
+
+    // Escape hatch for the manual integration check: when VE_OUT is set,
+    // materialize a real verify_env there (fuzz per VE_FUZZ=1) so it can be
+    // built and run by hand. Ignored in normal test runs.
+    #[test]
+    #[ignore]
+    fn materialize_to_ve_out() {
+        let out = std::path::PathBuf::from(std::env::var("VE_OUT").unwrap());
+        let fuzz = std::env::var("VE_FUZZ").ok().as_deref() == Some("1");
+        materialize_verify_env(&out, &out.join("c_src"), fuzz).unwrap();
+    }
+
+    #[test]
+    fn strip_build_dirs_keeps_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = tmp.path().join("verify_env");
+        fs::create_dir_all(env.join("build-test/_deps")).unwrap();
+        fs::create_dir_all(env.join("build-fuzz")).unwrap();
+        fs::write(env.join("verification_tests.cc"), "// test").unwrap();
+        fs::write(env.join("CMakeLists.txt"), "# cmake").unwrap();
+        fs::write(env.join("build-test/_deps/junk.o"), "junk").unwrap();
+
+        let removed = strip_build_dirs(&env).unwrap();
+        assert_eq!(removed, 2, "both build-* dirs should be removed");
+        assert!(env.join("verification_tests.cc").exists());
+        assert!(env.join("CMakeLists.txt").exists());
+        assert!(!env.join("build-test").exists());
+        assert!(!env.join("build-fuzz").exists());
+    }
+
+    #[test]
+    fn fuzz_cmake_wires_fuzztest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let translated = tmp.path();
+        let c_src = translated.join("c_src");
+        fs::create_dir_all(&c_src).unwrap();
+        fs::write(c_src.join("CMakeLists.txt"), "").unwrap();
+
+        materialize_verify_env(translated, &c_src, true).unwrap();
+        let cml = fs::read_to_string(translated.join("verify_env/CMakeLists.txt")).unwrap();
+        assert!(cml.contains("link_fuzztest(verification_tests)"));
+        assert!(cml.contains("fuzztest_setup_fuzzing_flags()"));
+        assert!(cml.contains(FUZZTEST_GIT_TAG));
+        assert!(!cml.contains("GTest::gtest_main"));
+        assert!(translated.join("verify_env/build_fuzz.sh").exists());
     }
 }

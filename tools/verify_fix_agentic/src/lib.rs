@@ -106,21 +106,6 @@ impl Tool for VerifyFixAgentic {
             .replace("{CASE_DIR}", &case_dir.to_string_lossy())
             .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
-        // Diagnostic: confirm exactly which prompt actually reached the agent
-        // (the prompt is passed via an env var, so it never appears in the
-        // agent's stream-json transcript -- log identifying facts here instead).
-        info!(
-            "Verify prompt source: {} | {} chars | mentions 'Phase A'={} 'ERROR-SURFACE'={}",
-            match (&config.prompt_claude_verify, config.no_plan) {
-                (Some(p), _) => format!("override file {}", p.display()),
-                (None, true) => "builtin no_plan".to_string(),
-                (None, false) => "builtin plan".to_string(),
-            },
-            prompt.len(),
-            prompt.contains("Phase A"),
-            prompt.contains("ERROR-SURFACE"),
-        );
-
         invoke_agent(
             case_dir,
             &prompt,
@@ -160,28 +145,9 @@ fn invoke_agent(
     no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
-        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={})",
-        model.unwrap_or("(cli default)"),
-        if timeout_secs == 0 {
-            "none".to_string()
-        } else {
-            format!("{timeout_secs}s")
-        }
+        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
+        model.unwrap_or("(cli default)")
     );
-
-    // `timeout_secs == 0` disables the wall-clock cap entirely (no `timeout`
-    // prefix). Otherwise wrap the agent in `timeout <secs>` (with a hard
-    // `--kill-after` for the Claude path).
-    let kiro_timeout_prefix = if timeout_secs == 0 {
-        String::new()
-    } else {
-        format!("timeout {timeout_secs} ")
-    };
-    let claude_timeout_prefix = if timeout_secs == 0 {
-        String::new()
-    } else {
-        format!("timeout --kill-after=60s {timeout_secs} ")
-    };
 
     let logs_dir = work_dir.join("logs");
     fs::create_dir_all(&logs_dir)?;
@@ -205,7 +171,7 @@ fn invoke_agent(
         AgentKind::Kiro => Command::new("bash")
             .arg("-c")
             .arg(format!(
-                "set -o pipefail; {kiro_timeout_prefix}kiro-cli chat \
+                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
                  --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
             ))
             .env("PROMPT", prompt)
@@ -225,7 +191,7 @@ fn invoke_agent(
                     // to a file avoids the pipe; we replay the log to stdout
                     // afterward so the transcript still reaches captured output.
                     // `--kill-after` hard-kills claude if it ignores SIGTERM.
-                    "{claude_timeout_prefix}claude -p \"$PROMPT\" \
+                    "timeout --kill-after=60s {timeout_secs} claude -p \"$PROMPT\" \
                      --permission-mode bypassPermissions \
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
                      {model_flag}{append_sys_flag}\

@@ -106,6 +106,21 @@ impl Tool for VerifyFixAgentic {
             .replace("{CASE_DIR}", &case_dir.to_string_lossy())
             .replace("{CMAKE_BUILD_FLAGS}", &cmake_flags);
 
+        // Diagnostic: confirm exactly which prompt actually reached the agent
+        // (the prompt is passed via an env var, so it never appears in the
+        // agent's stream-json transcript -- log identifying facts here instead).
+        info!(
+            "Verify prompt source: {} | {} chars | mentions 'Phase A'={} 'ERROR-SURFACE'={}",
+            match (&config.prompt_claude_verify, config.no_plan) {
+                (Some(p), _) => format!("override file {}", p.display()),
+                (None, true) => "builtin no_plan".to_string(),
+                (None, false) => "builtin plan".to_string(),
+            },
+            prompt.len(),
+            prompt.contains("Phase A"),
+            prompt.contains("ERROR-SURFACE"),
+        );
+
         invoke_agent(
             case_dir,
             &prompt,

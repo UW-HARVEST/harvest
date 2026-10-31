@@ -21,13 +21,22 @@ Your task:
    Look at the C headers to identify the public API and function call hierarchy.
 4. For each function: create fixed test inputs, call both C and Rust versions,
    assert outputs match byte-for-byte
-5. Run `cargo test` and investigate any mismatches
-6. When you find a Rust function that produces different output than C,
+5. Do NOT test valid inputs only. A function can be byte-exact on well-formed
+   input yet diverge on rejection/boundary cases. For each public function also
+   feed INVALID, boundary, and malformed inputs and assert the Rust return
+   value / error code matches C EXACTLY (the same error, not just "both fail").
+   Find these cases from the C source: grep for how the C explicitly rejects
+   input (its error-return statements/macros, asserts, range and null checks,
+   min/max constants) and drive each of those branches in BOTH libraries; also
+   cover null pointers, zero/oversized lengths, and values just past a valid
+   range. Aim for branch coverage of error paths, not a fixed checklist.
+6. Run `cargo test` and investigate any mismatches
+7. When you find a Rust function that produces different output than C,
    fix the Rust code in src/ and re-run until the test passes
-7. Keep going until all public functions match
-8. If the project has a main binary, run both the C binary and the Rust binary
+8. Keep going until all public functions match
+9. If the project has a main binary, run both the C binary and the Rust binary
    with the same inputs and compare their stdout byte-for-byte. Fix any differences.
-9. Compare `nm -D` on the C .so and the Rust .so. Every symbol the C .so
+10. Compare `nm -D` on the C .so and the Rust .so. Every symbol the C .so
    exports, the Rust .so must also export with the exact same name. This
    includes symbols created by preprocessor macros. If the C .so exports it,
    the Rust .so must export it — no exceptions. Add missing exports.

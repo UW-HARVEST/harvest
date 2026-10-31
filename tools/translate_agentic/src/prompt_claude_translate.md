@@ -259,6 +259,18 @@ point that is not part of the original library, plan to translate it early.
    - The cross-module type/ABI design
 
    When you delegate to a sub-agent:
+   - The Task tool is SYNCHRONOUS: the call returns ONLY when the sub-agent has
+     finished, and its final report IS the return value. There are NO async
+     "completion notifications" -- never say you are "waiting for" or "pausing
+     for" a sub-agent, and never end your turn expecting to be notified later.
+     The instant a Task call returns, that subtask is done and it is your job to
+     act on it now.
+   - After each sub-agent returns you MUST independently verify its work on disk
+     (`ls`, `wc -l`, `grep` the expected symbols/functions) before marking the
+     subtask `[x]`. NEVER trust a sub-agent's self-reported success -- a subtask
+     is complete only when YOU have confirmed the Rust file exists and contains
+     what the plan requires. If it is missing or incomplete, re-dispatch it
+     (split smaller) or finish it yourself before moving on.
    - Each sub-agent must report back what files it created/modified and any
      pitfalls it noticed.
    - Update PLAN.md checkboxes and "Notes for future-me" after the sub-agent

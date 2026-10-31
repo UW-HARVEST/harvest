@@ -102,7 +102,7 @@ impl Tool for GenerateExecDifftests {
         let mut usage = LLMUsageTotals::default();
         let (response, u) = llm.invoke(&request)?;
         usage.add_usage(u.as_ref());
-        info!("Token usage [exec test input generation] - {usage:?}");
+        info!("Token usage [exec test input generation] - {usage}");
 
         let parsed: LlmResponse = serde_json::from_str(&response)?;
         info!(

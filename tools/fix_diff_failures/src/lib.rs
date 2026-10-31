@@ -126,7 +126,7 @@ impl Tool for FixDiffFailures {
             }
         }
 
-        info!("Token usage [total] - {usage_totals:?}");
+        info!("Token usage [total] - {usage_totals}");
 
         Ok(Box::new(CargoPackage { dir: out_dir }))
     }

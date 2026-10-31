@@ -162,7 +162,11 @@ fn invoke_agent(
     info!(
         "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={})",
         model.unwrap_or("(cli default)"),
-        if timeout_secs == 0 { "none".to_string() } else { format!("{timeout_secs}s") }
+        if timeout_secs == 0 {
+            "none".to_string()
+        } else {
+            format!("{timeout_secs}s")
+        }
     );
 
     // `timeout_secs == 0` disables the wall-clock cap entirely (no `timeout`

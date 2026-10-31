@@ -114,7 +114,10 @@ fn project_kind_from_cmakelists(cmakelists: &[u8]) -> Option<ProjectKind> {
     // Match after trimming leading whitespace: real projects (e.g. libpng)
     // indent `add_library(...)` / `add_executable(...)` inside `if()` blocks,
     // so a column-0-only prefix check would miss them.
-    let starts = |prefix: &str| text.lines().any(|line| line.trim_start().starts_with(prefix));
+    let starts = |prefix: &str| {
+        text.lines()
+            .any(|line| line.trim_start().starts_with(prefix))
+    };
     // Library takes precedence when both appear: a project that builds a library
     // AND executables (e.g. libpng, which also builds test/tool binaries) is
     // fundamentally a library from the translation's perspective -- the exported
@@ -159,7 +162,7 @@ fn project_kind_from_automake(repr: &RawSource) -> Option<ProjectKind> {
         for line in text.lines() {
             // The primary is the first whitespace-delimited token; an
             // assignment like `bin_PROGRAMS = foo` has it as token 0.
-            let token = line.trim_start().split_whitespace().next().unwrap_or("");
+            let token = line.split_whitespace().next().unwrap_or("");
             if EXE_PRIMARIES.contains(&token) {
                 return Some(ProjectKind::Executable);
             }
@@ -228,7 +231,10 @@ mod tests {
     fn legacy_path_detects_indented_targets() {
         let cmakelists = b"if(PNG_SHARED)\n  add_library(png_shared SHARED x.c)\nendif()\n";
         assert!(
-            matches!(project_kind_from_cmakelists(cmakelists), Some(ProjectKind::Library)),
+            matches!(
+                project_kind_from_cmakelists(cmakelists),
+                Some(ProjectKind::Library)
+            ),
             "indented add_library must be detected"
         );
     }
@@ -238,10 +244,12 @@ mod tests {
     /// the exported library surface is what the translation targets.
     #[test]
     fn legacy_path_library_wins_when_both_present() {
-        let cmakelists =
-            b"  add_library(png STATIC png.c)\n  add_executable(pngtest pngtest.c)\n";
+        let cmakelists = b"  add_library(png STATIC png.c)\n  add_executable(pngtest pngtest.c)\n";
         assert!(
-            matches!(project_kind_from_cmakelists(cmakelists), Some(ProjectKind::Library)),
+            matches!(
+                project_kind_from_cmakelists(cmakelists),
+                Some(ProjectKind::Library)
+            ),
             "library must take precedence when both target kinds are present"
         );
     }

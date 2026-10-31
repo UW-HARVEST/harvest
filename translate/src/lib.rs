@@ -72,7 +72,8 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     // lets `--agentic` then `--agentic-verify` compose on the same `-o` without
     // repeating the (expensive) translation. If no prior translation exists,
     // fall back to translating first, then verifying.
-    let resume_verify = config.agentic && config.agentic_verify && has_existing_crate(&translated_dir);
+    let resume_verify =
+        config.agentic && config.agentic_verify && has_existing_crate(&translated_dir);
 
     // Prepare the output workspace. We only empty the stage subdirs we are
     // about to (re)write, so a resume-verify run preserves `<output>/translated`
@@ -222,8 +223,10 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
         // exists on disk.) Build it first so WriteOutput has a CargoBuildResult.
         if let Some(pre_id) = translate_stage_pkg {
             let pre_build = scheduler.queue_after(TryCargoBuild, &[pre_id]);
-            scheduler
-                .queue_after(WriteOutput::to(config.output.join(TRANSLATED_SUBDIR)), &[pre_build]);
+            scheduler.queue_after(
+                WriteOutput::to(config.output.join(TRANSLATED_SUBDIR)),
+                &[pre_build],
+            );
         }
 
         // Write the final result to its stage subdir (verified/ or translated/).

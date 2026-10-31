@@ -43,7 +43,10 @@ impl Tool for WriteOutput {
             .ok_or("WriteOutput: no CargoBuildResult found in IR")?;
 
         let src = build_result.root_path();
-        let dst = self.dest_override.as_ref().unwrap_or(&context.config.output);
+        let dst = self
+            .dest_override
+            .as_ref()
+            .unwrap_or(&context.config.output);
         copy_dir_all(src, dst)?;
         info!("Output written to {}", dst.display());
 

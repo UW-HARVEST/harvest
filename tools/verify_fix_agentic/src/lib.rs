@@ -145,9 +145,28 @@ fn invoke_agent(
     no_plan: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
-        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={timeout_secs}s)",
-        model.unwrap_or("(cli default)")
+        "Invoking verification agent ({agent}, model={}, no_plan={no_plan}, timeout={})",
+        model.unwrap_or("(cli default)"),
+        if timeout_secs == 0 {
+            "none".to_string()
+        } else {
+            format!("{timeout_secs}s")
+        }
     );
+
+    // `timeout_secs == 0` disables the wall-clock cap entirely (no `timeout`
+    // prefix). Otherwise wrap the agent in `timeout <secs>` (with a hard
+    // `--kill-after` for the Claude path).
+    let kiro_timeout_prefix = if timeout_secs == 0 {
+        String::new()
+    } else {
+        format!("timeout {timeout_secs} ")
+    };
+    let claude_timeout_prefix = if timeout_secs == 0 {
+        String::new()
+    } else {
+        format!("timeout --kill-after=60s {timeout_secs} ")
+    };
 
     let logs_dir = work_dir.join("logs");
     fs::create_dir_all(&logs_dir)?;
@@ -171,7 +190,7 @@ fn invoke_agent(
         AgentKind::Kiro => Command::new("bash")
             .arg("-c")
             .arg(format!(
-                "set -o pipefail; timeout {timeout_secs} kiro-cli chat \
+                "set -o pipefail; {kiro_timeout_prefix}kiro-cli chat \
                  --no-interactive --trust-all-tools \"$PROMPT\" < /dev/null 2>&1 | tee \"$LOG\"",
             ))
             .env("PROMPT", prompt)
@@ -191,7 +210,7 @@ fn invoke_agent(
                     // to a file avoids the pipe; we replay the log to stdout
                     // afterward so the transcript still reaches captured output.
                     // `--kill-after` hard-kills claude if it ignores SIGTERM.
-                    "timeout --kill-after=60s {timeout_secs} claude -p \"$PROMPT\" \
+                    "{claude_timeout_prefix}claude -p \"$PROMPT\" \
                      --permission-mode bypassPermissions \
                      --allowedTools 'Bash(*)' 'Write' 'Edit' \
                      {model_flag}{append_sys_flag}\

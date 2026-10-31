@@ -1,5 +1,5 @@
 [workspace]
-members = ["benchmark", "core", "tools/full_source", "tools/build_config", "tools/build_project_spec", "tools/emit_build_features", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "tools/write_output", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/quantize_rust_spans", "tools/fix_declarations_llm", "tools/translate_agentic", "tools/verify_fix_agentic", "tools/build_c_artifact", "tools/exec_runner", "tools/generate_difftest_suite", "tools/run_difftest", "tools/fix_diff_failures", "tools/generate_exec_difftests", "tools/run_exec_difftest"]
+members = ["benchmark", "core", "tools/full_source", "tools/build_config", "tools/build_project_spec", "tools/emit_build_features", "tools/load_raw_source", "tools/raw_source_to_cargo_llm", "tools/try_cargo_build", "tools/write_output", "translate", "tools/c_ast", "tools/modular_translation_llm", "tools/quantize_rust_spans", "tools/fix_declarations_llm", "tools/clippy_lint", "tools/translate_agentic", "tools/verify_fix_agentic", "tools/build_c_artifact", "tools/exec_runner", "tools/generate_difftest_suite", "tools/run_difftest", "tools/fix_diff_failures", "tools/generate_exec_difftests", "tools/run_exec_difftest"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -13,6 +13,7 @@ emit_build_features = { path = "tools/emit_build_features" }
 load_raw_source = { path = "tools/load_raw_source" }
 raw_source_to_cargo_llm = { path = "tools/raw_source_to_cargo_llm" }
 try_cargo_build = { path = "tools/try_cargo_build" }
+clippy_lint = { path = "tools/clippy_lint" }
 write_output = { path = "tools/write_output" }
 c_ast = { path = "tools/c_ast" }
 modular_translation_llm = { path = "tools/modular_translation_llm" }

@@ -10,6 +10,7 @@ use build_c_artifact::BuildCArtifact;
 use build_config::BuildConfig;
 use build_project_spec::{BuildProjectSpec, ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
+use clippy_lint::TryClippyLint;
 use emit_build_features::EmitBuildFeatures;
 use fix_declarations_llm::FixDeclarationsLlm;
 use fix_diff_failures::FixDiffFailures;
@@ -79,6 +80,7 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     let translate = scheduler.queue_after(EmitBuildFeatures, &[translate, build_cfg]);
     let mut current_pkg_id = translate;
     let mut current_build_id = scheduler.queue_after(TryCargoBuild, &[current_pkg_id]);
+    let _try_lint = scheduler.queue_after(TryClippyLint, &[current_pkg_id]);
 
     let result: Result<(), Box<dyn std::error::Error>> = (|| {
         // Run until all tasks are complete, respecting the dependencies declared in `queue_after`

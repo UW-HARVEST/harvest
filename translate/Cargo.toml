@@ -28,6 +28,7 @@ build_project_spec.workspace = true
 emit_build_features.workspace = true
 modular_translation_llm.workspace = true
 try_cargo_build.workspace = true
+clippy_lint.workspace = true
 write_output.workspace = true
 quantize_rust_spans.workspace = true
 fix_declarations_llm.workspace = true

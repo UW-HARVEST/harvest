@@ -12,8 +12,12 @@ use build_project_spec::{BuildProjectSpec, ProjectKind, ProjectSpec};
 use c_ast::ParseToAst;
 use emit_build_features::EmitBuildFeatures;
 use fix_declarations_llm::FixDeclarationsLlm;
+use fix_diff_failures::FixDiffFailures;
+use full_source::CargoPackage;
 use generate_difftest_suite::GenerateDiffTestSuite;
+use generate_exec_difftests::GenerateExecDifftests;
 use harvest_core::config::Config;
+use harvest_core::tools::Tool;
 use harvest_core::utils::{empty_writable_dir, get_version};
 use harvest_core::{HarvestIR, Id, diagnostics};
 use load_cargo_package::LoadCargoPackage;
@@ -22,6 +26,7 @@ use modular_translation_llm::ModularTranslationLlm;
 use quantize_rust_spans::QuantizeRustSpans;
 use raw_source_to_cargo_llm::RawSourceToCargoLlm;
 use run_difftest::{DiffTestResult, RunDiffTest};
+use run_exec_difftest::RunExecDiffTest;
 use runner::ToolRunner;
 use scheduler::Scheduler;
 use std::sync::Arc;
@@ -161,34 +166,53 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
             }
         }
 
-        // Differential testing: for library projects, generate a C test harness that
-        // exercises the public API through both the original C build and the translated
-        // Rust candidate, and report how many calls diverge. Not yet wired into a repair
-        // loop, and executable projects are not yet supported (see generate_exec_difftests
-        // / run_exec_difftest).
+        // Differential testing: generate a test harness that exercises the public API (for
+        // library projects) or the program's argv/stdin surface (for executables) through
+        // both the original C build and the translated Rust candidate, and repair
+        // candidates that fail.
         let is_library = matches!(
             ir.get::<ProjectSpec>(project_spec)
                 .ok_or("transpile: no ProjectSpec in IR")?
                 .kind,
             ProjectKind::Library
         );
-        // The built-in library difftest builds the original C with CMake, so it
+        // The built-in differential test builds the original C with CMake, so it
         // only applies to CMake projects. For autotools/make projects graded by
         // an external harness, `internal_difftest = false` skips it while still
         // writing the translated Rust output below.
-        if is_library && config.internal_difftest {
+        if config.internal_difftest {
             let c_artifact = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
-            let diff_suite = scheduler.queue_after(GenerateDiffTestSuite, &[load_src]);
-            let diff_result_id =
-                scheduler.queue_after(RunDiffTest, &[diff_suite, c_artifact, current_pkg_id]);
-            scheduler.run_all(&mut runner, &mut ir, config.clone())?;
-            let diff_result = ir
-                .get::<DiffTestResult>(diff_result_id)
-                .ok_or("transpile: no DiffTestResult in IR")?;
-            info!(
-                "Diff test: {}/{} passed ({} failed)",
-                diff_result.passed, diff_result.total, diff_result.failed
-            );
+            if is_library {
+                let (pkg, build) = run_diff_test_and_repair(
+                    &mut scheduler,
+                    &mut runner,
+                    &mut ir,
+                    &config,
+                    load_src,
+                    c_artifact,
+                    current_pkg_id,
+                    current_build_id,
+                    || GenerateDiffTestSuite,
+                    || RunDiffTest,
+                )?;
+                current_pkg_id = pkg;
+                current_build_id = build;
+            } else {
+                let (pkg, build) = run_diff_test_and_repair(
+                    &mut scheduler,
+                    &mut runner,
+                    &mut ir,
+                    &config,
+                    load_src,
+                    c_artifact,
+                    current_pkg_id,
+                    current_build_id,
+                    || GenerateExecDifftests,
+                    || RunExecDiffTest,
+                )?;
+                current_pkg_id = pkg;
+                current_build_id = build;
+            }
         }
 
         // When we freshly translated AND then verified in the same run, also
@@ -214,6 +238,91 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
     collector.diagnostics(); // TODO: Return this value (see issue 51)
     result?;
     Ok(ir)
+}
+
+/// Runs one differential-test generate+run pass, then repeats an LLM-based repair loop
+/// (matching the build-repair loop's shape) until the candidate passes or
+/// `config.max_diff_repair_passes` is exhausted. Returns the (possibly updated) package and
+/// build Ids for the caller to use going forward (e.g. for `WriteOutput`).
+///
+/// `make_generate`/`make_run` construct fresh instances of the generate-suite and run-test
+/// tools for this project kind (library vs executable) -- each `queue_after` call needs its
+/// own owned `Tool` value, and the run-test tool is queued multiple times across repair passes.
+#[allow(clippy::too_many_arguments)]
+fn run_diff_test_and_repair<G: Tool, R: Tool>(
+    scheduler: &mut Scheduler,
+    runner: &mut ToolRunner,
+    ir: &mut HarvestIR,
+    config: &Arc<Config>,
+    load_src: Id,
+    c_artifact: Id,
+    mut current_pkg_id: Id,
+    mut current_build_id: Id,
+    make_generate: impl FnOnce() -> G,
+    make_run: impl Fn() -> R,
+) -> Result<(Id, Id), Box<dyn std::error::Error>> {
+    let diff_suite = scheduler.queue_after(make_generate(), &[load_src]);
+    let mut diff_result_id =
+        scheduler.queue_after(make_run(), &[diff_suite, c_artifact, current_pkg_id]);
+    scheduler.run_all(runner, ir, config.clone())?;
+    let mut best_passed = ir
+        .get::<DiffTestResult>(diff_result_id)
+        .ok_or("transpile: no DiffTestResult in IR")?
+        .passed;
+
+    for _ in 0..config.max_diff_repair_passes {
+        let failed = ir
+            .get::<DiffTestResult>(diff_result_id)
+            .ok_or("transpile: no DiffTestResult in IR")?
+            .failed;
+        if failed == 0 {
+            break;
+        }
+
+        let fix =
+            scheduler.queue_after(FixDiffFailures, &[diff_result_id, load_src, current_pkg_id]);
+        scheduler.run_all(runner, ir, config.clone())?;
+
+        // FixDiffFailures can itself hard-error (observed: the LLM returning a file
+        // list with a non-relative path, which RawDir::set_file rejects). If it does,
+        // `fix` never lands in the IR. Queuing TryCargoBuild/RunDiffTest on `fix`
+        // regardless would permanently strand them -- their input can never become
+        // ready -- which the scheduler treats as fatal (run_all errors out) rather
+        // than recoverable. Check first, and treat a missing `fix` as a rejected
+        // attempt, same as a downstream tool failing.
+        if ir.get::<CargoPackage>(fix).is_none() {
+            continue;
+        }
+
+        let new_build = scheduler.queue_after(TryCargoBuild, &[fix]);
+        let new_diff_result_id = scheduler.queue_after(make_run(), &[diff_suite, c_artifact, fix]);
+        scheduler.run_all(runner, ir, config.clone())?;
+
+        // The run-test tool (unlike TryCargoBuild) hard-errors instead of encoding failure
+        // in its result -- e.g. if the LLM's patch doesn't build as a cdylib. The
+        // ToolRunner swallows that error and just never inserts the representation, so a
+        // missing Id here means "this repair attempt failed," not "the pipeline is broken."
+        // Treat it as a rejected candidate and keep iterating from the last-accepted state.
+        let Some(new_result) = ir.get::<DiffTestResult>(new_diff_result_id) else {
+            continue;
+        };
+        if new_result.passed > best_passed {
+            best_passed = new_result.passed;
+            current_pkg_id = fix;
+            current_build_id = new_build;
+            diff_result_id = new_diff_result_id;
+        }
+    }
+
+    let diff_result = ir
+        .get::<DiffTestResult>(diff_result_id)
+        .ok_or("transpile: no DiffTestResult in IR")?;
+    info!(
+        "Diff test: {}/{} passed ({} failed)",
+        diff_result.passed, diff_result.total, diff_result.failed
+    );
+
+    Ok((current_pkg_id, current_build_id))
 }
 
 #[cfg(not(miri))]

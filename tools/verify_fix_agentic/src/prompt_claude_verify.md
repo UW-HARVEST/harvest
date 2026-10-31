@@ -153,6 +153,13 @@ Format per entry:
    reading more than ~200 lines of C or Rust into your own context,
    delegate the fix to a sub-agent and let it report back what it changed.
 
+   The Task tool is SYNCHRONOUS -- its return value IS the sub-agent's finished
+   result; there are NO async notifications, so never "wait for" a sub-agent or
+   end your turn with delegated work outstanding. After every sub-agent returns,
+   independently confirm the change on disk (re-run `nm -D` symbol parity / the
+   relevant test) before marking a hypothesis `fixed`. A translation is NOT
+   complete while any C-exported symbol is still missing from the Rust `.so`.
+
 ### Recovery protocol (if you suspect you were just compacted)
 
 Symptoms: you cannot recall what hypothesis you were testing, or your last
@@ -165,27 +172,74 @@ turn looks like a summary rather than concrete work. In that case:
 
 ## Step 2: Verification workflow
 
-Now do the actual verification:
+Verification proceeds in four MANDATORY phases, A -> B -> C -> D. Do not skip a
+phase because a prior session (or your own earlier work) looks "complete":
+matching symbols and passing tests are NECESSARY but NOT SUFFICIENT (see the
+completion gate in Phase D). Build the C reference as a shared library first,
+then work the phases.
 
-1. Build the C code as a shared library
-2. Write Rust integration tests (in tests/) that use `libloading`
-   to load the C .so and compare C vs Rust function outputs
-3. Start with the lowest-level functions and work upward to higher-level ones.
-   Look at the C headers to identify the public API and function call hierarchy.
-4. For each function: create fixed test inputs, call both C and Rust versions,
-   assert outputs match byte-for-byte
-5. Run `cargo test` and investigate any mismatches. Every time a test
-   exposes a divergence, append a hypothesis to `HYPOTHESES.md`.
-6. When you find a Rust function that produces different output than C,
-   fix the Rust code in src/ and re-run until the test passes. Update the
-   matching hypothesis to `fixed` after the Edit.
-7. Keep going until all public functions match
-8. If the project has a main binary, run both the C binary and the Rust binary
-   with the same inputs and compare their stdout byte-for-byte. Fix any differences.
-9. Compare `nm -D` on the C .so and the Rust .so. Every symbol the C .so
-   exports, the Rust .so must also export with the exact same name. This
-   includes symbols created by preprocessor macros. If the C .so exports it,
-   the Rust .so must export it — no exceptions. Add missing exports.
+All tests are `libloading`-based differential tests: load BOTH the C `.so` and
+the Rust `.so`, call the SAME function in each with the SAME input, and assert
+they agree. Fix the Rust (never the C) on any divergence, log it in
+`HYPOTHESES.md`, and re-run until it passes.
+
+### Phase A — Map the surface (produce artifacts BEFORE writing tests)
+
+Create two files in the crate root; they make coverage auditable and are
+derived from the C source, NOT from your assumptions about it:
+
+1. `SYMBOLS.md` — every public symbol from `nm -D` on the C `.so`. Every one
+   MUST also be exported by the Rust `.so` (exact name, incl. macro-generated).
+   Add any missing exports.
+2. `ERRORS.md` — the ERROR-SURFACE TABLE. This is the anti-blind-spot step.
+   Mechanically grep the C source for EVERY distinct way it rejects or errors
+   on input — every error-return macro/statement (e.g. `RETURN_ERROR`,
+   `return -1`, `return NULL`, error enums), every `assert`, every explicit
+   range check, null check, and min/max constant. Write ONE ROW per distinct
+   rejection:
+
+   | # | function | trigger (the exact invalid input/condition) | expected C result |
+   |---|----------|----------------------------------------------|-------------------|
+
+   Derive rows from what the C code ACTUALLY checks — do not invent or guess,
+   and do not rely on the happy-path API docs. If a function has three distinct
+   `RETURN_ERROR` branches, that is three rows.
+
+### Phase B — Valid-path differential tests
+
+For each public function: fixed valid inputs, call C and Rust, assert outputs
+match byte-for-byte. Work lowest-level functions upward using the header's call
+hierarchy. This is necessary but only half the job.
+
+### Phase C — Error-path differential tests (GATED on `ERRORS.md`)
+
+For EVERY ROW in `ERRORS.md`, write a differential test that constructs that
+exact invalid input/condition, calls BOTH C and Rust, and asserts they return
+the SAME error/rejection (the same error code or sentinel — not merely "both
+failed somehow"). Check the row off only when its test passes against both.
+Also cover the generic boundaries every C API has even if not explicitly in the
+table: null pointers, zero and oversized lengths, and values one step past a
+documented valid range (including out-of-range enum values passed across the
+FFI boundary — C enums accept any int, so a value with no valid variant is a
+real input the C handles and the Rust must handle identically).
+
+You MAY NOT proceed to Phase D while any `ERRORS.md` row is unchecked.
+
+### Phase D — Completion gate
+
+Verification is complete ONLY when ALL of these hold — re-read this list before
+declaring done, and do not stop early just because symbols match or the
+pre-existing tests are green:
+
+- [ ] `SYMBOLS.md`: `nm -D` shows 0 missing/undefined non-libc symbols in Rust.
+- [ ] Phase B: every public function passes a valid-path differential test.
+- [ ] Phase C: EVERY row in `ERRORS.md` has a passing error-path differential test.
+- [ ] If the project has a main binary, C and Rust stdout match byte-for-byte.
+
+If a prior session marked this project "complete" but there is no `ERRORS.md`
+with checked-off rows, it is NOT verified — build the table and do Phase C now.
+Symbol parity + a suite of passing happy-path tests is the state that HID the
+last escaped bug; the error-surface table exists specifically to prevent that.
 
 All operational rules (libloading dev-dep, c_src boundary, per-configuration
 re-verification, the 600-second timeout cap) live in the `## Invariants`

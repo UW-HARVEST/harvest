@@ -711,9 +711,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "build_config"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "build_project_spec"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "full_source",
  "harvest_core",
  "load_raw_source",
@@ -754,6 +767,7 @@ dependencies = [
 name = "c_ast"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "clang",
  "full_source",
  "harvest_core",
@@ -1098,6 +1112,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "emit_build_features"
+version = "0.1.0"
+dependencies = [
+ "build_config",
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -1449,13 +1475,16 @@ name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
  "build_c_artifact",
+ "build_config",
  "build_project_spec",
  "c_ast",
  "clap",
  "config",
  "directories",
+ "emit_build_features",
  "fix_declarations_llm",
  "fix_diff_failures",
+ "full_source",
  "generate_difftest_suite",
  "generate_exec_difftests",
  "harvest_core",
@@ -2010,6 +2039,7 @@ dependencies = [
 name = "modular_translation_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "c_ast",
  "full_source",
@@ -2314,6 +2344,7 @@ dependencies = [
 name = "raw_source_to_cargo_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "full_source",
  "harvest_core",
@@ -3227,7 +3258,9 @@ dependencies = [
 name = "translate_agentic"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
+ "emit_build_features",
  "full_source",
  "harvest_core",
  "serde",
@@ -3346,6 +3379,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "verify_fix_agentic"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "full_source",
  "harvest_core",
  "serde",

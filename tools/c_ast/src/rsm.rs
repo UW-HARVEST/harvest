@@ -68,6 +68,19 @@ pub struct TopLevelEntity {
     // This helps us deduplicate typedefs and struct/enum/union declarations.
     #[serde(default)]
     pub sub_entities: Vec<TopLevelEntity>,
+    /// `(driving_var, value)` tags identifying which build-config variants
+    /// this entity belongs to.
+    ///
+    /// Populated by looking up the entity's file in
+    /// `BuildConfigIR.source_selections`. A file that isn't selected by any
+    /// configurable variable gets an empty vec -- the common case. A file
+    /// referenced by two distinct `SourceSelection`s (uncommon) gets two tags.
+    ///
+    /// The downstream consumer (`modular_translation_llm`) uses these tags to
+    /// emit `#[cfg(<DRIVING_VAR>_<VALUE>)]` attributes on the translated
+    /// module declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_tags: Vec<(String, String)>,
 }
 
 /// This is the output of the parsing step, and therefore this tool.

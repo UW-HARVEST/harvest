@@ -56,13 +56,7 @@ impl ToolRunner {
             match self.receiver.recv_timeout(SUMMARY_INTERVAL) {
                 Ok(thread_id) => break thread_id,
                 Err(RecvTimeoutError::Timeout) => {
-                    let summary = self
-                        .invocations
-                        .values()
-                        .map(|inv| format!("{} ({:.1?})", inv.name, inv.start_time.elapsed()))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    info!("Still running: {summary}");
+                    info!("Still running: {}", self.summary());
                 }
                 Err(RecvTimeoutError::Disconnected) => panic!("sender dropped"),
             }
@@ -94,6 +88,14 @@ impl ToolRunner {
             ir.iter().map(|(id, _)| id).collect::<Vec<_>>()
         );
         true
+    }
+
+    fn summary(&self) -> String {
+        self.invocations
+            .values()
+            .map(|inv| format!("{} ({:.1?})", inv.name, inv.start_time.elapsed()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Runs a tool in a new thread.

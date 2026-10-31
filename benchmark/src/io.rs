@@ -22,11 +22,32 @@ pub fn log_found_programs(program_dirs: &[PathBuf], input_dir: &Path) -> Harvest
     Ok(())
 }
 
-/// Write CSV results to file
+/// Write CSV results to file.
+///
+/// # Schema (column order is frozen -- do not reorder without bumping a version)
+///
+/// | # | Column | Description |
+/// |---|--------|-------------|
+/// | 0 | `program_name` | Directory name of the benchmark case |
+/// | 1 | `translation_success` | Whether translation produced a Cargo package |
+/// | 2 | `rust_build_success` | Whether `cargo build` succeeded |
+/// | 3 | `total_tests` | Number of test vectors |
+/// | 4 | `passed_tests` | Number of test vectors that passed (default combo) |
+/// | 5 | `skipped_tests` | Number of test vectors skipped |
+/// | 6 | `success_rate` | Pass rate for the default combo (%) |
+/// | 7 | `error_message` | First build/translation error, if any |
+/// | 8 | `feature_combo` | Comma-separated enabled features, or `"default"` |
+/// | 9 | `combo_passed` | Whether all test vectors passed for this combo |
+///
+/// Columns 8-9 are written once per `ComboResult` entry.  For the legacy
+/// `--feature-combos default` mode there is exactly one row per program with
+/// `feature_combo="default"`.  For `all`/`N` mode there is one row per combo.
+/// Downstream tooling should group by `program_name` and aggregate `combo_passed`
+/// to compute the strict-all-combos pass rate.
 pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> HarvestResult<()> {
     let mut wtr = csv::Writer::from_path(file_path)?;
 
-    // Write header
+    // Write header -- column positions must not change (see schema above).
     wtr.write_record([
         "program_name",
         "translation_success",
@@ -36,20 +57,50 @@ pub fn write_csv_results(file_path: &PathBuf, results: &[ProgramEvalStats]) -> H
         "skipped_tests",
         "success_rate",
         "error_message",
+        "feature_combo",
+        "combo_passed",
     ])?;
 
-    // Write data
+    // Write data -- one row per (program, combo) pair.
     for result in results {
-        wtr.write_record([
-            &result.program_name,
-            &result.translation_success.to_string(),
-            &result.rust_build_success.to_string(),
-            &result.total_tests.to_string(),
-            &result.passed_tests.to_string(),
-            &result.skipped_tests.to_string(),
-            &format!("{:.2}", result.success_rate()),
-            result.error_message.as_deref().unwrap_or(""),
-        ])?;
+        // Ensure there is always at least one combo row (the default).
+        let combos: &[_] = if result.combo_results.is_empty() {
+            // Pre-build / translation failure: emit a single "default" row.
+            &[]
+        } else {
+            result.combo_results.as_slice()
+        };
+
+        if combos.is_empty() {
+            // No combo results recorded (e.g. build failed before testing).
+            wtr.write_record([
+                &result.program_name,
+                &result.translation_success.to_string(),
+                &result.rust_build_success.to_string(),
+                &result.total_tests.to_string(),
+                &result.passed_tests.to_string(),
+                &result.skipped_tests.to_string(),
+                &format!("{:.2}", result.success_rate()),
+                result.error_message.as_deref().unwrap_or(""),
+                "default",
+                "false",
+            ])?;
+        } else {
+            for combo in combos {
+                wtr.write_record([
+                    &result.program_name,
+                    &result.translation_success.to_string(),
+                    &result.rust_build_success.to_string(),
+                    &result.total_tests.to_string(),
+                    &result.passed_tests.to_string(),
+                    &result.skipped_tests.to_string(),
+                    &format!("{:.2}", result.success_rate()),
+                    result.error_message.as_deref().unwrap_or(""),
+                    &combo.feature_combo,
+                    &combo.combo_passed.to_string(),
+                ])?;
+            }
+        }
     }
 
     wtr.flush()?;

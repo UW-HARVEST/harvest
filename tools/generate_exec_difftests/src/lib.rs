@@ -75,6 +75,7 @@ impl Tool for GenerateExecDifftests {
                 .get("generate_exec_difftests")
                 .ok_or("generate_exec_difftests: missing config section")?,
         )?;
+        config.validate();
 
         let raw_source = context
             .ir_snapshot

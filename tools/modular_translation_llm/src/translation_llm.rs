@@ -1,6 +1,8 @@
 //! LLM abstraction layer for modular translation.
 //! Abstracts away all the string management needed for building dynamically generated prompts and
 //! provides a clean well-typed interface for use by the rest of the transpiler.
+use build_config::BuildConfigIR;
+use build_config::build_system_prompt;
 use build_project_spec::ProjectKind;
 use c_ast::TopLevelEntity;
 use full_source::RawSource;
@@ -120,33 +122,50 @@ impl ModularLLMUsageTotals {
 }
 
 impl ModularTranslationLLM {
-    /// Initializes seperate HarvestLLM instances for each type of translation task with the
-    // appropriate system prompts and structured output schemas.
-    pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+    /// Initializes separate HarvestLLM instances for each type of translation task with the
+    /// appropriate system prompts and structured output schemas.
+    ///
+    /// When `build_cfg.is_empty == false`, every per-declaration system prompt is extended
+    /// with a configurable-variables section that teaches the LLM the cfg gating rules for
+    /// each variable (and, for the cargo_toml prompt, not to write a `[features]` block since
+    /// `EmitBuildFeatures` owns that). The macros/types/functions/interface prompts need this
+    /// too: that is where the cfg-gated declarations are actually emitted, so without it those
+    /// translations hardcode the default configuration. When the IR is empty the extension is
+    /// a no-op and each prompt is byte-identical to its static base.
+    pub fn build(
+        config: &Config,
+        build_cfg: &BuildConfigIR,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let macros_system_prompt = build_system_prompt(SYSTEM_PROMPT_MACROS, build_cfg);
         let macros_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_MACROS,
-            SYSTEM_PROMPT_MACROS,
+            &macros_system_prompt,
         )?;
+        let types_system_prompt = build_system_prompt(SYSTEM_PROMPT_TYPES, build_cfg);
         let types_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_TYPES,
-            SYSTEM_PROMPT_TYPES,
+            &types_system_prompt,
         )?;
+        let functions_system_prompt = build_system_prompt(SYSTEM_PROMPT_FUNCTIONS, build_cfg);
         let functions_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS,
-            SYSTEM_PROMPT_FUNCTIONS,
+            &functions_system_prompt,
         )?;
+        let interface_system_prompt = build_system_prompt(SYSTEM_PROMPT_INTERFACE, build_cfg);
         let interface_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_INTERFACE,
-            SYSTEM_PROMPT_INTERFACE,
+            &interface_system_prompt,
         )?;
+        // The cargo_toml prompt additionally gains the "do not write [features]" guidance.
+        let cargo_toml_system_prompt = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, build_cfg);
         let cargo_toml_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML,
-            SYSTEM_PROMPT_CARGO_TOML,
+            &cargo_toml_system_prompt,
         )?;
 
         Ok(Self {
@@ -500,4 +519,94 @@ struct DeclarationInput {
 struct InterfaceDeclarationInput {
     source: String,
     enforce_ffi_interface: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use build_config::{BuildConfigIR, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping};
+
+    use super::SYSTEM_PROMPT_CARGO_TOML;
+    use build_config::build_system_prompt;
+
+    fn empty_ir() -> BuildConfigIR {
+        BuildConfigIR {
+            is_empty: true,
+            ..Default::default()
+        }
+    }
+
+    fn nonempty_ir() -> BuildConfigIR {
+        BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "BACKEND".to_owned(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["alpha".to_owned(), "beta".to_owned()],
+                        numeric: false,
+                    },
+                    default: Some("alpha".to_owned()),
+                },
+                ConfigVariable {
+                    name: "ENABLE_EXTRA".to_owned(),
+                    kind: ConfigVarKind::Boolean,
+                    default: Some("false".to_owned()),
+                },
+            ],
+            defines: vec![DefineMapping {
+                c_name: "BUILD_PROFILE".to_owned(),
+                kind: DefineKind::Composed {
+                    template: "{BACKEND}_{WORD_SIZE}".to_owned(),
+                },
+                source_vars: vec!["BACKEND".to_owned(), "WORD_SIZE".to_owned()],
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Anti-regression: when `is_empty == true`, the cargo_toml system prompt must be
+    /// byte-equal to the static `SYSTEM_PROMPT_CARGO_TOML` constant.
+    #[test]
+    fn empty_ir_cargo_toml_prompt_is_byte_equal_to_static() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &empty_ir());
+        assert_eq!(
+            result, SYSTEM_PROMPT_CARGO_TOML,
+            "empty IR must not modify the cargo_toml prompt"
+        );
+    }
+
+    /// Non-empty IR: the cargo_toml system prompt must be extended with the
+    /// configurable-variables section and must instruct the LLM not to write a
+    /// `[features]` block.
+    #[test]
+    fn nonempty_ir_cargo_toml_prompt_contains_no_features_instruction() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &nonempty_ir());
+
+        assert!(result.starts_with(SYSTEM_PROMPT_CARGO_TOML));
+        assert!(
+            result.contains("do NOT write a `[features]` block"),
+            "cargo_toml prompt must instruct LLM not to write [features]"
+        );
+    }
+
+    /// Non-empty IR: cargo_toml prompt contains cfg/env rules for each variable.
+    #[test]
+    fn nonempty_ir_cargo_toml_prompt_has_cfg_rules() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &nonempty_ir());
+
+        assert!(result.contains("#[cfg(BACKEND_alpha)]"));
+        assert!(result.contains("#[cfg(BACKEND_beta)]"));
+        assert!(result.contains("#[cfg(feature = \"ENABLE_EXTRA\")]"));
+        assert!(result.contains("env!(\"BUILD_PROFILE\")"));
+    }
+
+    /// The static cargo_toml prompt already tells the LLM not to write a [features]
+    /// section (this is a property of the static prompt itself, not just the extension).
+    #[test]
+    fn static_cargo_toml_prompt_forbids_features_section() {
+        assert!(
+            SYSTEM_PROMPT_CARGO_TOML.contains("Do NOT include a `[features]` section"),
+            "static cargo_toml prompt must forbid [features] block"
+        );
+    }
 }

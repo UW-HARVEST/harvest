@@ -86,7 +86,17 @@ impl Tool for BuildProjectSpec {
             return Ok(Box::new(ProjectSpec { kind }));
         }
 
-        Err("Could not identify project kind from CMakeLists.txt (or could not find it)".into())
+        // Autotools fallback: projects that ship no CMakeLists.txt (e.g.
+        // libsodium) declare their targets in `Makefile.am` via Automake
+        // primaries. `bin_PROGRAMS` => executable; `lib_LTLIBRARIES` /
+        // `noinst_LTLIBRARIES` / `lib_LIBRARIES` => library. We scan every
+        // Makefile.am in the tree because the primary that matters usually
+        // lives in a subdirectory (src/, src/<name>/), not the project root.
+        if let Some(kind) = project_kind_from_automake(repr) {
+            return Ok(Box::new(ProjectSpec { kind }));
+        }
+
+        Err("Could not identify project kind from CMakeLists.txt / Makefile.am (or could not find either)".into())
     }
 }
 
@@ -101,13 +111,67 @@ impl Tool for BuildProjectSpec {
 /// line-prefix matching on main.
 fn project_kind_from_cmakelists(cmakelists: &[u8]) -> Option<ProjectKind> {
     let text = String::from_utf8_lossy(cmakelists);
-    if text.lines().any(|line| line.starts_with("add_executable(")) {
-        Some(ProjectKind::Executable)
-    } else if text.lines().any(|line| line.starts_with("add_library(")) {
+    // Match after trimming leading whitespace: real projects (e.g. libpng)
+    // indent `add_library(...)` / `add_executable(...)` inside `if()` blocks,
+    // so a column-0-only prefix check would miss them.
+    let starts = |prefix: &str| {
+        text.lines()
+            .any(|line| line.trim_start().starts_with(prefix))
+    };
+    // Library takes precedence when both appear: a project that builds a library
+    // AND executables (e.g. libpng, which also builds test/tool binaries) is
+    // fundamentally a library from the translation's perspective -- the exported
+    // library surface is what downstream tools consume. Only classify as
+    // Executable when there is no library target at all.
+    if starts("add_library(") {
         Some(ProjectKind::Library)
+    } else if starts("add_executable(") {
+        Some(ProjectKind::Executable)
     } else {
         None
     }
+}
+
+/// Determine project kind by scanning every `Makefile.am` in the source tree
+/// for Automake target primaries. This is the autotools analogue of
+/// [`project_kind_from_cmakelists`], for projects that ship no CMakeLists.txt.
+///
+/// Detection markers (matched as the first non-whitespace token on a line,
+/// tolerating the `NAME_PRIMARY = ...` assignment form):
+/// - `bin_PROGRAMS`, `sbin_PROGRAMS`, `noinst_PROGRAMS` -> [`ProjectKind::Executable`]
+/// - `lib_LTLIBRARIES`, `noinst_LTLIBRARIES`, `lib_LIBRARIES`,
+///   `pkglib_LTLIBRARIES` -> [`ProjectKind::Library`]
+///
+/// Executable wins when both appear (a library that also builds a CLI driver
+/// is exercised as an executable), matching the intent of the CMake matcher.
+fn project_kind_from_automake(repr: &RawSource) -> Option<ProjectKind> {
+    const EXE_PRIMARIES: &[&str] = &["bin_PROGRAMS", "sbin_PROGRAMS", "noinst_PROGRAMS"];
+    const LIB_PRIMARIES: &[&str] = &[
+        "lib_LTLIBRARIES",
+        "noinst_LTLIBRARIES",
+        "lib_LIBRARIES",
+        "pkglib_LTLIBRARIES",
+    ];
+
+    let mut saw_library = false;
+    for (path, contents) in repr.dir.files_recursive() {
+        if path.file_name().and_then(|n| n.to_str()) != Some("Makefile.am") {
+            continue;
+        }
+        let text = String::from_utf8_lossy(contents);
+        for line in text.lines() {
+            // The primary is the first whitespace-delimited token; an
+            // assignment like `bin_PROGRAMS = foo` has it as token 0.
+            let token = line.split_whitespace().next().unwrap_or("");
+            if EXE_PRIMARIES.contains(&token) {
+                return Some(ProjectKind::Executable);
+            }
+            if LIB_PRIMARIES.contains(&token) {
+                saw_library = true;
+            }
+        }
+    }
+    saw_library.then_some(ProjectKind::Library)
 }
 
 #[cfg(test)]
@@ -158,6 +222,35 @@ mod tests {
         assert!(
             matches!(kind, Some(ProjectKind::Library)),
             "mid-line occurrence must not trigger executable"
+        );
+    }
+
+    /// Real projects (e.g. libpng) INDENT `add_library`/`add_executable` inside
+    /// `if()` blocks. Indented targets must still be detected.
+    #[test]
+    fn legacy_path_detects_indented_targets() {
+        let cmakelists = b"if(PNG_SHARED)\n  add_library(png_shared SHARED x.c)\nendif()\n";
+        assert!(
+            matches!(
+                project_kind_from_cmakelists(cmakelists),
+                Some(ProjectKind::Library)
+            ),
+            "indented add_library must be detected"
+        );
+    }
+
+    /// When a project declares BOTH a library and executables (libpng builds the
+    /// png library plus pngtest/tool binaries), it is classified as a Library --
+    /// the exported library surface is what the translation targets.
+    #[test]
+    fn legacy_path_library_wins_when_both_present() {
+        let cmakelists = b"  add_library(png STATIC png.c)\n  add_executable(pngtest pngtest.c)\n";
+        assert!(
+            matches!(
+                project_kind_from_cmakelists(cmakelists),
+                Some(ProjectKind::Library)
+            ),
+            "library must take precedence when both target kinds are present"
         );
     }
 }

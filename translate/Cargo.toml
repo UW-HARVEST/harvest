@@ -23,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 c_ast.workspace = true
 load_raw_source.workspace = true
+load_cargo_package.workspace = true
 build_config.workspace = true
 build_project_spec.workspace = true
 emit_build_features.workspace = true

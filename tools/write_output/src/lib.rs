@@ -7,7 +7,25 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 use try_cargo_build::CargoBuildResult;
 
-pub struct WriteOutput;
+/// Copies a built Cargo package to a destination directory.
+///
+/// By default (`WriteOutput` / `WriteOutput::new(None)`) the destination is
+/// `config.output`. An explicit override lets the pipeline emit an intermediate
+/// stage (e.g. the pre-verify translation) to a separate folder so both the
+/// translate-only and verified crates are preserved as independent outputs.
+#[derive(Default)]
+pub struct WriteOutput {
+    dest_override: Option<PathBuf>,
+}
+
+impl WriteOutput {
+    /// Write to an explicit directory instead of `config.output`.
+    pub fn to(dest: PathBuf) -> Self {
+        WriteOutput {
+            dest_override: Some(dest),
+        }
+    }
+}
 
 impl Tool for WriteOutput {
     fn name(&self) -> &'static str {
@@ -25,7 +43,10 @@ impl Tool for WriteOutput {
             .ok_or("WriteOutput: no CargoBuildResult found in IR")?;
 
         let src = build_result.root_path();
-        let dst = &context.config.output;
+        let dst = self
+            .dest_override
+            .as_ref()
+            .unwrap_or(&context.config.output);
         copy_dir_all(src, dst)?;
         info!("Output written to {}", dst.display());
 

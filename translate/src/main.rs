@@ -1,5 +1,4 @@
 use clap::Parser;
-use harvest_core::utils::empty_writable_dir;
 use harvest_translate::cli::{Args, initialize};
 use harvest_translate::transpile;
 use harvest_translate::util::set_user_only_umask;
@@ -18,7 +17,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Some(config) = initialize(args) else {
         return Ok(()); // An early-exit argument was passed.
     };
-    empty_writable_dir(&config.output, config.force).expect("output directory error");
+    // Note: output-directory preparation happens inside `transpile`, which
+    // knows whether this is a resume-verify run (and must therefore preserve
+    // the existing `<output>/translated` crate rather than erase it).
     let ir = transpile(config.into())?;
     println!("{}", ir);
     Ok(())

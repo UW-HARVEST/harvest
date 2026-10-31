@@ -4,7 +4,7 @@
 use clap::Parser;
 use config::FileFormat::Toml;
 use directories::ProjectDirs;
-use harvest_core::config::Config;
+use harvest_core::config::{AgentKind, Config};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,12 +22,33 @@ pub struct Args {
     pub force: bool,
 
     /// Use modular translation rather than standard all-at-once translation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agentic")]
     pub modular: bool,
+
+    /// Use the agentic translation tool.
+    #[arg(long, conflicts_with = "modular")]
+    pub agentic: bool,
+
+    /// Run the agentic verify-and-fix stage after translation (requires --agentic).
+    #[arg(long, requires = "agentic")]
+    pub agentic_verify: bool,
+
+    /// Which external agent to use for agentic translation and verification
+    /// (kiro | claude). Defaults to kiro for backward compatibility.
+    #[arg(long, requires = "agentic", value_parser = parse_agent_kind)]
+    pub agentic_agent: Option<AgentKind>,
 
     /// Path to the directory containing the C code to translate.
     // Should always be present unless using a subcommand like --print-config-path
     pub input: Option<PathBuf>,
+
+    /// Number of LLM-based repair passes to attempt after a failed build.
+    #[arg(long, default_value = "2")]
+    pub repair_passes: usize,
+
+    /// Number of LLM-based repair passes to attempt after a failed differential test.
+    #[arg(long, default_value = "0")]
+    pub diff_repair_passes: usize,
 
     /// Prints out the location of the config file.
     #[arg(long)]
@@ -96,6 +117,32 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
             .expect("settings override failed");
     }
 
+    if args.agentic {
+        settings = settings
+            .set_override("agentic", "true")
+            .expect("settings override failed");
+    }
+
+    if args.agentic_verify {
+        settings = settings
+            .set_override("agentic_verify", "true")
+            .expect("settings override failed");
+    }
+
+    if let Some(agent) = args.agentic_agent {
+        settings = settings
+            .set_override("agentic_agent", agent.to_string())
+            .expect("settings override failed");
+    }
+
+    settings = settings
+        .set_override("max_repair_passes", args.repair_passes as i64)
+        .expect("settings override failed");
+
+    settings = settings
+        .set_override("max_diff_repair_passes", args.diff_repair_passes as i64)
+        .expect("settings override failed");
+
     // We need to set an override so that deserializing the config does not error.
     // However, the config crate does not support providing a Path in an override.
     // We could convert to a string and back, but that can be lossy. Instead, this just sets a
@@ -124,6 +171,17 @@ fn load_config(args: &Args, config_dir: &Path) -> Config {
         config.output = output.clone();
     }
     config
+}
+
+/// Parser for the `--agentic-agent` flag's value (`kiro` or `claude`).
+fn parse_agent_kind(s: &str) -> Result<AgentKind, String> {
+    match s.to_lowercase().as_str() {
+        "kiro" => Ok(AgentKind::Kiro),
+        "claude" => Ok(AgentKind::Claude),
+        other => Err(format!(
+            "unknown agent kind: {other} (expected: kiro, claude)"
+        )),
+    }
 }
 
 /// Returns the config file path, given the config directory.
@@ -194,6 +252,58 @@ mod tests {
                 config_dir.path()
             )
             .force
+        );
+
+        // The embedded default_config.toml sets the agentic agent timeouts; with no
+        // user override they must resolve to the long-run defaults (these override the
+        // crates' serde `default_timeout_secs`, so the TOML is the source of truth).
+        let cfg = load_config(
+            &Args::parse_from(["", "--output=/tmp/out"]),
+            config_dir.path(),
+        );
+        assert_eq!(
+            cfg.tools["translate_agentic"]["timeout_secs"].as_u64(),
+            Some(7200)
+        );
+        assert_eq!(
+            cfg.tools["verify_fix_agentic"]["timeout_secs"].as_u64(),
+            Some(5400)
+        );
+    }
+
+    /// A user/deployment config (e.g. the T&E container's config TOML) can raise
+    /// the agentic timeouts above the embedded defaults. This is the supported
+    /// way to give very large codebases a much longer budget without changing
+    /// the reasonable in-repo defaults.
+    #[cfg(not(miri))]
+    #[test]
+    fn agentic_timeouts_are_overridable_by_user_config() {
+        use super::*;
+        use harvest_core::test_util::tempdir;
+        use std::{fs, io::Write as _};
+        let config_dir = tempdir().unwrap();
+        fs::File::create(config_file(config_dir.path()))
+            .unwrap()
+            .write_all(
+                br#"
+                    [tools.translate_agentic]
+                    timeout_secs = 36000
+                    [tools.verify_fix_agentic]
+                    timeout_secs = 28800
+                "#,
+            )
+            .unwrap();
+        let cfg = load_config(
+            &Args::parse_from(["", "a", "--output=/tmp/out"]),
+            config_dir.path(),
+        );
+        assert_eq!(
+            cfg.tools["translate_agentic"]["timeout_secs"].as_u64(),
+            Some(36000)
+        );
+        assert_eq!(
+            cfg.tools["verify_fix_agentic"]["timeout_secs"].as_u64(),
+            Some(28800)
         );
     }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "build_c_artifact"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+build_project_spec.workspace = true
+full_source.workspace = true
+harvest_core.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

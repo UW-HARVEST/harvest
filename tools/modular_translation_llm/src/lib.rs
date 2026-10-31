@@ -6,6 +6,7 @@
 //! - Interface (FunctionDecl and VarDecl signatures) use type context
 //! - Functions and globals (FunctionDecl, VarDecl) use type/interface context
 
+use build_config::BuildConfigIR;
 use build_project_spec::{ProjectKind, ProjectSpec};
 use c_ast::{RichSourceMap, TopLevelEntity, annotate_visibility};
 use full_source::RawSource;
@@ -22,8 +23,9 @@ mod recombine;
 mod translation;
 mod translation_llm;
 pub use translation::{
-    InterfaceTranslationResult, RustDeclaration, TranslationResult, TypeTranslationResult,
-    translate_decls, translate_functions, translate_interface, translate_types,
+    InterfaceTranslationResult, MacroTranslationResult, RustDeclaration, TranslationResult,
+    TypeTranslationResult, translate_decls, translate_functions, translate_interface,
+    translate_macros, translate_types,
 };
 pub use translation_llm::ModularTranslationLLM;
 
@@ -66,7 +68,15 @@ pub struct ModularTranslationLlm;
 fn extract_args<'a>(
     context: &'a RunContext,
     inputs: &[Id],
-) -> Result<(&'a RawSource, &'a RichSourceMap, &'a ProjectKind), Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        &'a RawSource,
+        &'a RichSourceMap,
+        &'a ProjectKind,
+        &'a BuildConfigIR,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let raw_source = context
         .ir_snapshot
         .get::<RawSource>(inputs[0])
@@ -79,7 +89,11 @@ fn extract_args<'a>(
         .ir_snapshot
         .get::<ProjectSpec>(inputs[2])
         .ok_or("No ProjectSpec representation found in IR")?;
-    Ok((raw_source, clang_ast, &project_spec.kind))
+    let build_cfg = context
+        .ir_snapshot
+        .get::<BuildConfigIR>(inputs[3])
+        .ok_or("No BuildConfigIR representation found in IR")?;
+    Ok((raw_source, clang_ast, &project_spec.kind, build_cfg))
 }
 
 impl Tool for ModularTranslationLlm {
@@ -101,32 +115,37 @@ impl Tool for ModularTranslationLlm {
         )?;
         config.validate();
 
-        let (raw_source, clang_ast, project_kind) = extract_args(&context, &inputs)?;
+        let (raw_source, clang_ast, project_kind, build_cfg) = extract_args(&context, &inputs)?;
 
         let app_types: &[TopLevelEntity] = &clang_ast.app_types;
         let app_globals: &[TopLevelEntity] = &clang_ast.app_globals;
+        let defines: &[TopLevelEntity] = &clang_ast.defines;
         let mut app_functions: Vec<TopLevelEntity> = clang_ast.app_functions.clone();
 
         annotate_visibility(&mut app_functions, &clang_ast.app_func_sigs);
         info!("Visibility annotation complete");
 
         info!(
-            "Extracted {} type declarations, {} global declarations, {} function declarations",
+            "Extracted {} macro definitions, {} type declarations, {} global declarations, {} function declarations",
+            defines.len(),
             app_types.len(),
             app_globals.len(),
             app_functions.len()
         );
 
         // Translation flow:
+        // Macros (MacroDefinition) - establish macro translations
         // Types (TypedefDecl, RecordDecl, EnumDecl) - establish data layout
         // Interface (FunctionDecl and VarDecl signatures) - with type context
         // Functions and Globals (FunctionDecl, VarDecl) - with type/interface context
         let translation_result = translation::translate_decls(
+            defines,
             app_types,
             app_globals,
             &app_functions,
             raw_source,
             project_kind,
+            build_cfg,
             &config,
         )
         .map_err(|e| format!("Translation failed: {}", e))?;

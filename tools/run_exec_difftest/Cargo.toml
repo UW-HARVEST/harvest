@@ -1,0 +1,17 @@
+[package]
+name = "run_exec_difftest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+build_c_artifact.workspace = true
+exec_runner.workspace = true
+full_source.workspace = true
+generate_exec_difftests.workspace = true
+harvest_core.workspace = true
+run_difftest.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

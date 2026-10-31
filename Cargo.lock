@@ -700,9 +700,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "build_c_artifact"
+version = "0.1.0"
+dependencies = [
+ "build_project_spec",
+ "full_source",
+ "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "build_config"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "build_project_spec"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "full_source",
  "harvest_core",
  "load_raw_source",
@@ -743,6 +767,7 @@ dependencies = [
 name = "c_ast"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "clang",
  "full_source",
  "harvest_core",
@@ -1101,6 +1126,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "emit_build_features"
+version = "0.1.0"
+dependencies = [
+ "build_config",
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1123,6 +1160,13 @@ checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "exec_runner"
+version = "0.1.0"
+dependencies = [
+ "wait-timeout",
 ]
 
 [[package]]
@@ -1150,6 +1194,18 @@ dependencies = [
  "syn",
  "tracing",
  "try_cargo_build",
+]
+
+[[package]]
+name = "fix_diff_failures"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "run_difftest",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -1286,6 +1342,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "generate_difftest_suite"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "generate_exec_difftests"
+version = "0.1.0"
+dependencies = [
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1372,6 +1450,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
+ "exec_runner",
  "full_source",
  "harvest_core",
  "harvest_translate",
@@ -1384,6 +1463,7 @@ dependencies = [
  "try_cargo_build",
  "wait-timeout",
  "walkdir",
+ "write_output",
 ]
 
 [[package]]
@@ -1405,22 +1485,36 @@ dependencies = [
 name = "harvest_translate"
 version = "0.1.0"
 dependencies = [
+ "build_c_artifact",
+ "build_config",
  "build_project_spec",
  "c_ast",
  "clap",
  "clippy_lint",
  "config",
  "directories",
+ "emit_build_features",
+ "fix_declarations_llm",
+ "fix_diff_failures",
+ "full_source",
+ "generate_difftest_suite",
+ "generate_exec_difftests",
  "harvest_core",
  "libc",
  "load_raw_source",
  "modular_translation_llm",
+ "quantize_rust_spans",
  "raw_source_to_cargo_llm",
+ "run_difftest",
+ "run_exec_difftest",
  "serde",
  "serde_json",
  "thiserror",
  "tracing",
+ "translate_agentic",
  "try_cargo_build",
+ "verify_fix_agentic",
+ "write_output",
 ]
 
 [[package]]
@@ -1957,6 +2051,7 @@ dependencies = [
 name = "modular_translation_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "c_ast",
  "full_source",
@@ -2261,6 +2356,7 @@ dependencies = [
 name = "raw_source_to_cargo_llm"
 version = "0.1.0"
 dependencies = [
+ "build_config",
  "build_project_spec",
  "full_source",
  "harvest_core",
@@ -2378,6 +2474,32 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "run_difftest"
+version = "0.1.0"
+dependencies = [
+ "build_c_artifact",
+ "full_source",
+ "generate_difftest_suite",
+ "harvest_core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "run_exec_difftest"
+version = "0.1.0"
+dependencies = [
+ "build_c_artifact",
+ "exec_runner",
+ "full_source",
+ "generate_exec_difftests",
+ "harvest_core",
+ "run_difftest",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3145,6 +3267,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "translate_agentic"
+version = "0.1.0"
+dependencies = [
+ "build_config",
+ "build_project_spec",
+ "emit_build_features",
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3157,6 +3294,7 @@ dependencies = [
  "cargo_metadata",
  "full_source",
  "harvest_core",
+ "tempfile",
  "toml_edit 0.23.10+spec-1.0.0",
  "tracing",
 ]
@@ -3248,6 +3386,19 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "verify_fix_agentic"
+version = "0.1.0"
+dependencies = [
+ "build_config",
+ "full_source",
+ "harvest_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "version_check"
@@ -3595,6 +3746,15 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
+
+[[package]]
+name = "write_output"
+version = "0.1.0"
+dependencies = [
+ "harvest_core",
+ "tracing",
+ "try_cargo_build",
+]
 
 [[package]]
 name = "writeable"

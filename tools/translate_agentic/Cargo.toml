@@ -1,0 +1,18 @@
+[package]
+name = "translate_agentic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+build_config.workspace = true
+build_project_spec.workspace = true
+emit_build_features.workspace = true
+full_source.workspace = true
+harvest_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

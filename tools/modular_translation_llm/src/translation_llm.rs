@@ -1,6 +1,8 @@
 //! LLM abstraction layer for modular translation.
 //! Abstracts away all the string management needed for building dynamically generated prompts and
 //! provides a clean well-typed interface for use by the rest of the transpiler.
+use build_config::BuildConfigIR;
+use build_config::build_system_prompt;
 use build_project_spec::ProjectKind;
 use c_ast::TopLevelEntity;
 use full_source::RawSource;
@@ -11,17 +13,22 @@ use std::sync::Mutex;
 use tracing::warn;
 
 use crate::Config;
-use crate::translation::{InterfaceTranslationResult, RustDeclaration, TypeTranslationResult};
+use crate::translation::{
+    InterfaceTranslationResult, MacroTranslationResult, RustDeclaration, TypeTranslationResult,
+};
 
 fn declaration_source_text(decl: &TopLevelEntity) -> Result<String, Box<dyn std::error::Error>> {
     Ok(decl.source_text.clone())
 }
 
-/// Structured output JSON schema for Pass 1 (types).
+/// Structured output JSON schema for the macro pass.
+const STRUCTURED_OUTPUT_SCHEMA_MACROS: &str = include_str!("prompts/macros/structured_schema.json");
+
+/// Structured output JSON schema for the type pass.
 const STRUCTURED_OUTPUT_SCHEMA_TYPES: &str =
     include_str!("prompts/type_translation/structured_schema.json");
 
-/// Structured output JSON schema for Pass 2 (functions).
+/// Structured output JSON schema for the function pass.
 const STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS: &str =
     include_str!("prompts/func_translation/structured_schema.json");
 
@@ -33,10 +40,13 @@ const STRUCTURED_OUTPUT_SCHEMA_INTERFACE: &str =
 const STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML: &str =
     include_str!("prompts/cargo_toml/structured_schema.json");
 
-/// System prompt for Pass 1 (types).
+/// System prompt for the macro pass.
+const SYSTEM_PROMPT_MACROS: &str = include_str!("prompts/macros/system_prompt.txt");
+
+/// System prompt for the type pass.
 const SYSTEM_PROMPT_TYPES: &str = include_str!("prompts/type_translation/system_prompt.txt");
 
-/// System prompt for Pass 2 (functions).
+/// System prompt for the function pass.
 const SYSTEM_PROMPT_FUNCTIONS: &str = include_str!("prompts/func_translation/system_prompt.txt");
 
 /// System prompt for the interface pass.
@@ -63,15 +73,23 @@ struct InterfaceResult {
     pub signatures: Vec<String>,
 }
 
+/// Result of macro pass response.
+#[derive(Debug, Deserialize)]
+struct MacrosResult {
+    pub macros: Vec<String>,
+}
+
 /// LLM abstraction layer for modular translation.
 /// Has support for 4 different types of LLM calls with different system prompts
 // and structured output schemas:
 /// - types_llm: for translating type declarations
+/// - macros_llm: for translating macro definitions
 /// - interface_llm: for translating function and global variable signatures in a single batch
 /// - functions_llm: for translating function and global variable declarations one-by-one
 /// - cargo_toml_llm: for generating Cargo.toml based on the list of dependencies used in the
 //    translated code
 pub struct ModularTranslationLLM {
+    macros_llm: HarvestLLM,
     types_llm: HarvestLLM,
     interface_llm: HarvestLLM,
     functions_llm: HarvestLLM,
@@ -81,6 +99,7 @@ pub struct ModularTranslationLLM {
 
 #[derive(Debug, Clone, Copy)]
 enum LLMCallKind {
+    Macros,
     Types,
     Interface,
     Functions,
@@ -89,6 +108,7 @@ enum LLMCallKind {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModularLLMUsageTotals {
+    pub macros: LLMUsageTotals,
     pub types: LLMUsageTotals,
     pub interface: LLMUsageTotals,
     pub functions: LLMUsageTotals,
@@ -98,15 +118,18 @@ pub struct ModularLLMUsageTotals {
 impl ModularLLMUsageTotals {
     pub fn total(&self) -> LLMUsageTotals {
         LLMUsageTotals {
-            prompt_tokens: self.types.prompt_tokens
+            prompt_tokens: self.macros.prompt_tokens
+                + self.types.prompt_tokens
                 + self.interface.prompt_tokens
                 + self.functions.prompt_tokens
                 + self.cargo_toml.prompt_tokens,
-            output_tokens: self.types.output_tokens
+            output_tokens: self.macros.output_tokens
+                + self.types.output_tokens
                 + self.interface.output_tokens
                 + self.functions.output_tokens
                 + self.cargo_toml.output_tokens,
-            total_tokens: self.types.total_tokens
+            total_tokens: self.macros.total_tokens
+                + self.types.total_tokens
                 + self.interface.total_tokens
                 + self.functions.total_tokens
                 + self.cargo_toml.total_tokens,
@@ -115,31 +138,54 @@ impl ModularLLMUsageTotals {
 }
 
 impl ModularTranslationLLM {
-    /// Initializes seperate HarvestLLM instances for each type of translation task with the
-    // appropriate system prompts and structured output schemas.
-    pub fn build(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+    /// Initializes separate HarvestLLM instances for each type of translation task with the
+    /// appropriate system prompts and structured output schemas.
+    ///
+    /// When `build_cfg.is_empty == false`, every per-declaration system prompt is extended
+    /// with a configurable-variables section that teaches the LLM the cfg gating rules for
+    /// each variable (and, for the cargo_toml prompt, not to write a `[features]` block since
+    /// `EmitBuildFeatures` owns that). The macros/types/functions/interface prompts need this
+    /// too: that is where the cfg-gated declarations are actually emitted, so without it those
+    /// translations hardcode the default configuration. When the IR is empty the extension is
+    /// a no-op and each prompt is byte-identical to its static base.
+    pub fn build(
+        config: &Config,
+        build_cfg: &BuildConfigIR,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let macros_system_prompt = build_system_prompt(SYSTEM_PROMPT_MACROS, build_cfg);
+        let macros_llm = HarvestLLM::build(
+            &config.llm,
+            STRUCTURED_OUTPUT_SCHEMA_MACROS,
+            &macros_system_prompt,
+        )?;
+        let types_system_prompt = build_system_prompt(SYSTEM_PROMPT_TYPES, build_cfg);
         let types_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_TYPES,
-            SYSTEM_PROMPT_TYPES,
+            &types_system_prompt,
         )?;
+        let functions_system_prompt = build_system_prompt(SYSTEM_PROMPT_FUNCTIONS, build_cfg);
         let functions_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_FUNCTIONS,
-            SYSTEM_PROMPT_FUNCTIONS,
+            &functions_system_prompt,
         )?;
+        let interface_system_prompt = build_system_prompt(SYSTEM_PROMPT_INTERFACE, build_cfg);
         let interface_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_INTERFACE,
-            SYSTEM_PROMPT_INTERFACE,
+            &interface_system_prompt,
         )?;
+        // The cargo_toml prompt additionally gains the "do not write [features]" guidance.
+        let cargo_toml_system_prompt = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, build_cfg);
         let cargo_toml_llm = HarvestLLM::build(
             &config.llm,
             STRUCTURED_OUTPUT_SCHEMA_CARGO_TOML,
-            SYSTEM_PROMPT_CARGO_TOML,
+            &cargo_toml_system_prompt,
         )?;
 
         Ok(Self {
+            macros_llm,
             types_llm,
             interface_llm,
             functions_llm,
@@ -155,6 +201,7 @@ impl ModularTranslationLLM {
             .expect("usage mutex poisoned in modular translation");
 
         match call_kind {
+            LLMCallKind::Macros => totals_by_call.macros.add_usage(usage),
             LLMCallKind::Types => totals_by_call.types.add_usage(usage),
             LLMCallKind::Interface => totals_by_call.interface.add_usage(usage),
             LLMCallKind::Functions => totals_by_call.functions.add_usage(usage),
@@ -171,6 +218,58 @@ impl ModularTranslationLLM {
 
     pub fn usage_totals(&self) -> LLMUsageTotals {
         self.usage_by_call().total()
+    }
+
+    /// Translates macro definitions to Rust using the macros_llm.
+    pub fn translate_macros(
+        &self,
+        macro_definitions: &[TopLevelEntity],
+        _raw_source: &RawSource,
+        project_kind: &ProjectKind,
+    ) -> Result<MacroTranslationResult, Box<dyn std::error::Error>> {
+        let mut macro_sources = Vec::new();
+
+        for decl in macro_definitions {
+            let source_text = declaration_source_text(decl)?;
+            macro_sources.push(DeclarationInput {
+                source: format!("#define {}", source_text.trim()),
+            });
+        }
+
+        #[derive(Serialize)]
+        struct RequestWithContext {
+            project_kind: String,
+            declarations: Vec<DeclarationInput>,
+        }
+
+        let project_kind_str = match project_kind {
+            ProjectKind::Executable => "executable",
+            ProjectKind::Library => "library",
+        };
+
+        let request = build_request(
+            "Please translate the following C macro definitions to Rust:",
+            &RequestWithContext {
+                project_kind: project_kind_str.to_string(),
+                declarations: macro_sources.clone(),
+            },
+        )?;
+
+        let (response, usage) = self.macros_llm.invoke(&request)?;
+        self.record_usage(LLMCallKind::Macros, usage.as_ref());
+        let macro_result: MacrosResult = serde_json::from_str(&response)?;
+
+        for (decl, translation) in macro_sources.iter().zip(macro_result.macros.iter()) {
+            crate::info!(
+                "Macro Translation complete:\n {} \n==>\n {}",
+                decl.source,
+                translation
+            );
+        }
+
+        Ok(MacroTranslationResult {
+            macros: macro_result.macros,
+        })
     }
 
     /// Translates type declarations to Rust using the types_llm.
@@ -245,6 +344,7 @@ impl ModularTranslationLLM {
         decl: &TopLevelEntity,
         _raw_source: &RawSource,
         project_kind: &ProjectKind,
+        macro_translations: &MacroTranslationResult,
         type_translations: &TypeTranslationResult,
         interface_translations: &InterfaceTranslationResult,
     ) -> Result<RustDeclaration, Box<dyn std::error::Error>> {
@@ -257,6 +357,7 @@ impl ModularTranslationLLM {
         #[derive(Serialize)]
         struct RequestWithContext {
             project_kind: String,
+            macro_translations: Vec<String>,
             type_translations: Vec<String>,
             interface_translations: Vec<String>,
             declaration: DeclarationInput,
@@ -274,9 +375,10 @@ impl ModularTranslationLLM {
             .collect();
 
         let request = build_request(
-            "Please translate the following C function or global variable declaration to Rust. The type declarations and function/global signatures have already been translated and are provided for context:",
+            "Please translate the following C function or global variable declaration to Rust. Macro translations, type declarations, and function/global signatures have already been translated and are provided for context:",
             &RequestWithContext {
                 project_kind: project_kind_str.to_string(),
+                macro_translations: macro_translations.macros.clone(),
                 type_translations: type_code,
                 interface_translations: interface_translations.signatures.clone(),
                 declaration: decl_source.clone(),
@@ -433,4 +535,94 @@ struct DeclarationInput {
 struct InterfaceDeclarationInput {
     source: String,
     enforce_ffi_interface: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use build_config::{BuildConfigIR, ConfigVarKind, ConfigVariable, DefineKind, DefineMapping};
+
+    use super::SYSTEM_PROMPT_CARGO_TOML;
+    use build_config::build_system_prompt;
+
+    fn empty_ir() -> BuildConfigIR {
+        BuildConfigIR {
+            is_empty: true,
+            ..Default::default()
+        }
+    }
+
+    fn nonempty_ir() -> BuildConfigIR {
+        BuildConfigIR {
+            is_empty: false,
+            variables: vec![
+                ConfigVariable {
+                    name: "BACKEND".to_owned(),
+                    kind: ConfigVarKind::Enum {
+                        values: vec!["alpha".to_owned(), "beta".to_owned()],
+                        numeric: false,
+                    },
+                    default: Some("alpha".to_owned()),
+                },
+                ConfigVariable {
+                    name: "ENABLE_EXTRA".to_owned(),
+                    kind: ConfigVarKind::Boolean,
+                    default: Some("false".to_owned()),
+                },
+            ],
+            defines: vec![DefineMapping {
+                c_name: "BUILD_PROFILE".to_owned(),
+                kind: DefineKind::Composed {
+                    template: "{BACKEND}_{WORD_SIZE}".to_owned(),
+                },
+                source_vars: vec!["BACKEND".to_owned(), "WORD_SIZE".to_owned()],
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Anti-regression: when `is_empty == true`, the cargo_toml system prompt must be
+    /// byte-equal to the static `SYSTEM_PROMPT_CARGO_TOML` constant.
+    #[test]
+    fn empty_ir_cargo_toml_prompt_is_byte_equal_to_static() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &empty_ir());
+        assert_eq!(
+            result, SYSTEM_PROMPT_CARGO_TOML,
+            "empty IR must not modify the cargo_toml prompt"
+        );
+    }
+
+    /// Non-empty IR: the cargo_toml system prompt must be extended with the
+    /// configurable-variables section and must instruct the LLM not to write a
+    /// `[features]` block.
+    #[test]
+    fn nonempty_ir_cargo_toml_prompt_contains_no_features_instruction() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &nonempty_ir());
+
+        assert!(result.starts_with(SYSTEM_PROMPT_CARGO_TOML));
+        assert!(
+            result.contains("do NOT write a `[features]` block"),
+            "cargo_toml prompt must instruct LLM not to write [features]"
+        );
+    }
+
+    /// Non-empty IR: cargo_toml prompt contains cfg/env rules for each variable.
+    #[test]
+    fn nonempty_ir_cargo_toml_prompt_has_cfg_rules() {
+        let result = build_system_prompt(SYSTEM_PROMPT_CARGO_TOML, &nonempty_ir());
+
+        assert!(result.contains("#[cfg(BACKEND_alpha)]"));
+        assert!(result.contains("#[cfg(BACKEND_beta)]"));
+        assert!(result.contains("#[cfg(feature = \"ENABLE_EXTRA\")]"));
+        assert!(result.contains("env!(\"BUILD_PROFILE\")"));
+    }
+
+    /// The static cargo_toml prompt already tells the LLM not to write a [features]
+    /// section (this is a property of the static prompt itself, not just the extension).
+    #[test]
+    fn static_cargo_toml_prompt_forbids_features_section() {
+        assert!(
+            SYSTEM_PROMPT_CARGO_TOML.contains("Do NOT include a `[features]` section"),
+            "static cargo_toml prompt must forbid [features] block"
+        );
+    }
 }

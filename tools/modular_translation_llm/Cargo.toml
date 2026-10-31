@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-c_ast.workspace = true
+build_config.workspace = true
 build_project_spec.workspace = true
+c_ast.workspace = true
 full_source.workspace = true
 harvest_core.workspace = true
-serde.workspace = true 
+serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true 
+tracing.workspace = true
 
 [lints]
 workspace = true

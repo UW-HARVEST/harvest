@@ -1,0 +1,25 @@
+{
+    "name": "exec_test_inputs",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "test_cases": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "argv": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "stdin": { "type": "string" }
+                    },
+                    "required": ["argv", "stdin"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["test_cases"],
+        "additionalProperties": false
+    }
+}

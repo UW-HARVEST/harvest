@@ -1,0 +1,10 @@
+[package]
+name = "exec_runner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wait-timeout = "0.2"
+
+[lints]
+workspace = true

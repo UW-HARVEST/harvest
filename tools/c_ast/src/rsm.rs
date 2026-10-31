@@ -68,6 +68,19 @@ pub struct TopLevelEntity {
     // This helps us deduplicate typedefs and struct/enum/union declarations.
     #[serde(default)]
     pub sub_entities: Vec<TopLevelEntity>,
+    /// `(driving_var, value)` tags identifying which build-config variants
+    /// this entity belongs to.
+    ///
+    /// Populated by looking up the entity's file in
+    /// `BuildConfigIR.source_selections`. A file that isn't selected by any
+    /// configurable variable gets an empty vec -- the common case. A file
+    /// referenced by two distinct `SourceSelection`s (uncommon) gets two tags.
+    ///
+    /// The downstream consumer (`modular_translation_llm`) uses these tags to
+    /// emit `#[cfg(<DRIVING_VAR>_<VALUE>)]` attributes on the translated
+    /// module declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_tags: Vec<(String, String)>,
 }
 
 /// This is the output of the parsing step, and therefore this tool.
@@ -121,7 +134,7 @@ impl RichSourceMap {
                 self.include_paths.push(item);
             }
             EntityKind::MacroDefinition => {
-                self.defines.push(item);
+                self.push_define(item);
             }
             EntityKind::PreprocessingDirective => {
                 self.compiler_args.push(item);
@@ -130,10 +143,14 @@ impl RichSourceMap {
     }
 
     fn push_type(&mut self, item: TopLevelEntity) {
-        Self::insert_type_into(&mut self.app_types, item);
+        Self::insert_deduplicated_decl_into(&mut self.app_types, item);
     }
 
-    fn insert_type_into(nodes: &mut Vec<TopLevelEntity>, mut item: TopLevelEntity) {
+    fn push_define(&mut self, item: TopLevelEntity) {
+        Self::insert_deduplicated_decl_into(&mut self.defines, item);
+    }
+
+    fn insert_deduplicated_decl_into(nodes: &mut Vec<TopLevelEntity>, mut item: TopLevelEntity) {
         // If an existing top-level node contains this item, attach it directly
         // as an immediate child. We do not preserve deeper sub-entity ordering.
         for node in nodes.iter_mut() {

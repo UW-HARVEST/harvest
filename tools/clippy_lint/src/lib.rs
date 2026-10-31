@@ -1,7 +1,7 @@
 //! Checks if the built Rust project passes the linter by
 //! running `cargo clippy --fix`.
 use full_source::CargoPackage;
-use harvest_core::cargo_utils::{add_workspace_guard, normalize_package_name};
+use harvest_core::cargo_utils::CargoToml;
 use harvest_core::tools::{RunContext, Tool};
 use harvest_core::{Id, Representation};
 use std::path::{Path, PathBuf};
@@ -58,10 +58,12 @@ fn clippy_error_output(
 fn try_clippy_lint(project_path: &PathBuf) -> Result<LintResult, Box<dyn std::error::Error>> {
     info!("Validating that the generated Rust project builds...");
 
+    let mut cargo = CargoToml::open(&project_path.join("Cargo.toml"))?;
     // Prevent accidentally picking up a parent workspace by marking this project as its own root.
-    add_workspace_guard(&project_path.join("Cargo.toml"))?;
+    cargo.add_workspace();
     // Normalize the package name to match the output directory so shared library names align with runner expectations.
-    normalize_package_name(&project_path.join("Cargo.toml"), project_path)?;
+    cargo.normalize_name(project_path);
+    cargo.save()?;
 
     // Run clippy once auto-fix the linter issues
     let fix_output = Command::new("cargo")

@@ -1,4 +1,3 @@
-use clang::source::SourceRange;
 use std::path::Path;
 
 use crate::{ClangAST, SourcePoint, SourceSpan, TopLevelEntity};
@@ -33,22 +32,73 @@ pub(crate) fn language_args_for_file(path: &Path) -> [&'static str; 2] {
     }
 }
 
-/// Read source text from a libClang SourceRange.
-/// Returns None if the range is invalid or spans multiple files.
-pub(crate) fn range_to_span_and_text(
-    range: Option<SourceRange<'_>>,
-    rel_file: &Path,
-) -> Option<(SourceSpan, String)> {
-    let range = range?;
-    let start = range.get_start().get_file_location();
-    let end = range.get_end().get_file_location();
+fn uses_spelling_location(child: &clang::Entity<'_>) -> bool {
+    child.get_kind() == clang::EntityKind::MacroDefinition
+}
 
-    let start_file = start.file?;
+/// Returns the entity location, resolved as spelling location for macros and
+/// expansion location for all other declarations.
+pub(crate) fn get_location<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<clang::source::Location<'tu>> {
+    let location = child.get_location()?;
+    Some(if uses_spelling_location(child) {
+        location.get_spelling_location()
+    } else {
+        location.get_expansion_location()
+    })
+}
+
+/// Returns the underlying file for the entity location.
+pub(crate) fn get_file_location<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<clang::source::File<'tu>> {
+    get_location(child)?.file
+}
+
+/// Returns start/end locations for an entity's range, resolved as spelling
+/// locations for macros and expansion locations for all other declarations.
+pub(crate) fn get_range<'tu>(
+    child: &clang::Entity<'tu>,
+) -> Option<(clang::source::Location<'tu>, clang::source::Location<'tu>)> {
+    let range = child.get_range()?;
+
+    Some(if uses_spelling_location(child) {
+        (
+            range.get_start().get_spelling_location(),
+            range.get_end().get_spelling_location(),
+        )
+    } else {
+        (
+            range.get_start().get_expansion_location(),
+            range.get_end().get_expansion_location(),
+        )
+    })
+}
+
+/// Read source text from a libClang entity location/range.
+/// Returns None if the range is invalid or spans multiple files.
+pub(crate) fn get_span_and_text(child: &clang::Entity<'_>) -> Option<(SourceSpan, String)> {
+    let (start, end) = get_range(child)?;
+    let start_file = get_file_location(child)?;
     let end_file = end.file?;
     // check if span is across multiple files
     let start_path = start_file.get_path();
     let end_path = end_file.get_path();
-    if start_path != end_path {
+    // Canonicalize before comparing: clang can return different path representations
+    // for the same physical file (e.g. with `..` components) depending on how the
+    // file was reached, which would otherwise produce false multi-file positives.
+    let start_canonical = start_path
+        .canonicalize()
+        .unwrap_or_else(|_| start_path.clone());
+    let end_canonical = end_path.canonicalize().unwrap_or_else(|_| end_path.clone());
+    if start_canonical != end_canonical {
+        tracing::info!(
+            "Skipping entity {:?} because it spans multiple files: {:?} to {:?}",
+            child.get_display_name(),
+            start_canonical,
+            end_canonical
+        );
         return None;
     }
 
@@ -57,12 +107,19 @@ pub(crate) fn range_to_span_and_text(
     let start_offset = start.offset as usize;
     let end_offset = end.offset as usize;
     if start_offset > end_offset || end_offset > file_bytes.len() {
+        tracing::warn!(
+            "Invalid source range for entity {:?}: start offset {}, end offset {}, file size {}",
+            child.get_display_name(),
+            start_offset,
+            end_offset,
+            file_bytes.len()
+        );
         return None;
     }
     let source_text = String::from_utf8_lossy(&file_bytes[start_offset..end_offset]).to_string();
 
     let span = SourceSpan {
-        file: rel_file.to_string_lossy().to_string(),
+        file: start_canonical.to_string_lossy().to_string(),
         start: SourcePoint {
             line: start.line,
             column: start.column,

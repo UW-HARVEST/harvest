@@ -1,0 +1,13 @@
+{
+    "name": "macros",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "macros": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "required": ["macros"]
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "build_config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+full_source.workspace = true
+harvest_core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

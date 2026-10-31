@@ -19,7 +19,7 @@
 use crate::error::HarvestResult;
 use crate::harness::TestCase;
 use crate::stats::TestResult;
-use harvest_core::cargo_utils;
+use harvest_core::cargo_utils::{self, CargoToml};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -37,7 +37,9 @@ const CANDO2_TOOLS_PATH: &str = "translated_tools/cando2";
 /// Relative path from runner directory to cando2 tools
 const CANDO2_RELATIVE_PATH: &str = "../translated_tools/cando2";
 
-/// Environment variable that tells cando2 to load Rust-compiled libraries
+/// Environment variable that told older cando2 revisions to load Rust-compiled libraries.
+/// Current cando2 selects the Rust candidate via the `--rust` flag; this is kept for
+/// backwards compatibility only.
 const RUST_ARTIFACTS_ENV: &str = "RUST_ARTIFACTS";
 
 /// Environment variable for shared library search paths
@@ -83,9 +85,11 @@ pub fn run_library_validation(
 ) -> HarvestResult<(Vec<TestResult>, Vec<String>)> {
     // === Library-specific preparation ===
 
-    // Prevent cargo from attaching to the parent workspace
-    cargo_utils::add_workspace_guard(&output_dir.join("Cargo.toml"))
-        .map_err(|e| format!("Failed to add workspace guard: {}", e))?;
+    // Add workspace guard and ensure cdylib
+    let mut cargo = CargoToml::open(&output_dir.join("Cargo.toml"))?;
+    cargo.add_workspace();
+    cargo.ensure_cdylib();
+    cargo.save()?;
 
     // Copy runner directory for cando2 testing
     cargo_utils::copy_directory_recursive(&input_dir.join("runner"), &output_dir.join("runner"))
@@ -97,10 +101,6 @@ pub fn run_library_validation(
         &output_dir.join("test_vectors"),
     )
     .map_err(|e| format!("Failed to copy test_vectors directory: {}", e))?;
-
-    // Ensure Cargo.toml has cdylib crate-type
-    cargo_utils::ensure_cdylib(&output_dir.join("Cargo.toml"))
-        .map_err(|e| format!("Failed to ensure cdylib: {}", e))?;
 
     // Rebuild to generate cdylib
     log::info!("Rebuilding project as cdylib...");
@@ -134,7 +134,13 @@ pub fn run_library_validation(
     log::info!("Runner binary located at: {}", runner_bin.display());
 
     // Run tests
-    run_test_suite(&runner_bin, &ld_library_path, test_cases, timeout)
+    run_test_suite(
+        output_dir,
+        &runner_bin,
+        &ld_library_path,
+        test_cases,
+        timeout,
+    )
 }
 
 /// Locates the compiled shared library artifact in the target directory.
@@ -150,7 +156,9 @@ pub fn run_library_validation(
 /// # Returns
 /// Path to the shared library file (.so, .dylib, or .dll)
 pub fn locate_compiled_library(output_dir: &Path, program_name: &str) -> HarvestResult<PathBuf> {
-    let pkg_name = cargo_utils::read_package_name(&output_dir.join("Cargo.toml"))
+    let pkg_name = CargoToml::open(&output_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|c| c.package_name())
         .unwrap_or_else(|| program_name.to_string());
     let target_release = output_dir.join("target").join("release");
 
@@ -228,10 +236,15 @@ fn copy_library_to_standard_location(
     let rust_artifacts_dir = output_dir.join(RUST_ARTIFACTS_SUBDIR);
     fs::create_dir_all(&rust_artifacts_dir)?;
 
-    let pkg_name = cargo_utils::read_package_name(&output_dir.join("Cargo.toml"))
-        .unwrap_or_else(|| program_name.to_string());
-    let desired_stem = read_library_stem_hint(output_dir)
-        .unwrap_or_else(|| format!("lib{}", pkg_name.replace('-', "_")));
+    // When the runner uses cando2's default naming, it loads `lib<candidate>.so` where
+    // <candidate> is the basename of the test-root directory (i.e. the output dir). When the
+    // runner declares an explicit `library:` name in its `harness!` invocation, honor that hint.
+    let candidate_name = output_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(program_name);
+    let desired_stem =
+        read_library_stem_hint(output_dir).unwrap_or_else(|| format!("lib{}", candidate_name));
 
     let lib_extension = lib_path
         .extension()
@@ -312,18 +325,18 @@ fn configure_runner_manifests(output_dir: &Path) -> HarvestResult<()> {
     let runner_dir = output_dir.join("runner");
 
     // Main runner manifest
-    cargo_utils::add_workspace_guard(&runner_dir.join("Cargo.toml"))?;
-    cargo_utils::update_dependency_path(
-        &runner_dir.join("Cargo.toml"),
-        "cando2",
-        CANDO2_RELATIVE_PATH,
-    )?;
+    let mut runner_cargo = CargoToml::open(&runner_dir.join("Cargo.toml"))?;
+    runner_cargo.add_workspace();
+    runner_cargo.update_dependency_path("cando2", CANDO2_RELATIVE_PATH);
+    runner_cargo.save()?;
 
     // Fuzz manifest (if exists)
     let fuzz_manifest = runner_dir.join("fuzz").join("Cargo.toml");
     if fuzz_manifest.exists() {
-        cargo_utils::add_workspace_guard(&fuzz_manifest)?;
-        cargo_utils::update_dependency_path(&fuzz_manifest, "cando2", CANDO2_RELATIVE_PATH)?;
+        let mut fuzz_cargo = CargoToml::open(&fuzz_manifest)?;
+        fuzz_cargo.add_workspace();
+        fuzz_cargo.update_dependency_path("cando2", CANDO2_RELATIVE_PATH);
+        fuzz_cargo.save()?;
     }
 
     Ok(())
@@ -398,7 +411,9 @@ pub fn build_runner(output_dir: &Path) -> HarvestResult<PathBuf> {
 /// Tries to find the binary using the package name from Cargo.toml, falling back to
 /// the generic name "runner" if the package name is not found.
 fn locate_runner_binary(runner_dir: &Path, runner_target_dir: &Path) -> HarvestResult<PathBuf> {
-    let pkg_name = cargo_utils::read_package_name(&runner_dir.join("Cargo.toml"));
+    let pkg_name = CargoToml::open(&runner_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|c| c.package_name());
     let runner_release = runner_target_dir.join("release");
 
     let runner_bin = if let Some(name) = pkg_name {
@@ -442,12 +457,12 @@ fn locate_runner_binary(runner_dir: &Path, runner_target_dir: &Path) -> HarvestR
 ///
 /// # Process
 /// For each test case:
-/// 1. Spawn runner with: `runner lib -c <test_case.json>`
-/// 2. Set environment: RUST_ARTIFACTS=1, LD_LIBRARY_PATH
-/// 3. Apply timeout
-/// 4. Validate exit code (success = test passed)
+/// 1. Spawn runner with: `runner --test-root-dir <root> --rust --vectors <test_case.json> lib`
+/// 2. Apply timeout
+/// 3. Validate exit code (success = test passed)
 ///
 /// # Arguments
+/// * `test_root` - Test-root directory cando2 discovers vectors and the Rust library under
 /// * `runner_bin` - Path to the compiled runner executable
 /// * `ld_library_path` - Colon-separated list of directories for LD_LIBRARY_PATH
 /// * `test_cases` - Test vectors to run
@@ -456,6 +471,7 @@ fn locate_runner_binary(runner_dir: &Path, runner_target_dir: &Path) -> HarvestR
 /// # Returns
 /// Tuple of (test_results, error_messages, passed_count)
 pub fn run_test_suite(
+    test_root: &Path,
     runner_bin: &Path,
     ld_library_path: &str,
     test_cases: &[TestCase],
@@ -489,8 +505,13 @@ pub fn run_test_suite(
             test_cases.len()
         );
 
-        let result =
-            run_single_library_test(runner_bin, test_case, ld_library_path, timeout_duration);
+        let result = run_single_library_test(
+            test_root,
+            runner_bin,
+            test_case,
+            ld_library_path,
+            timeout_duration,
+        );
 
         match result {
             Ok(output) if output.status.success() => {
@@ -530,13 +551,18 @@ pub fn run_test_suite(
 
 /// Runs a single library test case.
 ///
-/// Spawns the runner process with appropriate environment variables and applies a timeout.
-/// The runner is invoked with: `runner lib -c <test_case.json>`
+/// Spawns the runner process and applies a timeout. The runner is invoked with:
+/// `runner --test-root-dir <root> --rust --vectors <test_case.json> lib`
+///
+/// cando2 resolves the Rust library under `<root>/translated_rust/target/release` and the
+/// test vector relative to `<root>/test_vectors`. `--rust` selects the Rust candidate (as
+/// opposed to the C build). The exit code reports whether all selected vectors passed.
 ///
 /// # Environment Variables
-/// - `RUST_ARTIFACTS=1`: Tells cando2 to load Rust-compiled libraries
-/// - Library search path variable (`LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH`/`PATH` depending on platform)
+/// - `RUST_ARTIFACTS=1` and the library search path variable are still set for backwards
+///   compatibility with older cando2 revisions; current cando2 ignores them.
 fn run_single_library_test(
+    test_root: &Path,
     runner_bin: &Path,
     test_case: &TestCase,
     ld_library_path: &str,
@@ -549,10 +575,19 @@ fn run_single_library_test(
         )
     })?;
 
+    // cando2 resolves vectors and the library relative to the test root, so it must be an
+    // absolute path (the runner is spawned with a different working directory).
+    let test_root_abs = test_root
+        .canonicalize()
+        .unwrap_or_else(|_| test_root.to_path_buf());
+
     let mut cmd = Command::new(runner_bin);
-    cmd.arg("lib")
-        .arg("-c")
+    cmd.arg("--test-root-dir")
+        .arg(&test_root_abs)
+        .arg("--rust")
+        .arg("--vectors")
         .arg(&test_case.filename)
+        .arg("lib")
         .current_dir(runner_dir)
         .env(RUST_ARTIFACTS_ENV, "1")
         .env(LD_LIBRARY_PATH_ENV, ld_library_path)

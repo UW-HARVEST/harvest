@@ -76,6 +76,16 @@ pub struct Config {
     #[serde(default = "default_max_repair_passes")]
     pub max_repair_passes: usize,
 
+    /// Whether to run HARVEST's built-in differential test (BuildCArtifact, then
+    /// GenerateDiffTestSuite + RunDiffTest for libraries or GenerateExecDifftests +
+    /// RunExecDiffTest for executables, plus any diff-repair passes) after
+    /// translation. This stage builds the original C with CMake, so it only works
+    /// for CMake projects. Set to `false` for autotools/make projects that are
+    /// graded by an external harness instead; the translated Rust output is still
+    /// written. Defaults to `true` to preserve upstream behavior.
+    #[serde(default = "default_internal_difftest")]
+    pub internal_difftest: bool,
+
     /// Maximum number of LLM-based repair passes to attempt after a failed differential test.
     #[serde(default = "default_max_diff_repair_passes")]
     pub max_diff_repair_passes: usize,
@@ -93,6 +103,10 @@ pub struct Config {
 
 fn default_max_repair_passes() -> usize {
     2
+}
+
+fn default_internal_difftest() -> bool {
+    true
 }
 
 fn default_max_diff_repair_passes() -> usize {
@@ -113,6 +127,7 @@ impl Config {
             agentic_agent: AgentKind::Kiro,
             log_filter: "off".to_owned(),
             max_repair_passes: 0,
+            internal_difftest: true,
             max_diff_repair_passes: 0,
             tools: Default::default(),
             unknown: Default::default(),

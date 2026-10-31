@@ -113,37 +113,43 @@ pub fn transpile(config: Arc<Config>) -> Result<HarvestIR, Box<dyn std::error::E
                 .kind,
             ProjectKind::Library
         );
-        let c_artifact = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
-        if is_library {
-            let (pkg, build) = run_diff_test_and_repair(
-                &mut scheduler,
-                &mut runner,
-                &mut ir,
-                &config,
-                load_src,
-                c_artifact,
-                current_pkg_id,
-                current_build_id,
-                || GenerateDiffTestSuite,
-                || RunDiffTest,
-            )?;
-            current_pkg_id = pkg;
-            current_build_id = build;
-        } else {
-            let (pkg, build) = run_diff_test_and_repair(
-                &mut scheduler,
-                &mut runner,
-                &mut ir,
-                &config,
-                load_src,
-                c_artifact,
-                current_pkg_id,
-                current_build_id,
-                || GenerateExecDifftests,
-                || RunExecDiffTest,
-            )?;
-            current_pkg_id = pkg;
-            current_build_id = build;
+        // The built-in differential test builds the original C with CMake, so it
+        // only applies to CMake projects. For autotools/make projects graded by
+        // an external harness, `internal_difftest = false` skips it while still
+        // writing the translated Rust output below.
+        if config.internal_difftest {
+            let c_artifact = scheduler.queue_after(BuildCArtifact, &[load_src, project_spec]);
+            if is_library {
+                let (pkg, build) = run_diff_test_and_repair(
+                    &mut scheduler,
+                    &mut runner,
+                    &mut ir,
+                    &config,
+                    load_src,
+                    c_artifact,
+                    current_pkg_id,
+                    current_build_id,
+                    || GenerateDiffTestSuite,
+                    || RunDiffTest,
+                )?;
+                current_pkg_id = pkg;
+                current_build_id = build;
+            } else {
+                let (pkg, build) = run_diff_test_and_repair(
+                    &mut scheduler,
+                    &mut runner,
+                    &mut ir,
+                    &config,
+                    load_src,
+                    c_artifact,
+                    current_pkg_id,
+                    current_build_id,
+                    || GenerateExecDifftests,
+                    || RunExecDiffTest,
+                )?;
+                current_pkg_id = pkg;
+                current_build_id = build;
+            }
         }
 
         scheduler.queue_after(WriteOutput, &[current_build_id]);
